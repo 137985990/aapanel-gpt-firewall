@@ -12,6 +12,7 @@ import signal
 import ssl
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -130,8 +131,6 @@ def _transport(url, *, timeout, max_bytes):
     })
     with opener.open(request, timeout=timeout) as response:
         _url(response.geturl(), redirect=response.geturl() != url)
-        if response.headers.get('Transfer-Encoding') is not None:
-            raise UpdateError('transfer', '分块发布响应无法保证下载期限，已拒绝下载，请稍后重试。')
         length = response.headers.get('Content-Length')
         if length is not None and (not length.isdigit() or int(length) > max_bytes):
             raise UpdateError('size', '发布资源超过允许的大小。')
@@ -156,6 +155,33 @@ def _transport(url, *, timeout, max_bytes):
         return b''.join(chunks)
 
 
+def _isolated_transport(url, *, timeout, max_bytes):
+    _url(url)
+    if (type(max_bytes) is not int or not 0 < max_bytes <= MAX_ARCHIVE
+            or type(timeout) not in (int, float) or not 0 < timeout <= NETWORK_SECONDS):
+        raise UpdateError('argument', '网络资源限制参数无效。')
+    process = subprocess.Popen([
+        sys.executable, '-B', str(Path(__file__).absolute()), '--fetch-url', url,
+        '--network-timeout', str(timeout), '--max-bytes', str(max_bytes),
+    ], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        start_new_session=True, close_fds=True, shell=False)
+    try:
+        output, _ = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()
+        raise UpdateError('timeout', '连接或下载超时，已结束独立网络进程，请稍后重试。') from None
+    except BaseException:
+        process.kill()
+        process.communicate()
+        raise
+    if process.returncode != 0:
+        raise UpdateError('network', '无法安全读取固定 GitHub 发布资源，请稍后重试。')
+    if not isinstance(output, bytes) or len(output) > max_bytes:
+        raise UpdateError('size', '发布资源超过允许的大小。')
+    return output
+
+
 class UpdateService:
     """Callbacks: transport(url, timeout=, max_bytes=), spawn(argv, **Popen options), installer(plugin_dir)."""
 
@@ -164,7 +190,7 @@ class UpdateService:
         self.plugin = Path(plugin_dir).absolute()
         self.store = self.plugin / 'data/updates'
         self.runtime = self.plugin.parents[2] / 'free_waf'
-        self._transport = transport or _transport
+        self._transport = transport or _isolated_transport
         self._spawn = spawn or subprocess.Popen
         self._installer = installer or self._run_installer
         self._test_mode = test_mode is True
@@ -747,8 +773,21 @@ class UpdateService:
 
 def main():
     parser = argparse.ArgumentParser(description='Run one persisted firewall update job.')
-    parser.add_argument('--job', required=True)
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument('--job')
+    action.add_argument('--fetch-url')
+    parser.add_argument('--network-timeout', type=float, default=NETWORK_SECONDS)
+    parser.add_argument('--max-bytes', type=int, default=MAX_JSON)
     args = parser.parse_args()
+    if args.fetch_url:
+        if not 0 < args.network_timeout <= NETWORK_SECONDS or not 0 < args.max_bytes <= MAX_ARCHIVE:
+            return 2
+        try:
+            data = _transport(args.fetch_url, timeout=args.network_timeout, max_bytes=args.max_bytes)
+            sys.stdout.buffer.write(data)
+            return 0
+        except Exception:
+            return 2
     result = UpdateService(Path(__file__).absolute().parent).run_job(args.job)
     return 0 if result['status'] else 1
 

@@ -416,37 +416,100 @@ class UpdateServiceTest(unittest.TestCase):
             stop.set()
             thread.join(2)
 
-    def test_real_chunked_response_dripping_chunk_header_is_rejected_immediately(self):
+    def test_normal_chunked_github_response_is_supported(self):
         client, server = socket.socketpair()
         self.addCleanup(client.close)
         self.addCleanup(server.close)
-        stop = threading.Event()
-        def drip():
-            try:
-                server.sendall(b'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n')
-                for byte in b'1;' + b'a' * 20 + b'\r\nx\r\n0\r\n\r\n':
-                    if stop.wait(0.03):
-                        break
-                    server.sendall(bytes([byte]))
-            except OSError:
-                pass
-        thread = threading.Thread(target=drip)
-        thread.start()
+        server.sendall(b'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nx\r\n0\r\n\r\n')
         response = http.client.HTTPResponse(client)
         response.begin()
         response.url = DOWNLOAD + ASSET
         opener = mock.Mock()
         opener.open.return_value = response
-        started = time.monotonic()
+        with mock.patch.object(updater.urllib.request, 'build_opener', return_value=opener):
+            self.assertEqual(updater._transport(DOWNLOAD + ASSET, timeout=1, max_bytes=256), b'x')
+
+    def test_default_network_transport_uses_a_separately_timed_process(self):
+        self.assertTrue(callable(getattr(updater, '_isolated_transport', None)))
+        service = updater.UpdateService(self.plugin, test_mode=True)
+        self.assertIs(service._transport, updater._isolated_transport)
+
+    def local_network_process(self, prefix, suffix, delay, timeout):
+        listener = socket.socket()
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(1)
+        listener.settimeout(3)
+        stop = threading.Event()
+
+        def serve():
+            try:
+                with listener.accept()[0] as peer:
+                    peer.sendall(prefix)
+                    for byte in suffix:
+                        if stop.wait(delay):
+                            return
+                        peer.sendall(bytes([byte]))
+            except OSError:
+                pass
+
+        thread = threading.Thread(target=serve)
+        thread.start()
+        original_popen = subprocess.Popen
+        processes = []
+        script = (
+            'import http.client,runpy,socket,sys,urllib.request; '
+            'from unittest import mock; '
+            'port=int(sys.argv.pop(1)); sys.argv=sys.argv[1:]; '
+            'sock=socket.create_connection(("127.0.0.1",port),timeout=3); '
+            'response=http.client.HTTPResponse(sock); '
+            'opener=mock.Mock(); '
+            '\ndef connect(*args,**kwargs):\n response.begin(); response.url=args[0].full_url; return response\n'
+            'opener.open.side_effect=connect\n'
+            'with mock.patch.object(urllib.request,"build_opener",return_value=opener):\n'
+            ' runpy.run_path(sys.argv[0],run_name="__main__")\n'
+        )
+
+        def spawn(argv, **kwargs):
+            self.assertEqual(argv[:2], [sys.executable, '-B'])
+            process = original_popen([sys.executable, '-B', '-c', script,
+                                      str(listener.getsockname()[1])] + argv[2:], **kwargs)
+            processes.append(process)
+            return process
+
         try:
-            with mock.patch.object(updater.urllib.request, 'build_opener', return_value=opener):
-                with self.assertRaises(updater.UpdateError) as failure:
-                    updater._transport(DOWNLOAD + ASSET, timeout=0.12, max_bytes=256)
-            self.assertEqual(failure.exception.code, 'transfer')
-            self.assertLess(time.monotonic() - started, 0.5)
+            with mock.patch.object(updater.subprocess, 'Popen', side_effect=spawn):
+                return updater._isolated_transport(DOWNLOAD + ASSET, timeout=timeout, max_bytes=256)
         finally:
             stop.set()
-            thread.join(2)
+            listener.close()
+            thread.join(4)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(len(processes), 1)
+            self.assertIsNotNone(processes[0].returncode, 'download process must be reaped')
+
+    def test_real_download_process_supports_normal_chunked_responses(self):
+        self.assertEqual(self.local_network_process(
+            b'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n',
+            b'1\r\nx\r\n0\r\n\r\n', 0, 3), b'x')
+
+    def test_real_download_process_bounds_slow_headers_chunks_and_body(self):
+        for prefix, suffix in (
+            (b'HTTP/1.1 200 OK\r\nX-Slow: ', b'a' * 80 + b'\r\nContent-Length: 1\r\n\r\nx'),
+            (b'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n',
+             b'1;' + b'a' * 80 + b'\r\nx\r\n0\r\n\r\n'),
+            (b'HTTP/1.1 200 OK\r\nContent-Length: 80\r\n\r\n', b'x' * 80),
+        ):
+            with self.subTest(prefix=prefix):
+                started = time.monotonic()
+                with self.assertRaises(updater.UpdateError):
+                    self.local_network_process(prefix, suffix, 0.03, 0.4)
+                self.assertLess(time.monotonic() - started, 2, 'network timeout must cover protocol framing')
+
+    def test_network_worker_rejects_untrusted_urls_before_spawning(self):
+        with mock.patch.object(updater.subprocess, 'Popen') as spawn:
+            with self.assertRaises(updater.UpdateError):
+                updater._isolated_transport('https://untrusted.invalid/', timeout=1, max_bytes=256)
+            spawn.assert_not_called()
 
     def test_success_changes_code_mtime_for_backend_reload(self):
         target = self.plugin / 'free_waf_main.py'
