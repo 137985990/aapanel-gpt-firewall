@@ -2,7 +2,7 @@
 
 ## 项目关系
 
-**aapanel GPT Firewall v0.1** 是针对既有 aaPanel `free_waf 5.0` 的非官方社区兼容升级。本项目不代表 aaPanel、宝塔、原插件作者或 OpenAI，不暗示这些主体参与、批准、认证或背书本次发布。
+**aapanel GPT Firewall** 是针对既有 aaPanel `free_waf 5.0` 的非官方社区兼容升级。本项目不代表 aaPanel、宝塔、原插件作者或 OpenAI，不暗示这些主体参与、批准、认证或背书本次发布。
 
 项目保留 `free_waf` 内部名称、原有目录与数据格式以维持兼容。界面改名不表示重新取得继承代码的全部权利，也不表示付费 WAF、中文 8.x 与英文 5.0 可以互相覆盖。
 

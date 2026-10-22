@@ -108,6 +108,8 @@ class BackendPolicyTest(unittest.TestCase):
         self.assertIn("__build_website_statistics_summary", endpoint)
         self.assertIn("force=force", endpoint)
         self.assertIn("/www/wwwlogs", self.backend)
+        module = (self.plugin_dir / 'website_statistics.py').read_text(encoding='utf-8')
+        self.assertIn('self.__statistics_service().build(', body)
         for token in [
             "access_logs",
             "error_logs",
@@ -127,17 +129,17 @@ class BackendPolicyTest(unittest.TestCase):
             "recent_access",
             "recent_errors",
             "settings",
-            "siteName",
+            "site_name",
         ]:
             with self.subTest(token=token):
-                self.assertIn(token, body)
+                self.assertIn(token, module)
         self.assertIn("__parse_nginx_access_line", self.backend)
         self.assertIn("__parse_nginx_error_line", self.backend)
         self.assertIn("__iter_recent_window_lines", self.backend)
         recent_window_body = self._function_body("__iter_recent_window_rows")
         self.assertIn("os.SEEK_END", recent_window_body)
         self.assertNotIn("__read_recent_lines", recent_window_body)
-        self.assertIn("for row in self.__iter_recent_window_rows(path, since_ts, deadline=deadline):", body)
+        self.assertIn('website-statistics-v2', endpoint)
         self.assertNotIn("for line in self.__read_recent_lines(path, line_limit):", body)
         self.assertNotIn("for line in self.__iter_log_lines(path):", body)
         self.assertNotIn("for line in self.__read_recent_lines(path, recent_access_limit):", body)
@@ -156,7 +158,7 @@ class BackendPolicyTest(unittest.TestCase):
             "remove_waf_drop_ip",
         ]:
             with self.subTest(unsafe=unsafe):
-                self.assertNotIn(unsafe, body)
+                self.assertNotIn(unsafe, body + module)
 
     def test_blockade_records_and_export_are_read_only(self):
         records_body = self._function_body("get_blockade_records")

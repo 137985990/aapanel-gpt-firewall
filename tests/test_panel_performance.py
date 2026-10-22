@@ -117,8 +117,9 @@ class PanelPerformanceTest(unittest.TestCase):
         self.assertLess(stream.bytes_read, 128 * 1024)
 
     def test_statistics_counts_window_and_selects_recent_rows_across_all_sites(self):
+        from website_statistics import StatisticsService
         self.public.GetNumLines = Mock(side_effect=OSError("no panel helper"))
-        now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+        now = datetime.datetime(2026, 10, 22, 12, tzinfo=datetime.timezone.utc)
 
         def access_line(moment, uri="/old", status=200, ua="browser"):
             stamp = moment.strftime("%d/%b/%Y:%H:%M:%S %z")
@@ -131,6 +132,8 @@ class PanelPerformanceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.backend._free_waf_main__access_log_path = directory
+            self.backend._free_waf_main__statistics_service = Mock(
+                return_value=StatisticsService(directory, now=now))
             earlier = now - datetime.timedelta(hours=1)
             (root / "a.example.log").write_text(access_line(earlier) * 220, encoding="utf-8")
             (root / "z.example.log").write_text(
@@ -151,8 +154,10 @@ class PanelPerformanceTest(unittest.TestCase):
         self.assertEqual(result["summary"]["spider_requests"], 1)
         self.assertEqual(len(result["recent_access"]), 80)
         self.assertEqual(result["recent_access"][0]["uri"], "/newest")
-        self.assertEqual(result["recent_errors"][0]["site"], "z.example")
-        self.assertEqual(len(result["recent_errors"]), 2)
+        self.assertEqual(len(result["recent_errors"]), 1)
+        self.assertEqual(result["recent_errors"][0]["status"], 403)
+        self.assertEqual(result["server_errors"][0]["site"], "z.example")
+        self.assertEqual(len(result["server_errors"]), 2)
 
     def test_overview_dynamics_show_latest_hits_instead_of_first_file_rows(self):
         self.backend.get_waf_drop_ip = lambda get: []

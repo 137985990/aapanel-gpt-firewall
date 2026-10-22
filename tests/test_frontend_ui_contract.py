@@ -934,73 +934,90 @@ class FrontendUiContractTest(unittest.TestCase):
 
     def test_website_statistics_page_exists_and_is_read_only(self):
         required_ids = [
-            "website_stats_days",
-            "website_stats_site_filter",
-            "website_stats_refresh",
-            "website_stats_status",
-            "website_stats_requests",
-            "website_stats_clients",
-            "website_stats_bytes",
-            "website_stats_errors",
-            "website_stats_spiders",
-            "website_stats_site_table",
-            "website_stats_spider_table",
-            "website_stats_client_table",
-            "website_stats_status_table",
-            "website_stats_top_uri_table",
-            "website_stats_referer_table",
-            "website_stats_common_ip_table",
-            "website_stats_access_table",
-            "website_stats_error_table",
-            "website_stats_settings_table",
+            "website_stats_days", "website_stats_site_filter", "website_stats_refresh",
+            "website_stats_status", "website_stats_requests", "website_stats_clients",
+            "website_stats_bytes", "website_stats_errors", "website_stats_spiders",
+            "website_stats_site_table", "website_stats_spider_table", "website_stats_client_table",
+            "website_stats_status_table", "website_stats_top_uri_table", "website_stats_referer_table",
+            "website_stats_common_ip_table", "website_stats_access_table", "website_stats_error_table",
+            "website_stats_settings_table", "website_stats_http_error_table", "website_stats_trend",
+            "website_stats_window", "website_stats_coverage", "website_stats_browser_table",
+            "website_stats_os_table", "website_stats_device_table",
         ]
         for dom_id in required_ids:
             with self.subTest(dom_id=dom_id):
                 self.assertRegex(self.frontend, r"\bid=['\"]" + re.escape(dom_id) + r"['\"]")
 
-        required_tokens = [
-            "统计",
-            "网站统计",
-            "统计总览",
-            "waf-website-summary-grid",
+        for token in [
+            "网站统计", "网站日志报告", "独立 IP", "响应体流量", "疑似蜘蛛（UA）",
+            "HTTP 错误请求", "Nginx 诊断日志", "统计说明（只读）", "自然日",
+            "不等同于真实人数或 UV", "UA 为客户端自报", "waf-website-summary-grid",
             ".waf-summary-grid.waf-website-summary-grid{grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}",
-            "站点列表",
-            "蜘蛛统计",
-            "访客统计",
-            "TOP URL",
-            "来源统计",
-            "公共访客IP",
-            "错误日志",
-            "访问日志",
-            "统计设置",
-            "render_website_statistics",
-            "get_website_statistics_summary",
-        ]
-        for token in required_tokens:
+        ]:
             with self.subTest(token=token):
                 self.assertIn(token, self.frontend)
 
-        body = self._object_function_body("render_website_statistics")
-        self.assertIn("get_website_statistics_summary", body)
-        self.assertIn("escapeHTML", body)
-        for selector in required_ids:
-            with self.subTest(selector=selector):
-                self.assertIn("#" + selector, body)
-        for field in [
-            "item.site",
-            "item.spider",
-            "item.ip",
-            "item.uri",
-            "item.referer",
-            "item.raw",
-            "item.key",
-            "item.value",
+        self.assertEqual(
+            re.findall(r'class="website_stats_tab[^"]*"[^>]*data-stats-page="([^"]+)"', self.frontend),
+            ["overview", "sites", "spiders", "clients", "access", "errors", "settings"],
+        )
+        bodies = {name: self._object_function_body(name) for name in [
+            "get_website_statistics_summary", "render_website_statistics", "render_statistics_report",
+            "statistics_table", "render_statistics_samples", "render_statistics_trend",
+            "select_statistics_page", "init_statistics_samples",
+        ]}
+        request = bodies["render_website_statistics"]
+        report = bodies["render_statistics_report"]
+        table = bodies["statistics_table"]
+        samples = bodies["render_statistics_samples"]
+        trend = bodies["render_statistics_trend"]
+        self.assertIn("get_website_statistics_summary", request)
+        self.assertIn("_this.render_statistics_report(res)", request)
+        self.assertIn("waf_dashboard.text(optItem.site)", request)
+        self.assertIn("waf_dashboard.text(currentSite)", request)
+        for body in [report, table, samples, trend]:
+            self.assertRegex(body, r"\besc\s*=\s*waf_dashboard\.text")
+        self.assertIn("esc(row.site)", report)
+        self.assertIn("esc((row || {})[field]", table)
+        for field in ["row.time", "row.site", "row.ip", "row.method", "row.uri", "row.status", "row.raw", "row.client"]:
+            with self.subTest(sample_field=field):
+                self.assertIn(field, samples)
+        self.assertIn("esc(row.raw)", samples)
+        self.assertIn("esc(value == null ? '--' : value)", samples)
+        self.assertIn("esc(label)", trend)
+
+        for call in [
+            "this.statistics_table('spider',res.spiders,['spider','count'])",
+            "this.statistics_table('client',res.clients,['ip','count'])",
+            "this.statistics_table('status',res.status_codes,['status','count'])",
+            "this.statistics_table('top_uri',res.top_uris,['uri','count'])",
+            "this.statistics_table('referer',res.referers,['referer','count'])",
+            "this.statistics_table('common_ip',res.common_clients,['ip','sites','count'])",
+            "this.statistics_table('settings',res.settings,['key','value'])",
+            "this.statistics_table('browser',res.browsers,['name','count'])",
+            "this.statistics_table('os',res.operating_systems,['name','count'])",
+            "this.statistics_table('device',res.devices,['name','count'])",
+            "_this.render_statistics_samples(kind)",
+            "this.render_statistics_trend(res.trend,res.window)",
         ]:
-            with self.subTest(field=field):
-                self.assertRegex(body, r"escapeHTML\s*\(\s*" + re.escape(field) + r"\s*\)")
-        for unsafe in ["add_ip_black", "add_permanent_ban", "clean_waf_drop_ip", "add_url_white", "set_cc_conf"]:
-            with self.subTest(unsafe=unsafe):
-                self.assertNotIn(unsafe, body)
+            with self.subTest(render_chain=call):
+                self.assertIn(call, report)
+        self.assertIn("schema2 ? res.server_errors : res.recent_errors", samples)
+        self.assertIn("kind === 'http_error' && schema2 ? res.recent_errors : res.recent_access", samples)
+        self.assertIn("$('#website_stats_window').text(", report)
+        self.assertIn("$('#website_stats_coverage').text(", report)
+        self.assertIn("$('#website_stats_status').text(", request)
+
+        escaper = re.search(r"function text\(value\)\{([^\n]+)", self.frontend)
+        self.assertIsNotNone(escaper, "raw-text HTML escaper not found")
+        for entity in ["&amp;", "&lt;", "&gt;", "&quot;", "&#39;"]:
+            with self.subTest(escaped_entity=entity):
+                self.assertIn(entity, escaper.group(1))
+        self.assertIn("text:text", self.frontend)
+        for name, body in bodies.items():
+            for unsafe in ["add_ip_black", "add_permanent_ban", "clean_waf_drop_ip", "add_url_white", "set_cc_conf"]:
+                with self.subTest(method=name, unsafe=unsafe):
+                    self.assertNotIn(unsafe, body)
 
     def test_official_overview_dashboard_layout_exists(self):
         required_ids = [

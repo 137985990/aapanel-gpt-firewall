@@ -7,13 +7,13 @@ import re
 import zipfile
 
 
-VERSION = '0.1'
+VERSION = '0.1.1'
 PLUGIN_FILES = (
     'info.json', 'install.sh', 'free_waf_main.py', 'index.html',
-    'init.lua', 'ban_store.py', 'report_store.py',
+    'init.lua', 'ban_store.py', 'report_store.py', 'website_statistics.py', 'update_service.py',
     'html/get.html', 'html/post.html', 'html/cookie.html',
     'html/user_agent.html', 'html/other.html',
-    'README.md', 'NOTICE.md', 'CHANGELOG.md', 'SECURITY.md', 'docs/UPGRADE.md',
+    'README.md', 'NOTICE.md', 'CHANGELOG.md', 'SECURITY.md', 'docs/UPGRADE.md', 'docs/UPDATES.md',
     'docs/images/overview.png',
 )
 SOURCE_FILES = PLUGIN_FILES + (
@@ -28,6 +28,8 @@ SOURCE_FILES = PLUGIN_FILES + (
     'tests/test_release_privacy.py', 'tests/test_release_package.py',
     'tests/test_offline_installer.py', 'tests/test_lua_state_regressions.py',
     'tests/test_attack_charts.js', 'tests/test_frontend_performance.js',
+    'tests/test_website_statistics.py', 'tests/test_update_service.py', 'tests/test_v011_integration.py',
+    'tests/test_statistics_v011.js', 'tests/test_plugin_update_ui.js',
 )
 SECRET_PATTERNS = (
     r'(?m)^-----BEGIN (?:OPENSSH |RSA |EC )?PRIVATE KEY-----',

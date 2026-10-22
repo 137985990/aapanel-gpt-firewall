@@ -66,7 +66,68 @@ class free_waf_main:
     __config = None
     __PATH='/www/server/panel/plugin/free_waf/'
     __log_types = ('GPT Firewall', 'Nginx free firewall')
-    
+
+    def __local_service(self, name):
+        import importlib.util
+        import sys
+        import hashlib
+        if name not in ('website_statistics', 'update_service'):
+            raise ValueError('未知服务')
+        path = os.path.realpath(os.path.join(self.__PATH, name + '.py'))
+        stamp = os.stat(path)
+        signature = (path, stamp.st_mtime_ns, stamp.st_size)
+        key = '_aapanel_gpt_firewall_' + name + '_' + hashlib.sha256(path.encode('utf-8')).hexdigest()[:16]
+        module = sys.modules.get(key)
+        if (module is None or getattr(module, '__file__', None) != path
+                or getattr(module, '_source_signature', None) != signature
+                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.1'):
+            spec = importlib.util.spec_from_file_location(key, path)
+            module = importlib.util.module_from_spec(spec)
+            # Read source explicitly: same-second upgrades must not reuse stale bytecode.
+            source = spec.loader.get_source(key)
+            exec(compile(source, path, 'exec', dont_inherit=True), module.__dict__)
+            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.1':
+                raise ValueError('服务版本不匹配，请重新打开插件')
+            module._source_signature = signature
+            sys.modules[key] = module
+        return module
+
+    def __statistics_service(self):
+        return self.__local_service('website_statistics').StatisticsService(self.__access_log_path)
+
+    def __update_service(self):
+        return self.__local_service('update_service').UpdateService(self.__PATH)
+
+    def check_plugin_update(self, get):
+        force = str(getattr(get, 'force', '')).lower() in ('true', '1')
+        try:
+            return self.__update_service().check(force=force)
+        except Exception:
+            return public.returnMsg(False, '版本检查暂不可用，请稍后重试。')
+
+    def __update_request_is_post(self):
+        try:
+            from flask import request
+            return request.method == 'POST'
+        except (ImportError, RuntimeError):
+            return False
+
+    def start_plugin_update(self, get):
+        if not self.__update_request_is_post():
+            return public.returnMsg(False, '安装更新只接受面板内确认后的 POST 请求。')
+        tag = str(getattr(get, 'tag', '') or '')
+        if not re.fullmatch(r'v\d{1,6}\.\d{1,6}(?:\.\d{1,6})?', tag):
+            return public.returnMsg(False, '更新版本号不正确，请重新检查更新。')
+        try:
+            return self.__update_service().start(tag)
+        except Exception:
+            return public.returnMsg(False, '无法启动更新，请检查更新状态后重试。')
+
+    def get_plugin_update_status(self, get):
+        try:
+            return self.__update_service().status()
+        except Exception:
+            return public.returnMsg(False, '暂时无法读取更新状态。')
 
     def return_site(self, get):
         data = public.M('sites').field('name,path').select()
@@ -2532,12 +2593,15 @@ class free_waf_main:
         except (TypeError, ValueError):
             return public.returnMsg(False, '统计参数不正确')
         site_name = str(getattr(get, 'siteName', '') or '').strip()
+        if site_name and (len(site_name) > 255 or site_name in ('.', '..')
+                          or not re.fullmatch(r'[\w.\[\]:-]+', site_name)):
+            return public.returnMsg(False, '站点筛选参数不正确')
         params = SimpleNamespace(days=days, line_limit=line_limit, siteName=site_name)
-        key = json.dumps([site_name, days, line_limit], ensure_ascii=False)
+        key = json.dumps(['website-statistics-v2', time.strftime('%Y-%m-%d'), site_name, days, line_limit], ensure_ascii=False)
         force = str(getattr(get, 'force', '')).lower() in ('1', 'true')
         result = website_reports.request(key, lambda: self.__build_website_statistics_summary(params), force=force)
         if 'site_options' not in result:
-            result['site_options'] = self.__statistics_log_files()[2]
+            result['site_options'] = self.__statistics_service().discover_sites()
         return result
 
     def __statistics_log_files(self):
@@ -2563,210 +2627,12 @@ class free_waf_main:
         ]
 
     def __build_website_statistics_summary(self, get):
-        """Read-only Website Statistics basic dashboard from Nginx access_logs and error_logs."""
-        import collections, heapq
-        log_dir = self.__access_log_path
-        siteName = str(getattr(get, 'siteName', '') or '').strip()
-        try:
-            days = int(getattr(get, 'days', 7))
-        except:
-            days = 7
-        if days < 1:
-            days = 1
-        if days > 30:
-            days = 30
-        try:
-            line_limit = int(getattr(get, 'line_limit', 800))
-        except:
-            line_limit = 800
-        if line_limit < 100:
-            line_limit = 100
-        if line_limit > 5000:
-            line_limit = 5000
-        since_ts = time.time() - days * 86400
-        access_logs, error_logs, site_options = self.__statistics_log_files()
-        deadline = time.monotonic() + 120
-
-        site_stats = {}
-        unique_clients = set()
-        total_requests = 0
-        total_bytes = 0
-        error_requests = 0
-        spider_requests = 0
-        spider_counter = collections.Counter()
-        client_counter = collections.Counter()
-        status_counter = collections.Counter()
-        uri_counter = collections.Counter()
-        referer_counter = collections.Counter()
-        client_sites = {}
-        recent_access = []
-        access_sequence = 0
-        spider_tokens = ['bot', 'spider', 'crawler', 'slurp', 'baiduspider', 'googlebot', 'bingbot', 'yandex', 'duckduckbot']
-
-        for path in access_logs:
-            fname = os.path.basename(path)
-            site = fname[:-4] if fname.endswith('.log') else fname
-            if site.endswith('.ssl'):
-                site = site[:-4]
-            if siteName and site != siteName:
-                continue
-            for row in self.__iter_recent_window_rows(path, since_ts, deadline=deadline):
-                total_requests += 1
-                total_bytes += row.get('bytes', 0)
-                unique_clients.add(row.get('ip', ''))
-                client_counter[row.get('ip', '')] += 1
-                if row.get('ip', ''):
-                    if row.get('ip', '') not in client_sites:
-                        client_sites[row.get('ip', '')] = set()
-                    client_sites[row.get('ip', '')].add(site)
-                status = int(row.get('status', 0))
-                status_counter[str(status)] += 1
-                if status >= 400:
-                    error_requests += 1
-                uri = row.get('uri', '')
-                if uri:
-                    uri_counter[uri] += 1
-                referer = row.get('referer', '')
-                if referer and referer != '-':
-                    referer_counter[referer] += 1
-                if site not in site_stats:
-                    site_stats[site] = {'requests': 0, 'clients': set(), 'bytes': 0, 'errors': 0}
-                site_stats[site]['requests'] += 1
-                site_stats[site]['clients'].add(row.get('ip', ''))
-                site_stats[site]['bytes'] += row.get('bytes', 0)
-                if status >= 400:
-                    site_stats[site]['errors'] += 1
-                ua_lower = (row.get('user_agent', '') or '').lower()
-                spider_name = ''
-                for token in spider_tokens:
-                    if token in ua_lower:
-                        spider_name = token
-                        break
-                if spider_name:
-                    spider_requests += 1
-                    spider_counter[spider_name] += 1
-                if len(recent_access) < 80 or row['time_ts'] > recent_access[0][0]:
-                    access_sequence += 1
-                    item = {
-                        'time': self.__safe_text(row.get('time', '')),
-                        'site': self.__safe_text(site),
-                        'ip': self.__safe_text(row.get('ip', '')),
-                        'method': self.__safe_text(row.get('method', '')),
-                        'uri': self.__safe_text(uri),
-                        'status': status,
-                        'bytes': row.get('bytes', 0),
-                        'user_agent': self.__safe_text(row.get('user_agent', '')),
-                        'raw': self.__safe_text(row.get('raw', ''))
-                    }
-                    candidate = (row['time_ts'], access_sequence, item)
-                    if len(recent_access) < 80:
-                        heapq.heappush(recent_access, candidate)
-                    else:
-                        heapq.heapreplace(recent_access, candidate)
-
-        sites = []
-        for site in sorted(site_stats.keys()):
-            item = site_stats[site]
-            sites.append({
-                'site': self.__safe_text(site),
-                'requests': item['requests'],
-                'clients': len(item['clients']),
-                'bytes': item['bytes'],
-                'errors': item['errors']
-            })
-        sites = sorted(sites, key=lambda x: x.get('requests', 0), reverse=True)[:50]
-        recent_access = [item[2] for item in sorted(recent_access, reverse=True)]
-
-        recent_errors = []
-        error_sequence = 0
-        for path in error_logs:
-            fname = os.path.basename(path)
-            site = fname.replace('.error.log', '').replace('.ssl', '')
-            if siteName and site != siteName:
-                continue
-            for line in self.__read_recent_lines(path, min(line_limit, 300)):
-                row = self.__parse_nginx_error_line(line)
-                try:
-                    row_ts = time.mktime(time.strptime(row.get('time', ''), '%Y/%m/%d %H:%M:%S'))
-                except (ValueError, OverflowError):
-                    continue
-                if row_ts < since_ts:
-                    continue
-                error_sequence += 1
-                item = {
-                    'time': self.__safe_text(row.get('time', '')),
-                    'site': self.__safe_text(site),
-                    'level': self.__safe_text(row.get('level', '')),
-                    'client': self.__safe_text(row.get('client', '')),
-                    'server': self.__safe_text(row.get('server', '')),
-                    'request': self.__safe_text(row.get('request', '')),
-                    'raw': self.__safe_text(row.get('raw', ''))
-                }
-                candidate = (row_ts, error_sequence, item)
-                if len(recent_errors) < 120:
-                    heapq.heappush(recent_errors, candidate)
-                elif row_ts > recent_errors[0][0]:
-                    heapq.heapreplace(recent_errors, candidate)
-        recent_errors = [item[2] for item in sorted(recent_errors, reverse=True)]
-
-        common_clients = []
-        for ip, count in client_counter.most_common(50):
-            if not ip:
-                continue
-            sites_for_ip = sorted(client_sites.get(ip, set()))
-            if len(sites_for_ip) > 1 or siteName:
-                common_clients.append({
-                    'ip': self.__safe_text(ip),
-                    'count': count,
-                    'sites': self.__safe_text(', '.join(sites_for_ip))
-                })
-            if len(common_clients) >= 30:
-                break
-        if not common_clients:
-            for ip, count in client_counter.most_common(30):
-                if not ip:
-                    continue
-                sites_for_ip = sorted(client_sites.get(ip, set()))
-                common_clients.append({
-                    'ip': self.__safe_text(ip),
-                    'count': count,
-                    'sites': self.__safe_text(', '.join(sites_for_ip))
-                })
-
-        settings = [
-            {'key': '统计模式', 'value': '后台只读统计，页面展示最近完成的结果'},
-            {'key': '日志目录', 'value': log_dir},
-            {'key': '统计窗口', 'value': '近 ' + str(days) + ' 天'},
-            {'key': '站点筛选', 'value': siteName if siteName else '全部站点'},
-            {'key': '汇总统计', 'value': '按统计窗口流式汇总，结果缓存 5 分钟，可手动刷新'},
-            {'key': '最近日志展示', 'value': '跨站点按时间展示最近 80 条访问和 120 条错误记录'}
-        ]
-        return {
-            'status': True,
-            'checked_at': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
-            'siteName': self.__safe_text(siteName),
-            'site_options': site_options,
-            'access_logs': [self.__safe_text(x) for x in access_logs],
-            'error_logs': [self.__safe_text(x) for x in error_logs],
-            'summary': {
-                'days': days,
-                'total_requests': total_requests,
-                'unique_clients': len([x for x in unique_clients if x]),
-                'total_bytes': total_bytes,
-                'error_requests': error_requests,
-                'spider_requests': spider_requests
-            },
-            'sites': sites,
-            'spiders': [{'spider': self.__safe_text(k), 'count': v} for k, v in spider_counter.most_common(20)],
-            'clients': [{'ip': self.__safe_text(k), 'count': v} for k, v in client_counter.most_common(50)],
-            'status_codes': [{'status': self.__safe_text(k), 'count': v} for k, v in status_counter.most_common(20)],
-            'top_uris': [{'uri': self.__safe_text(k), 'count': v} for k, v in uri_counter.most_common(30)],
-            'referers': [{'referer': self.__safe_text(k), 'count': v} for k, v in referer_counter.most_common(30)],
-            'common_clients': common_clients,
-            'recent_access': recent_access,
-            'recent_errors': recent_errors,
-            'settings': [{'key': self.__safe_text(x['key']), 'value': self.__safe_text(x['value'])} for x in settings]
-        }
+        """Build a read-only report; no WAF policy or Nginx changes occur here."""
+        return self.__statistics_service().build(
+            days=getattr(get, 'days', 7),
+            site_name=str(getattr(get, 'siteName', '') or '').strip(),
+            line_limit=getattr(get, 'line_limit', 800),
+        )
 
 
     def get_ip_stats(self, get):

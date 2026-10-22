@@ -18,6 +18,27 @@ class ReleasePackageTest(unittest.TestCase):
         self.builder = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.builder)
 
+    def test_v011_packages_local_services_and_regressions(self):
+        self.assertEqual(self.builder.VERSION, '0.1.1')
+        for name in ('website_statistics.py', 'update_service.py', 'docs/UPDATES.md'):
+            self.assertIn(name, self.builder.PLUGIN_FILES)
+        for name in ('tests/test_website_statistics.py', 'tests/test_update_service.py',
+                     'tests/test_v011_integration.py', 'tests/test_statistics_v011.js',
+                     'tests/test_plugin_update_ui.js'):
+            self.assertIn(name, self.builder.SOURCE_FILES)
+
+    def test_release_archive_matches_the_updaters_managed_files(self):
+        spec = importlib.util.spec_from_file_location('release_update_service', ROOT / 'update_service.py')
+        updater = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(updater)
+        self.assertEqual(set(self.builder.PLUGIN_FILES), set(updater.MANAGED_FILES))
+        self.assertEqual(len(self.builder.PLUGIN_FILES), len(updater.MANAGED_FILES))
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.builder.build(ROOT, Path(directory) / 'output')
+            service = updater.UpdateService(Path(directory) / 'panel/plugin/free_waf', test_mode=True)
+            payloads = service._payloads(Path(result['archive']).read_bytes(), self.builder.VERSION)
+            self.assertEqual(set(payloads), set(self.builder.PLUGIN_FILES))
+
     def test_release_excludes_private_docs_and_unknown_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'source'
@@ -41,7 +62,7 @@ class ReleasePackageTest(unittest.TestCase):
                 self.assertEqual(set(names), {'free_waf/' + name for name in self.builder.PLUGIN_FILES})
                 self.assertTrue(all('..' not in name.split('/') and not name.startswith('/') for name in names))
                 metadata = json.loads(archive.read('free_waf/info.json'))
-                self.assertEqual(metadata['versions'], '0.1')
+                self.assertEqual(metadata['versions'], '0.1.1')
                 self.assertIn('install.sh', ' '.join(names))
             self.assertTrue((output / 'SHA256SUMS').is_file())
 

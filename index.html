@@ -265,6 +265,21 @@
 	@media (max-width:1150px){.waf-dashboard-main{grid-template-columns:minmax(0,1fr)}.waf-map-body{grid-template-columns:minmax(0,1fr) 180px}.waf-map{height:310px}.waf-dashboard-lower{grid-template-columns:1fr 1fr}.waf-dashboard-lower>.waf-dashboard-card:first-child{grid-column:1/-1}.waf-overview-summary{grid-template-columns:repeat(4,minmax(0,1fr))}.waf-status-mini{grid-column:1/-1;padding:12px 18px;border-bottom:1px solid var(--waf-line)}.waf-status-mini .waf-shield-icon{width:27px;height:32px}.waf-status-mini .waf-shield-icon span{font-size:16px}.waf-status-mini .waf-shield-title{margin-bottom:2px}.waf-status-mini .waf-shield-sub{display:none}.waf-map-card.is-expanded{inset:10px}}
 	@media (max-width:720px){.waf-overview-heading{display:block;margin-bottom:14px}.waf-overview-actions{justify-content:flex-start;margin-top:10px;gap:8px}.waf-overview-summary{grid-template-columns:1fr 1fr}.waf-overview-summary .waf-summary-card{padding:14px;border-bottom:1px solid #edf1f5}.waf-overview-summary .waf-summary-card .value{font-size:24px}.waf-overview-summary .waf-summary-card .label{font-size:11px}.waf-map-body{grid-template-columns:1fr;min-height:0}.waf-map{height:210px}.waf-map-ranking{border-left:0;border-top:1px solid #edf1f5;margin:0;padding:12px 14px}.waf-map-ranking-title{margin-bottom:10px}#overview_map_ranking{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}.waf-map-rank{padding-bottom:10px}.waf-panel-heading{padding:13px 12px;flex-wrap:wrap;gap:8px}.waf-panel-heading h4 small{display:none}.waf-map-footnote{padding:9px 12px}.waf-dashboard-lower{grid-template-columns:1fr}.waf-blocked-scroll .waf_table th,.waf-blocked-scroll .waf_table td{padding:8px 7px}.waf-map-card.is-expanded .waf-map-body{display:block;overflow:auto}.waf-map-card.is-expanded .waf-map{height:300px;flex:none}.waf-map-card.is-expanded .waf-map-ranking{padding:12px 14px}.waf-map-card.is-expanded{inset:8px}.waf-blocked-summary{padding:14px 12px}}
 
+	.waf_conter .website_stats_tabs{display:flex;flex-wrap:wrap;gap:6px;border-bottom:1px solid #e4e7ec;padding:0 0 12px;margin-bottom:16px}
+	.waf_conter .website_stats_tab{border:1px solid #d0d5dd;background:#fff;color:#475467;border-radius:4px;padding:7px 14px;font-size:13px}
+	.waf_conter .website_stats_tab.active{border-color:#369775;background:#edf8f3;color:#176647}
+	.waf_conter .website_stats_panel{display:none;min-width:0}
+	.waf_conter .website_stats_panel.active{display:block}
+	.waf_conter .website_stats_sample_controls{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+	.waf_conter .website_stats_sample_controls label{font-weight:400;font-size:12px;color:#667085}
+	.waf_conter .website_stats_sample_controls input{display:block;width:145px;max-width:100%;height:30px;border:1px solid #d0d5dd;border-radius:3px;padding:4px 7px}
+	.waf_conter .website_stats_pager{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-top:12px;font-size:12px;color:#667085}
+	.waf_conter .website_stats_scroll{overflow-x:auto}
+	.waf_conter .website_stats_scroll table{min-width:720px}
+	.waf_conter #website_stats_trend svg{display:block;width:100%;height:auto;max-height:280px}
+	.waf_conter .website_stats_meta{font-size:12px;color:#667085;line-height:1.8;margin:8px 0;overflow-wrap:anywhere}
+	.waf_conter .plugin_update_notes{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;background:#f8fafb;border:1px solid #e4e7ec;border-radius:4px;padding:14px;font:13px/1.8 inherit}
+	.waf_conter #plugin_update_job{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.8}
 </style>
 <div class="waf_conter">
 	<ul class="waf_left_menu">
@@ -276,6 +291,7 @@
 		<li data-target="whitelist"><div class="icon"><i class="iconfont iconquanxian"></i></div><span>白名单</span></li>
 		<li data-target="ipstats"><div class="icon"><i class="iconfont iconlanjie"></i></div><span>报表</span></li>
 		<li data-target="statistics"><div class="icon"><i class="iconfont iconlanjie"></i></div><span>统计</span></li>
+		<li data-target="updates"><div class="icon"><i class="iconfont iconpeizhi"></i></div><span>更新</span></li>
 		<li data-target="notification"><div class="icon"><i class="iconfont iconxiaoxi"></i></div><span>通知</span></li>
 		<li data-target="logs"><div class="icon"><i class="iconfont iconcaozuorizhi"></i></div><span>日志</span></li>
 		<li data-target="webshell"><div class="icon"><i class="iconfont iconsaomiao"></i></div><span>工具</span></li>
@@ -1139,14 +1155,14 @@
 		<div class="item_con" data-type="statistics">
 			<div class="waf-page-title">
 				<h3>网站统计</h3>
-				<p>查看站点访问量、访客、流量以及访问和错误记录。</p>
+				<p>只读分析请求、独立 IP、响应体流量及 HTTP 错误请求；不等同于真实人数或 UV。</p>
 			</div>
 			<div class="waf-notice-safe">统计模块只读取访问日志和错误日志，不安装运行组件，不修改 Nginx，不参与封禁和加白。</div>
 			<div class="waf-card">
 				<div class="waf-dashboard-head">
 					<div>
-						<h4>统计总览</h4>
-						<p>按所选时间范围只读展示站点、蜘蛛、访客、访问日志、错误日志和统计设置，默认近7日。</p>
+						<h4>网站日志报告</h4>
+						<p>今日按服务器本地自然日；近 N 天包含今日。默认近 7 个自然日，切换子页不会重新扫描。</p>
 					</div>
 					<div>
 						<span id="website_stats_status" style="margin-right:8px;color:#667085;">未加载</span>
@@ -1162,62 +1178,108 @@
 						<button class="btn btn-default btn-sm" id="website_stats_refresh">刷新统计</button>
 					</div>
 				</div>
+				<div class="website_stats_tabs" role="tablist" aria-label="网站统计子页">
+					<button type="button" class="website_stats_tab active" data-stats-page="overview" role="tab" aria-selected="true">总览</button>
+					<button type="button" class="website_stats_tab" data-stats-page="sites" role="tab" aria-selected="false">站点</button>
+					<button type="button" class="website_stats_tab" data-stats-page="spiders" role="tab" aria-selected="false">蜘蛛</button>
+					<button type="button" class="website_stats_tab" data-stats-page="clients" role="tab" aria-selected="false">客户端</button>
+					<button type="button" class="website_stats_tab" data-stats-page="access" role="tab" aria-selected="false">访问日志</button>
+					<button type="button" class="website_stats_tab" data-stats-page="errors" role="tab" aria-selected="false">错误日志</button>
+					<button type="button" class="website_stats_tab" data-stats-page="settings" role="tab" aria-selected="false">统计说明</button>
+				</div>
+				<p id="website_stats_window" class="website_stats_meta">等待统计时间窗口。</p>
+				<p id="website_stats_coverage" class="website_stats_meta" role="status">等待日志覆盖说明。</p>
+				<div class="website_stats_panel active" data-stats-panel="overview">
 				<div class="waf-summary-grid waf-website-summary-grid">
-					<div class="waf-summary-card"><span class="label">访问量</span><span class="value"><span id="website_stats_requests">--</span><span class="unit">次</span></span></div>
-					<div class="waf-summary-card"><span class="label">访客统计</span><span class="value"><span id="website_stats_clients">--</span><span class="unit">IP</span></span></div>
-					<div class="waf-summary-card"><span class="label">流量</span><span class="value"><span id="website_stats_bytes">--</span></span></div>
-					<div class="waf-summary-card"><span class="label">错误请求</span><span class="value"><span id="website_stats_errors">--</span><span class="unit">次</span></span></div>
-					<div class="waf-summary-card"><span class="label">蜘蛛统计</span><span class="value"><span id="website_stats_spiders">--</span><span class="unit">次</span></span></div>
+					<div class="waf-summary-card"><span class="label">请求数</span><span class="value"><span id="website_stats_requests">--</span><span class="unit">次</span></span></div>
+					<div class="waf-summary-card"><span class="label">独立 IP</span><span class="value"><span id="website_stats_clients">--</span><span class="unit">IP</span></span></div>
+					<div class="waf-summary-card"><span class="label">响应体流量</span><span class="value"><span id="website_stats_bytes">--</span></span></div>
+					<div class="waf-summary-card"><span class="label">HTTP 错误请求</span><span class="value"><span id="website_stats_errors">--</span><span class="unit">次</span></span><small>4xx：<span id="website_stats_errors4xx">--</span> / 5xx：<span id="website_stats_errors5xx">--</span></small></div>
+					<div class="waf-summary-card"><span class="label">疑似蜘蛛（UA）</span><span class="value"><span id="website_stats_spiders">--</span><span class="unit">次</span></span></div>
+				</div>
+				<h4>请求趋势</h4>
+				<div id="website_stats_trend">等待趋势数据。</div>
+				<p class="website_stats_meta">独立 IP 不是 UV 或真实人数；流量仅为日志记录的响应体字节。UA 为客户端自报，蜘蛛、浏览器、系统及设备分类仅为推断。</p>
 				</div>
 				<div class="waf-report-grid">
-					<div class="waf-dashboard-card">
+					<div class="waf-dashboard-card website_stats_panel" data-stats-panel="sites">
 						<h4>站点列表</h4>
-						<table class="waf_table" style="width:100%;"><thead><tr><th>站点</th><th style="width:80px;">访问</th><th style="width:80px;">访客</th><th style="width:90px;">错误</th></tr></thead><tbody id="website_stats_site_table"><tr><td colspan="4" style="text-align:center;color:#999;padding:18px;">正在加载站点列表...</td></tr></tbody></table>
+						<p class="website_stats_meta">点击站点，以同一时间范围重新筛选整份报告。</p>
+						<div class="website_stats_scroll"><table class="waf_table" style="width:100%;"><thead><tr><th>站点</th><th>请求</th><th>独立 IP</th><th>响应体流量</th><th>HTTP 错误</th></tr></thead><tbody id="website_stats_site_table"><tr><td colspan="5">等待统计。</td></tr></tbody></table></div>
 					</div>
-					<div class="waf-dashboard-card">
-						<h4>蜘蛛统计</h4>
+					<div class="waf-dashboard-card website_stats_panel" data-stats-panel="spiders">
+						<h4>疑似蜘蛛请求（UA）</h4>
+						<p class="website_stats_meta">仅由 UA 启发式识别，未验证 IP 或 DNS，不据此自动放行或封禁。</p>
 						<table class="waf_table" style="width:100%;"><thead><tr><th>蜘蛛</th><th style="width:90px;">次数</th></tr></thead><tbody id="website_stats_spider_table"><tr><td colspan="2" style="text-align:center;color:#999;padding:18px;">正在加载蜘蛛统计...</td></tr></tbody></table>
 					</div>
-					<div class="waf-dashboard-card">
-						<h4>访客统计</h4>
+					<div class="waf-dashboard-card website_stats_panel" data-stats-panel="clients">
+						<h4>客户端 IP 请求排名</h4>
 						<table class="waf_table" style="width:100%;"><thead><tr><th>客户端 IP</th><th style="width:90px;">次数</th></tr></thead><tbody id="website_stats_client_table"><tr><td colspan="2" style="text-align:center;color:#999;padding:18px;">正在加载访客统计...</td></tr></tbody></table>
 					</div>
-					<div class="waf-dashboard-card">
+					<div class="waf-dashboard-card website_stats_panel active" data-stats-panel="overview">
 						<h4>状态码</h4>
 						<table class="waf_table" style="width:100%;"><thead><tr><th>状态码</th><th style="width:90px;">次数</th></tr></thead><tbody id="website_stats_status_table"><tr><td colspan="2" style="text-align:center;color:#999;padding:18px;">正在加载状态码...</td></tr></tbody></table>
 					</div>
-					<div class="waf-dashboard-card">
+					<div class="waf-dashboard-card website_stats_panel active" data-stats-panel="overview">
 						<h4>TOP URL</h4>
 						<table class="waf_table" style="width:100%;"><thead><tr><th>URL</th><th style="width:90px;">次数</th></tr></thead><tbody id="website_stats_top_uri_table"><tr><td colspan="2" style="text-align:center;color:#999;padding:18px;">正在加载 TOP URL...</td></tr></tbody></table>
 					</div>
-					<div class="waf-dashboard-card">
+					<div class="waf-dashboard-card website_stats_panel active" data-stats-panel="overview">
 						<h4>来源统计</h4>
 						<table class="waf_table" style="width:100%;"><thead><tr><th>来源</th><th style="width:90px;">次数</th></tr></thead><tbody id="website_stats_referer_table"><tr><td colspan="2" style="text-align:center;color:#999;padding:18px;">正在加载来源统计...</td></tr></tbody></table>
 					</div>
-					<div class="waf-dashboard-card">
-						<h4>公共访客IP</h4>
+					<div class="waf-dashboard-card website_stats_panel" data-stats-panel="clients">
+						<h4>跨站共同 IP</h4>
 						<table class="waf_table" style="width:100%;"><thead><tr><th>IP</th><th>站点</th><th style="width:90px;">次数</th></tr></thead><tbody id="website_stats_common_ip_table"><tr><td colspan="3" style="text-align:center;color:#999;padding:18px;">正在加载公共访客 IP...</td></tr></tbody></table>
 					</div>
+					<div class="waf-dashboard-card website_stats_panel" data-stats-panel="clients"><h4>浏览器（UA 推断）</h4><table class="waf_table" style="width:100%"><thead><tr><th>名称</th><th>请求数</th></tr></thead><tbody id="website_stats_browser_table"></tbody></table></div>
+					<div class="waf-dashboard-card website_stats_panel" data-stats-panel="clients"><h4>操作系统（UA 推断）</h4><table class="waf_table" style="width:100%"><thead><tr><th>名称</th><th>请求数</th></tr></thead><tbody id="website_stats_os_table"></tbody></table></div>
+					<div class="waf-dashboard-card website_stats_panel" data-stats-panel="clients"><h4>设备（UA 推断）</h4><table class="waf_table" style="width:100%"><thead><tr><th>名称</th><th>请求数</th></tr></thead><tbody id="website_stats_device_table"></tbody></table><p class="website_stats_meta">三组分别按请求分类，不能混合相加，UA 可伪造。</p></div>
 				</div>
 			</div>
-			<div class="waf-card">
+			<div class="waf-card website_stats_panel" data-stats-panel="access">
 				<h4>访问日志</h4>
+				<p class="website_stats_meta">仅当前报告最近最多 80 条样本，筛选采用字面子串匹配，不是全量日志搜索；筛选和分页不重新扫描。耗时未采集。</p>
+				<div id="website_stats_access_controls"></div>
+				<div class="website_stats_scroll">
 				<table class="waf_table" style="width:100%;table-layout:fixed;">
-					<thead><tr><th style="width:170px;">时间</th><th style="width:130px;">站点</th><th style="width:130px;">IP</th><th>URI</th><th style="width:70px;">状态</th><th style="width:90px;">流量</th></tr></thead>
+					<thead><tr><th style="width:150px;">时间</th><th style="width:120px;">站点</th><th style="width:130px;">IP</th><th style="width:65px;">方法</th><th>URI</th><th style="width:60px;">状态</th><th style="width:100px;">响应体流量</th></tr></thead>
 					<tbody id="website_stats_access_table"><tr><td colspan="6" style="text-align:center;color:#999;padding:18px;">正在加载访问日志...</td></tr></tbody>
 				</table>
+				</div><div id="website_stats_access_pager" class="website_stats_pager"></div>
 			</div>
-			<div class="waf-card">
-				<h4>错误日志</h4>
+			<div class="waf-card website_stats_panel" data-stats-panel="errors">
+				<h4>HTTP 错误请求</h4>
+				<p class="website_stats_meta">新报告提供独立保留的最近最多 120 条 HTTP 4xx / 5xx 样本；旧报告仅从 80 条访问样本筛选。均不代表全部错误；错误不等于 WAF 拦截，错误原因与耗时未采集。</p>
+				<div id="website_stats_http_error_controls"></div>
+				<div class="website_stats_scroll"><table class="waf_table" style="width:100%;table-layout:fixed;"><thead><tr><th style="width:150px;">时间</th><th style="width:120px;">站点</th><th style="width:130px;">IP</th><th style="width:65px;">方法</th><th>URI</th><th style="width:60px;">状态</th><th style="width:100px;">响应体流量</th></tr></thead><tbody id="website_stats_http_error_table"></tbody></table></div>
+				<div id="website_stats_http_error_pager" class="website_stats_pager"></div>
+			</div>
+			<div class="waf-card website_stats_panel" data-stats-panel="errors">
+				<h4>Nginx 诊断日志</h4>
+				<p class="website_stats_meta">独立错误日志源，最近最多 120 条诊断样本，不用于计算 HTTP 4xx / 5xx 请求数。</p>
+				<div id="website_stats_error_controls"></div><div class="website_stats_scroll">
 				<table class="waf_table" style="width:100%;table-layout:fixed;">
 					<thead><tr><th style="width:145px;">时间</th><th style="width:120px;">站点</th><th style="width:90px;">级别</th><th style="width:130px;">客户端</th><th>原始日志</th></tr></thead>
 					<tbody id="website_stats_error_table"><tr><td colspan="5" style="text-align:center;color:#999;padding:18px;">正在加载错误日志...</td></tr></tbody>
 				</table>
+				</div><div id="website_stats_error_pager" class="website_stats_pager"></div>
 			</div>
-			<div class="waf-card">
-				<h4>统计设置</h4>
+			<div class="waf-card website_stats_panel" data-stats-panel="settings">
+				<h4>统计说明（只读）</h4>
+				<p class="website_stats_meta">时间按服务器本地自然日划分，以报告时区和覆盖范围为准。独立 IP 不等于真实 UV；响应体流量不含响应头、上传量或协议开销；UA 仅为启发式推断。未采集响应耗时。此处不修改日志保留期或 Nginx 配置。</p>
 				<table class="waf_table" style="width:100%;"><thead><tr><th style="width:180px;">项目</th><th>值</th></tr></thead><tbody id="website_stats_settings_table"><tr><td colspan="2" style="text-align:center;color:#999;padding:18px;">正在加载统计设置...</td></tr></tbody></table>
 			</div>
+		</div>
+		<div class="item_con" data-type="updates">
+			<div class="waf-page-title"><h3>插件更新</h3><p>自动检查不会自动安装；更新源、6 小时检查缓存及备份由后端管理。</p></div>
+			<div class="waf-notice-safe">安装前请自行备份配置、规则和站点数据。关闭页面只停止状态查询，不会中止已确认的服务器更新任务。页面不会自动刷新或跳转外部地址。</div>
+			<div class="waf-card">
+				<div class="waf-dashboard-head"><div><h4>版本检查</h4><p id="plugin_update_status" role="status">将在打开后 3 秒后台检查，不影响地图加载。</p></div><div><button type="button" id="plugin_update_check" class="btn btn-default btn-sm">检查更新</button> <button type="button" id="plugin_update_start" class="btn btn-success btn-sm" disabled>确认更新</button></div></div>
+				<table class="waf_table" style="width:100%"><tbody><tr><td>当前版本</td><td id="plugin_update_current">--</td></tr><tr><td>最新版本</td><td id="plugin_update_latest">--</td></tr><tr><td>发布类型</td><td id="plugin_update_prerelease">--</td></tr><tr><td>检查时间</td><td id="plugin_update_checked">--</td></tr></tbody></table>
+				<h4 style="margin-top:18px">发布说明（纯文本）</h4><pre id="plugin_update_notes" class="plugin_update_notes">尚未检查。</pre>
+			</div>
+			<div class="waf-card"><h4>最近更新任务</h4><p id="plugin_update_job">打开此页后查询最近任务。</p><p class="website_stats_meta">状态仅为后端报告，不代替业务验收；更新完成后请关闭并重新打开插件。</p></div>
 		</div>
 		<div class="item_con" data-type="notification">
 			<div class="waf-page-title">
@@ -1380,6 +1442,7 @@
 			this._generation = (this._generation || 0) + 1;
 			this.dispose_dashboard_charts();
 			this.stop_statistics_polling();
+			this.stop_plugin_update_status();
 			clearTimeout(this._shell_timer);
 			var timers = this._timers || [];
 			for(var t=0;t<timers.length;t++) clearTimeout(timers[t]);
@@ -1430,6 +1493,24 @@
 			this._map_model = null;
 			this._dashboard_asset_request = null;
 			this._dashboard_assets_loading = false;
+			this._statistics_page = 'overview';
+			this._statistics_report = null;
+			this._statistics_sample_pages = {};
+			this._update_check = null;
+			this._update_checking = false;
+			this._update_confirming = false;
+			this._update_starting = false;
+			this._update_busy = true;
+			this._update_status_known = false;
+			this._update_recovery_required = false;
+			this._update_expected_job = null;
+			this.init_statistics_samples();
+			this.select_statistics_page('overview');
+			$('#plugin_update_start').prop('disabled',true);
+			this._update_auto_timer = this.defer_panel(function(){
+				_this._update_auto_timer = null;
+				_this.check_plugin_update(false);
+			},3000);
 			if(typeof MutationObserver !== 'undefined'){
 				this._root_observer = new MutationObserver(function(){
 					if(!_this.$root[0].isConnected) _this.destroy();
@@ -1442,6 +1523,7 @@
 			$(window).off('resize.free_waf_panel').on('resize.free_waf_panel',function(){
 				_this.fit_panel_shell();
 				_this.resize_dashboard_charts();
+				if(_this._active_page === 'statistics' && _this._statistics_report) _this.render_statistics_trend(_this._statistics_report.trend,_this._statistics_report.window);
 			});
 			// 菜单跳转
 			$('.waf_left_menu li').off('click.free_waf').on('click.free_waf',function(){
@@ -1554,6 +1636,29 @@
 			_this.bind_panel_event('change', '#website_stats_days,#website_stats_site_filter', function(){
 				_this.render_website_statistics();
 			});
+			_this.bind_panel_event('click', '.website_stats_tab', function(){
+				_this.select_statistics_page($(this).attr('data-stats-page'));
+			});
+			_this.bind_panel_event('click', '.website_stats_site_link', function(){
+				var site = $(this).attr('data-site'), exists = false, select = $('#website_stats_site_filter');
+				select.find('option').each(function(){if($(this).val() === site) exists = true;});
+				if(!exists) select.append('<option value="'+waf_dashboard.text(site)+'">'+waf_dashboard.text(site)+'</option>');
+				select.val(site);
+				_this.render_website_statistics();
+			});
+			_this.bind_panel_event('input', '.website_stats_sample_filter', function(){
+				_this.render_statistics_samples($(this).attr('data-sample'),0);
+			});
+			_this.bind_panel_event('click', '.website_stats_sample_prev', function(){
+				var kind = $(this).attr('data-sample');
+				_this.render_statistics_samples(kind,(_this._statistics_sample_pages[kind] || 0)-1);
+			});
+			_this.bind_panel_event('click', '.website_stats_sample_next', function(){
+				var kind = $(this).attr('data-sample');
+				_this.render_statistics_samples(kind,(_this._statistics_sample_pages[kind] || 0)+1);
+			});
+			_this.bind_panel_event('click', '#plugin_update_check', function(){_this.check_plugin_update(true);});
+			_this.bind_panel_event('click', '#plugin_update_start', function(){_this.confirm_plugin_update();});
 			_this.bind_panel_event('click', '#site_detail_add_url_rule', function(){
 				if(!_this.current_site_name){
 					layer.msg('请先选择站点',{icon:2});
@@ -2134,6 +2239,7 @@
 		refresh_data_total:function(type){
 			var _this = this;
 			if(this._active_page === 'statistics' && type !== 'statistics') this.stop_statistics_polling();
+			if(this._active_page === 'updates' && type !== 'updates') this.stop_plugin_update_status();
 			if(type !== 'home'){
 				this.expand_attack_map(false);
 				this.dispose_dashboard_charts();
@@ -2397,6 +2503,9 @@
 				case 'statistics':
 					this.render_website_statistics();
 				break;
+				case 'updates':
+					this.poll_plugin_update_status();
+					break;
 				case 'notification':
 					this.render_defense_notifications();
 				break;
@@ -5627,6 +5736,303 @@
 			if(bytes >= 1024) return (bytes / 1024).toFixed(2) + ' KB';
 			return bytes + ' B';
 		},
+		update_panel_alive:function(){
+			return !this._destroyed && this.$root && this.$root[0].isConnected;
+		},
+		update_start_button:function(){
+			var check = this._update_check;
+			$('#plugin_update_start').prop('disabled',!check || check.status !== true || check.error || check.available !== true || !check.tag || !this._update_status_known || this._update_busy || this._update_recovery_required || this._update_checking || this._update_starting || this._update_confirming);
+		},
+		clear_update_timer:function(name){
+			clearTimeout(this[name]);
+			var index = (this._timers || []).indexOf(this[name]);
+			if(index !== -1) this._timers.splice(index,1);
+			this[name] = null;
+		},
+		check_plugin_update:function(force){
+			if(!this.update_panel_alive() || this._update_checking || this._update_starting || this._update_confirming) return;
+			this.clear_update_timer('_update_auto_timer');
+			var _this = this;
+			this._update_checking = true;
+			this._update_check = null;
+			this.update_start_button();
+			$('#plugin_update_check').prop('disabled',true);
+			$('#plugin_update_status').text('正在后台检查版本，不会自动安装。').css('color','#667085');
+			this._update_check_request = this.http({method:'check_plugin_update',type:'POST',data:{force:force ? 'true' : 'false'},load:2,msg:false,check:true,
+				success:function(res){
+					res = res || {};
+					$('#plugin_update_current').text(res.current_version || '--');
+					$('#plugin_update_latest').text(res.latest_version || '--');
+					$('#plugin_update_prerelease').text(res.prerelease === true ? '预发布版本，请谨慎安装' : res.prerelease === false ? '正式版本' : '未提供');
+					var checked = res.checked_at;
+					if(typeof checked === 'number' && isFinite(checked)) checked = new Date(checked*1000).toLocaleString('zh-CN',{hour12:false})+'（浏览器本地时间）';
+					$('#plugin_update_checked').text((checked || '未提供')+(res.cached ? '（后端缓存，最长 6 小时）' : ''));
+					$('#plugin_update_notes').text(res.notes == null ? '未提供发布说明。' : res.notes);
+					if(res.status !== true || res.error){
+						$('#plugin_update_status').text('版本检查失败：'+(res.error || res.msg || '返回结果不可用')+'；请重试。').css('color','#d92d20');
+						return;
+					}
+					_this._update_check = res;
+					$('#plugin_update_status').text(_this._update_recovery_required ? '服务器任务需要人工恢复，已禁止再次安装；请检查最近任务与备份。' : res.available ? '发现可用更新；请阅读说明并备份后确认安装。' : '当前没有可用更新。').css('color',_this._update_recovery_required ? '#d92d20' : '#667085');
+				},
+				error:function(xhr,message){$('#plugin_update_status').text('版本检查失败：'+message).css('color','#d92d20');},
+				complete:function(){
+					_this._update_check_request = null;
+					_this._update_checking = false;
+					$('#plugin_update_check').prop('disabled',false);
+					_this.update_start_button();
+					if(_this._active_page === 'updates' && !_this._update_status_known && !_this._update_status_request && !_this._update_status_timer) _this.poll_plugin_update_status();
+				}
+			});
+		},
+		stop_plugin_update_status:function(){
+			this.clear_update_timer('_update_status_timer');
+			this.clear_update_timer('_update_deadline_timer');
+			this._update_status_sequence = (this._update_status_sequence || 0)+1;
+			this._update_confirming = false;
+			this._update_status_known = false;
+			var pending = this._update_status_request;
+			this._update_status_request = null;
+			if(pending) pending.abort();
+			this.update_start_button();
+		},
+		expire_plugin_update_status:function(){
+			this.stop_plugin_update_status();
+			$('#plugin_update_status').text('已达 5 分钟，暂停状态查询；服务器任务不会取消。请重新打开更新页查询，勿重复安装。').css('color','#b54708');
+		},
+		poll_plugin_update_status:function(poll){
+			if(!this.update_panel_alive() || this._active_page !== 'updates') return;
+			if(!poll){
+				this.stop_plugin_update_status();
+				this._update_poll_started = Date.now();
+				this._update_poll_attempts = 0;
+				var owner = this;
+				this._update_deadline_timer = this.defer_panel(function(){owner.expire_plugin_update_status();},300000);
+			}
+			this._update_status_timer = null;
+			if(Date.now()-this._update_poll_started >= 300000 || this._update_poll_attempts >= 151){
+				this.expire_plugin_update_status();
+				return;
+			}
+			var _this = this, sequence = this._update_status_sequence;
+			this._update_poll_attempts++;
+			function current(){return _this.update_panel_alive() && _this._active_page === 'updates' && sequence === _this._update_status_sequence;}
+			function again(){_this._update_status_timer = _this.defer_panel(function(){if(current()) _this.poll_plugin_update_status(true);},2000);}
+			this._update_status_request = this.http({method:'get_plugin_update_status',type:'POST',data:{},load:2,msg:false,check:true,
+				success:function(res){
+					if(!current()) return;
+					if(!res || res.status !== true || res.error){
+						_this.clear_update_timer('_update_deadline_timer');
+						_this._update_status_known = false;
+						$('#plugin_update_status').text('更新状态查询失败：'+(res && (res.error || res.msg) || '返回结果不可用')+'；服务器任务可能仍在运行，请重新打开更新页查询。').css('color','#d92d20');
+						return;
+					}
+					var job = res.job;
+					var recoveryRequired = job && (job.state === 'recovery_required' || job.rollback && job.rollback.state === 'failed');
+					if(_this._update_expected_job && (!job || job.id !== _this._update_expected_job) && !recoveryRequired){
+						_this._update_status_known = false;
+						_this._update_busy = true;
+						$('#plugin_update_status').text('等待已提交任务 '+_this._update_expected_job+' 的状态，当前返回的不是该任务；请勿重复安装。').css('color','#b54708');
+						again();
+						return;
+					}
+					_this._update_status_known = true;
+					if(!job){
+						_this.clear_update_timer('_update_deadline_timer');
+						_this._update_busy = false;
+						_this._update_recovery_required = false;
+						$('#plugin_update_job').text('暂无更新任务。');
+						return;
+					}
+					var rollback = job.rollback == null ? '未提供' : typeof job.rollback === 'object' ? JSON.stringify(job.rollback) : String(job.rollback);
+					$('#plugin_update_job').text('任务：'+(job.id || '--')+'\n目标版本：'+(job.target_version || '--')+'\n状态：'+(job.state || '未知')+'；阶段：'+(job.stage || '--')+'\n消息：'+(job.message || '')+'\n回退：'+rollback+(job.error ? '\n错误：'+job.error : '')+(job.error_code ? '\n错误码：'+job.error_code : '')+(job.failure_stage ? '\n失败阶段：'+job.failure_stage : '')+(job.notes ? '\n说明：'+job.notes : ''));
+					var state = job.state, success = state === 'succeeded' || state === 'success';
+					_this._update_recovery_required = state === 'recovery_required' || !!(job.rollback && job.rollback.state === 'failed');
+					var failure = ['failed','error','rolled_back','rollback_failed','cancelled'].indexOf(state) !== -1 || !!job.error || _this._update_recovery_required;
+					if(success || failure){
+						_this.clear_update_timer('_update_deadline_timer');
+						_this._update_busy = _this._update_recovery_required;
+						_this._update_expected_job = null;
+						_this._update_check = null;
+						$('#plugin_update_status').text(_this._update_recovery_required ? '更新失败或恢复未完成，需要人工检查任务进程、备份、文件与回退结果；已停止自动查询并禁止再次安装。' : success && !failure ? '更新成功（后端报告）；请关闭并重新打开插件，再核验业务。' : '更新失败，请人工检查最近任务与回退结果；确认恢复后再检查版本，勿直接重复安装。').css('color',success && !failure ? '#027a48' : '#d92d20');
+						return;
+					}
+					_this._update_busy = true;
+					$('#plugin_update_status').text((state === 'queued' ? '更新任务已排队，等待执行' : '更新任务进行中或状态尚未确认')+'；关闭页面只停止查询，不会停止服务器任务。').css('color','#b54708');
+					again();
+				},
+				error:function(xhr,message){
+					if(!current()) return;
+					_this.clear_update_timer('_update_deadline_timer');
+					_this._update_status_known = false;
+					$('#plugin_update_status').text('更新状态查询失败：'+message+'；请重新打开更新页查询，服务器任务可能仍在运行。').css('color','#d92d20');
+				},
+				complete:function(){if(current()){_this._update_status_request = null; _this.update_start_button();}}
+			});
+		},
+		confirm_plugin_update:function(){
+			var _this = this, check = this._update_check, owner = this._generation, sequence = this._update_status_sequence;
+			if(!this.update_panel_alive() || this._active_page !== 'updates' || !check || check.status !== true || check.error || check.available !== true || !check.tag || !this._update_status_known || this._update_busy || this._update_recovery_required || this._update_checking || this._update_starting || this._update_confirming) return;
+			this._update_confirming = true;
+			this.update_start_button();
+			function cancel(){
+				if(owner !== _this._generation) return;
+				_this._update_confirming = false;
+				_this.update_start_button();
+			}
+			layer.confirm('确认更新至 '+waf_dashboard.text(check.latest_version || check.tag)+'？'+(check.prerelease ? '这是预发布版本，可能不稳定。' : '')+'请先自行备份配置、规则和站点数据；后端代码备份不能代替完整备份。失败可能需要人工恢复。关闭页面不会取消已确认的服务器任务。',
+				{title:'确认插件更新',icon:3,btn:['已备份，确认更新','取消'],cancel:cancel,end:cancel},function(index){
+					if(!_this.update_panel_alive() || owner !== _this._generation || sequence !== _this._update_status_sequence || _this._active_page !== 'updates' || !_this._update_confirming || _this._update_check !== check || _this._update_busy) return;
+					_this._update_confirming = false;
+					_this._update_starting = true;
+					_this._update_busy = true;
+					_this.update_start_button();
+					layer.close(index);
+					$('#plugin_update_status').text('正在提交更新任务，请勿重复操作。').css('color','#b54708');
+					_this.http({method:'start_plugin_update',type:'POST',data:{tag:check.tag},load:2,msg:false,check:true,
+						success:function(res){
+							if(!res || res.status !== true || res.error || !res.job_id){
+								_this._update_status_known = false;
+								_this._update_check = null;
+								if(res && res.notes != null) $('#plugin_update_notes').text(res.notes);
+								$('#plugin_update_status').text('更新启动失败：'+(res && (res.error || res.msg) || '未返回任务编号')+'；请重新打开更新页确认服务器状态。').css('color','#d92d20');
+								return;
+							}
+							$('#plugin_update_job').text('任务：'+res.job_id+'；已提交，等待状态。');
+							_this._update_expected_job = res.job_id;
+							if(_this._active_page === 'updates') _this.poll_plugin_update_status();
+						},
+						error:function(xhr,message){
+							_this._update_status_known = false;
+							_this._update_check = null;
+							$('#plugin_update_status').text('更新提交结果未知：'+message+'；请重新打开更新页确认服务器状态，勿重复安装。').css('color','#d92d20');
+						},
+						complete:function(){_this._update_starting = false; _this.update_start_button();}
+					});
+				},cancel);
+		},
+		select_statistics_page:function(page){
+			if(['overview','sites','spiders','clients','access','errors','settings'].indexOf(page) === -1) return;
+			this._statistics_page = page;
+			this.$root.find('.website_stats_tab').removeClass('active').attr('aria-selected','false');
+			this.$root.find('.website_stats_tab[data-stats-page="'+page+'"]').addClass('active').attr('aria-selected','true');
+			this.$root.find('.website_stats_panel').removeClass('active');
+			this.$root.find('.website_stats_panel[data-stats-panel="'+page+'"]').addClass('active');
+			if(page === 'overview' && this._statistics_report) this.render_statistics_trend(this._statistics_report.trend,this._statistics_report.window);
+		},
+		init_statistics_samples:function(){
+			var _this = this;
+			['access','http_error','error'].forEach(function(kind){
+				var fields = kind === 'error' ? [['ip','客户端 IP 包含'],['uri','诊断原文包含']] : [['method','方法包含'],['status','状态码包含'],['ip','IP 包含'],['uri','URI 包含']];
+				var controls = fields.map(function(field){
+					return '<label>'+field[1]+'<input type="text" id="website_stats_'+kind+'_'+field[0]+'" class="website_stats_sample_filter" data-sample="'+kind+'" autocomplete="off"></label>';
+				}).join('');
+				_this.$root.find('#website_stats_'+kind+'_controls').html('<div class="website_stats_sample_controls">'+controls+'</div>');
+				_this.$root.find('#website_stats_'+kind+'_pager').html('<button type="button" id="website_stats_'+kind+'_prev" class="btn btn-default btn-sm website_stats_sample_prev" data-sample="'+kind+'">上一页</button><span id="website_stats_'+kind+'_page_info"></span><button type="button" id="website_stats_'+kind+'_next" class="btn btn-default btn-sm website_stats_sample_next" data-sample="'+kind+'">下一页</button>');
+			});
+		},
+		statistics_table:function(id,rows,fields){
+			var esc = waf_dashboard.text;
+			var html = (Array.isArray(rows) ? rows : []).map(function(row){
+				return '<tr>'+fields.map(function(field){return '<td>'+esc((row || {})[field] == null ? '--' : row[field])+'</td>';}).join('')+'</tr>';
+			}).join('');
+			this.$root.find('#website_stats_'+id+'_table').html(html || '<tr><td colspan="'+fields.length+'">暂无数据或报告未提供。</td></tr>');
+		},
+		render_statistics_trend:function(rows,windowInfo){
+			if(!Array.isArray(rows) || !rows.length){
+				$('#website_stats_trend').html('<p class="website_stats_meta">报告未提供趋势数据，不能由最近样本补算。</p>');
+				return;
+			}
+			var esc = waf_dashboard.text, count = waf_dashboard.count;
+			rows = rows.slice(0,1000);
+			var canvas = $('#website_stats_trend')[0], width = Math.max(240,Math.min(1200,canvas && canvas.clientWidth || 900)), right = width-20, plotWidth = right-60;
+			function timestamp(value){return typeof value === 'number' ? (value < 1000000000000 ? value*1000 : value) : Date.parse(value);}
+			var end = windowInfo && windowInfo.end != null ? timestamp(windowInfo.end) : NaN;
+			function observed(row){
+				return row && row.future !== true && row.observed !== false && row.requests != null && !(isFinite(end) && timestamp(row.time) > end);
+			}
+			var max = Math.max.apply(null,rows.map(function(row){return observed(row) ? count(row.requests) : 0;}));
+			var points = [], lines = '', circles = '', labels = '', step = Math.max(1,Math.ceil(rows.length/Math.max(2,Math.floor(plotWidth/90))));
+			function finishLine(){if(points.length) lines += '<polyline points="'+points.join(' ')+'" fill="none" stroke="#369775" stroke-width="2"/>'; points = [];}
+			rows.forEach(function(row,i){
+				row = row || {};
+				var x = rows.length === 1 ? (60+right)/2 : 60 + i*plotWidth/(rows.length-1), y = 210 - count(row.requests)*170/(max || 1);
+				var label = row.label == null ? (row.time == null ? '' : row.time) : row.label;
+				if(observed(row)){
+					points.push(x.toFixed(2)+','+y.toFixed(2));
+					circles += '<circle cx="'+x.toFixed(2)+'" cy="'+y.toFixed(2)+'" r="3" fill="#369775"><title>'+esc(label)+' · 请求 '+count(row.requests)+' · 独立 IP '+count(row.clients)+' · 响应体字节 '+count(row.bytes)+' · 错误 '+count(row.errors)+'</title></circle>';
+				}else finishLine();
+				if(i%step === 0 || i === rows.length-1) labels += '<text x="'+x.toFixed(2)+'" y="238" text-anchor="'+(i === 0?'start':i === rows.length-1?'end':'middle')+'" font-size="11" fill="#667085">'+esc(label)+'</text>';
+			});
+			finishLine();
+			$('#website_stats_trend').html('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 '+width+' 255" role="img" aria-label="按报告时间桶展示的请求趋势"><title>请求趋势，纵轴从零开始；未来或未观测时段留空</title><path d="M60 35V210H'+right+'" fill="none" stroke="#d0d5dd"/><text x="52" y="44" text-anchor="end" font-size="11" fill="#667085">'+max+'</text><text x="52" y="214" text-anchor="end" font-size="11" fill="#667085">0</text>'+lines+circles+labels+'</svg>');
+		},
+		render_statistics_report:function(res){
+			var _this = this, esc = waf_dashboard.text, count = waf_dashboard.count, summary = res.summary || {};
+			this._statistics_report = res;
+			$('#website_stats_requests').text(this.addThousands(count(summary.total_requests)));
+			$('#website_stats_clients').text(this.addThousands(count(summary.unique_clients)));
+			$('#website_stats_bytes').text(this.format_bytes(count(summary.total_bytes)));
+			$('#website_stats_errors').text(this.addThousands(count(summary.error_requests)));
+			$('#website_stats_spiders').text(this.addThousands(count(summary.spider_requests)));
+			['4xx','5xx'].forEach(function(suffix){
+				var value = summary['errors_'+suffix];
+				if(value == null) value = summary['errors'+suffix];
+				$('#website_stats_errors'+suffix).text(value == null ? '--' : _this.addThousands(count(value)));
+			});
+			this.render_statistics_trend(res.trend,res.window);
+			var coverage = res.coverage, windowInfo = res.window;
+			var reasonCodes = coverage && Array.isArray(coverage.reasons) ? coverage.reasons : [];
+			var partial = !coverage || coverage.partial || coverage.complete !== true || reasonCodes.indexOf('tail_sampling') !== -1;
+			var reasons = reasonCodes.map(function(reason){return reason === 'tail_sampling' ? '大日志仅分析末尾样本，不能视为完整统计' : reason;}).join('、');
+			$('#website_stats_coverage').text(coverage ?
+				(partial ? '部分覆盖或完整性未确认' : '报告覆盖完整（限声明范围）')+'；'+(coverage.notice || '')+'；原因：'+(reasons || '无')+'；扫描文件 '+count(coverage.files_scanned)+'；无效行 '+count(coverage.invalid_lines)+'；读取 '+this.format_bytes(count(coverage.bytes_read)) :
+				'旧报告未提供覆盖信息，不能确认完整性。').css('color',partial ? '#b54708' : '#667085');
+			$('#website_stats_window').text(windowInfo ? '统计窗口：'+(windowInfo.start == null?'未提供':windowInfo.start)+' 至 '+(windowInfo.end == null?'未提供':windowInfo.end)+'；时区：'+(windowInfo.timezone || '未提供') : '旧报告未提供时间窗口与时区；今日以服务器本地自然日为准。');
+			var sites = (Array.isArray(res.sites) ? res.sites : []).map(function(row){
+				return '<tr><td><button type="button" class="btlink website_stats_site_link" data-site="'+esc(row.site)+'">'+esc(row.site)+'</button></td><td>'+count(row.requests)+'</td><td>'+count(row.clients)+'</td><td>'+_this.format_bytes(count(row.bytes))+'</td><td>'+count(row.errors)+'</td></tr>';
+			}).join('');
+			$('#website_stats_site_table').html(sites || '<tr><td colspan="5">暂无站点统计。</td></tr>');
+			this.statistics_table('spider',res.spiders,['spider','count']);
+			this.statistics_table('client',res.clients,['ip','count']);
+			this.statistics_table('status',res.status_codes,['status','count']);
+			this.statistics_table('top_uri',res.top_uris,['uri','count']);
+			this.statistics_table('referer',res.referers,['referer','count']);
+			this.statistics_table('common_ip',res.common_clients,['ip','sites','count']);
+			this.statistics_table('settings',res.settings,['key','value']);
+			this.statistics_table('browser',res.browsers,['name','count']);
+			this.statistics_table('os',res.operating_systems,['name','count']);
+			this.statistics_table('device',res.devices,['name','count']);
+			['access','http_error','error'].forEach(function(kind){_this.render_statistics_samples(kind);});
+		},
+		render_statistics_samples:function(kind,page){
+			if(['access','http_error','error'].indexOf(kind) === -1) return;
+			var esc = waf_dashboard.text, res = this._statistics_report || {}, diagnostic = kind === 'error';
+			var schema2 = Number(res.schema_version) >= 2;
+			var rows = diagnostic ? (schema2 ? res.server_errors : res.recent_errors) : kind === 'http_error' && schema2 ? res.recent_errors : res.recent_access;
+			rows = Array.isArray(rows) ? rows.slice(0,diagnostic || kind === 'http_error' && schema2 ? 120 : 80) : [];
+			var filters = {};
+			(diagnostic ? ['ip','uri'] : ['method','status','ip','uri']).forEach(function(key){filters[key] = String($('#website_stats_'+kind+'_'+key).val() || '').toLowerCase();});
+			rows = rows.filter(function(row){
+				if(!row || kind === 'http_error' && Number(row.status) < 400) return false;
+				if(kind === 'http_error' && !isFinite(Number(row.status))) return false;
+				return Object.keys(filters).every(function(key){
+					var value = diagnostic ? (key === 'ip' ? row.client : row.raw) : row[key];
+					return String(value == null ? '' : value).toLowerCase().indexOf(filters[key]) !== -1;
+				});
+			});
+			var pages = Math.max(1,Math.ceil(rows.length/20));
+			page = Math.max(0,Math.min(pages-1,page == null ? this._statistics_sample_pages[kind] || 0 : page));
+			this._statistics_sample_pages[kind] = page;
+			var _this = this, html = rows.slice(page*20,page*20+20).map(function(row){
+				var values = diagnostic ? [row.time,row.site,row.level,row.client,row.raw] : [row.time,row.site,row.ip,row.method,row.uri,row.status,_this.format_bytes(waf_dashboard.count(row.bytes))];
+				return '<tr title="'+esc(row.raw)+'">'+values.map(function(value){return '<td style="overflow-wrap:anywhere">'+esc(value == null ? '--' : value)+'</td>';}).join('')+'</tr>';
+			}).join('');
+			$('#website_stats_'+kind+'_table').html(html || '<tr><td colspan="'+(diagnostic?5:7)+'">当前样本无匹配记录。</td></tr>');
+			$('#website_stats_'+kind+'_page_info').text('样本匹配 '+rows.length+' 条 · 第 '+(page+1)+' / '+pages+' 页 · 每页 20 条');
+			$('#website_stats_'+kind+'_prev').prop('disabled',page === 0);
+			$('#website_stats_'+kind+'_next').prop('disabled',page >= pages-1);
+		},
 		statistics_is_active:function(){
 			return !this._destroyed && this._active_page === 'statistics' && this.$root && this.$root.length && this.$root[0].isConnected;
 		},
@@ -5662,12 +6068,20 @@
 				this._statistics_key = key;
 				this._statistics_has_summary = false;
 				this._statistics_checked_at = '';
+				this._statistics_report = null;
+				this._statistics_sample_pages = {};
+				$('#website_stats_trend').html('等待当前范围的趋势数据。');
+				$('#website_stats_coverage').text('等待当前范围的覆盖说明。');
+				$('#website_stats_window').text('等待当前范围的时间窗口。');
+				$('#website_stats_errors4xx,#website_stats_errors5xx').text('--');
 				$('#website_stats_requests,#website_stats_clients,#website_stats_bytes,#website_stats_errors,#website_stats_spiders').text('--');
-				var tables = {site:4,spider:2,client:2,status:2,top_uri:2,referer:2,common_ip:3,access:6,error:5,settings:2};
+				var tables = {site:5,spider:2,client:2,status:2,top_uri:2,referer:2,common_ip:3,access:7,http_error:7,error:5,settings:2,browser:2,os:2,device:2};
 				for(var table in tables) $('#website_stats_'+table+'_table').html('<tr><td colspan="'+tables[table]+'" style="text-align:center;color:#999;padding:18px;">等待后台统计...</td></tr>');
+				['access','http_error','error'].forEach(function(kind){_this.render_statistics_samples(kind,0);});
 			}
+			var period = String(days) === '1' ? '今日（服务器本地自然日）' : '近'+days+'个自然日（含今日）';
 			$('#website_stats_refresh').prop('disabled', true);
-			$('#website_stats_status').text('近'+days+'日 · 正在查询'+(this._statistics_has_summary?'（保留上次数据）':'...')).css('color','#667085');
+			$('#website_stats_status').text(period+' · 正在查询'+(this._statistics_has_summary?'（保留上次数据）':'...')).css('color','#667085');
 			this._statistics_request = _this.get_website_statistics_summary({days:days,line_limit:800,siteName:siteName,force:options.force === true && !options.poll},function(res){
 				if(!_this.statistics_is_active() || sequence !== _this._statistics_sequence) return;
 				if(!res){
@@ -5678,102 +6092,20 @@
 				var currentSite = siteName, optionRows = res.site_options, optionHtml = '<option value="">全部站点</option>', hasCurrentSite = currentSite === '';
 				for(var opt=0;opt<optionRows.length;opt++){
 					var optItem = optionRows[opt] || {};
-					optItem.site = optItem.site || '';
 					if(optItem.site === currentSite) hasCurrentSite = true;
-					optionHtml += '<option value="'+_this.escapeHTML(optItem.site)+'" '+(optItem.site === currentSite?'selected':'')+'>'+_this.escapeHTML(optItem.site)+'</option>';
+					optionHtml += '<option value="'+waf_dashboard.text(optItem.site)+'" '+(optItem.site === currentSite?'selected':'')+'>'+waf_dashboard.text(optItem.site)+'</option>';
 				}
 				if(!hasCurrentSite && currentSite){
-					optionHtml += '<option value="'+_this.escapeHTML(currentSite)+'" selected>'+_this.escapeHTML(currentSite)+'</option>';
+					optionHtml += '<option value="'+waf_dashboard.text(currentSite)+'" selected>'+waf_dashboard.text(currentSite)+'</option>';
 				}
 				$('#website_stats_site_filter').html(optionHtml);
 				}
 				if(res.summary){
-				_this._statistics_has_summary = true;
-				_this._statistics_checked_at = res.checked_at || '';
-				$('#website_stats_requests').text(_this.addThousands(res.summary.total_requests || 0));
-				$('#website_stats_clients').text(_this.addThousands(res.summary.unique_clients || 0));
-				$('#website_stats_bytes').text(_this.format_bytes(res.summary.total_bytes || 0));
-				$('#website_stats_errors').text(_this.addThousands(res.summary.error_requests || 0));
-				$('#website_stats_spiders').text(_this.addThousands(res.summary.spider_requests || 0));
-				$('#website_stats_status').text('更新于 '+_this.escapeHTML(res.checked_at || '')).css('color','#027a48');
-				var rows = res.sites || [], html = '';
-				for(var i=0;i<rows.length;i++){
-					var item = rows[i] || {};
-					item.site = item.site || '';
-					html += '<tr><td>'+_this.escapeHTML(item.site)+'</td><td>'+ (item.requests || 0) +'</td><td>'+ (item.clients || 0) +'</td><td>'+ (item.errors || 0) +'</td></tr>';
+					_this._statistics_has_summary = true;
+					_this._statistics_checked_at = res.checked_at || '';
+					_this.render_statistics_report(res);
 				}
-				$('#website_stats_site_table').html(html || '<tr><td colspan="4" style="text-align:center;color:#999;padding:18px;">暂无站点统计。</td></tr>');
-				rows = res.spiders || []; html = '';
-				for(var s=0;s<rows.length;s++){
-					var item = rows[s] || {};
-					item.spider = item.spider || '';
-					html += '<tr><td>'+_this.escapeHTML(item.spider)+'</td><td>'+ (item.count || 0) +'</td></tr>';
-				}
-				$('#website_stats_spider_table').html(html || '<tr><td colspan="2" style="text-align:center;color:#999;padding:18px;">暂无蜘蛛访问。</td></tr>');
-				rows = res.clients || []; html = '';
-				for(var c=0;c<rows.length && c<20;c++){
-					var item = rows[c] || {};
-					item.ip = item.ip || '';
-					html += '<tr><td>'+_this.escapeHTML(item.ip)+'</td><td>'+ (item.count || 0) +'</td></tr>';
-				}
-				$('#website_stats_client_table').html(html || '<tr><td colspan="2" style="text-align:center;color:#999;padding:18px;">暂无访客统计。</td></tr>');
-				rows = res.status_codes || []; html = '';
-				for(var sc=0;sc<rows.length;sc++){
-					var item = rows[sc] || {};
-					item.status = item.status || '';
-					html += '<tr><td>'+_this.escapeHTML(item.status)+'</td><td>'+ (item.count || 0) +'</td></tr>';
-				}
-				$('#website_stats_status_table').html(html || '<tr><td colspan="2" style="text-align:center;color:#999;padding:18px;">暂无状态码统计。</td></tr>');
-				rows = res.top_uris || []; html = '';
-				for(var u=0;u<rows.length && u<20;u++){
-					var item = rows[u] || {};
-					item.uri = item.uri || '';
-					html += '<tr><td><div style="word-break:break-all;font-family:monospace;font-size:12px;">'+_this.escapeHTML(item.uri)+'</div></td><td>'+ (item.count || 0) +'</td></tr>';
-				}
-				$('#website_stats_top_uri_table').html(html || '<tr><td colspan="2" style="text-align:center;color:#999;padding:18px;">暂无 TOP URL。</td></tr>');
-				rows = res.referers || []; html = '';
-				for(var r=0;r<rows.length && r<20;r++){
-					var item = rows[r] || {};
-					item.referer = item.referer || '';
-					html += '<tr><td><div style="word-break:break-all;font-family:monospace;font-size:12px;">'+_this.escapeHTML(item.referer)+'</div></td><td>'+ (item.count || 0) +'</td></tr>';
-				}
-				$('#website_stats_referer_table').html(html || '<tr><td colspan="2" style="text-align:center;color:#999;padding:18px;">暂无来源统计。</td></tr>');
-				rows = res.common_clients || []; html = '';
-				for(var cc=0;cc<rows.length && cc<20;cc++){
-					var item = rows[cc] || {};
-					item.ip = item.ip || '';
-					item.sites = item.sites || '';
-					html += '<tr><td>'+_this.escapeHTML(item.ip)+'</td><td>'+_this.escapeHTML(item.sites)+'</td><td>'+ (item.count || 0) +'</td></tr>';
-				}
-				$('#website_stats_common_ip_table').html(html || '<tr><td colspan="3" style="text-align:center;color:#999;padding:18px;">暂无公共访客 IP。</td></tr>');
-				rows = res.recent_access || []; html = '';
-				for(var a=0;a<rows.length && a<50;a++){
-					var item = rows[a] || {};
-					item.site = item.site || '';
-					item.ip = item.ip || '';
-					item.uri = item.uri || '';
-					item.raw = item.raw || '';
-					html += '<tr title="'+_this.escapeHTML(item.raw)+'"><td>'+_this.escapeHTML(item.time || '')+'</td><td>'+_this.escapeHTML(item.site)+'</td><td>'+_this.escapeHTML(item.ip)+'</td><td><div style="word-break:break-all;font-family:monospace;font-size:12px;">'+_this.escapeHTML(item.uri)+'</div></td><td>'+_this.escapeHTML(item.status || '')+'</td><td>'+_this.format_bytes(item.bytes || 0)+'</td></tr>';
-				}
-				$('#website_stats_access_table').html(html || '<tr><td colspan="6" style="text-align:center;color:#999;padding:18px;">暂无访问日志。</td></tr>');
-				rows = res.recent_errors || []; html = '';
-				for(var e=0;e<rows.length && e<80;e++){
-					var item = rows[e] || {};
-					item.site = item.site || '';
-					item.raw = item.raw || '';
-					html += '<tr><td>'+_this.escapeHTML(item.time || '')+'</td><td>'+_this.escapeHTML(item.site)+'</td><td>'+_this.escapeHTML(item.level || '')+'</td><td>'+_this.escapeHTML(item.client || '')+'</td><td><div style="word-break:break-all;font-family:monospace;font-size:12px;">'+_this.escapeHTML(item.raw)+'</div></td></tr>';
-				}
-				$('#website_stats_error_table').html(html || '<tr><td colspan="5" style="text-align:center;color:#999;padding:18px;">暂无错误日志。</td></tr>');
-				rows = res.settings || []; html = '';
-				for(var st=0;st<rows.length;st++){
-					var item = rows[st] || {};
-					item.key = item.key || '';
-					item.value = item.value || '';
-					html += '<tr><td>'+_this.escapeHTML(item.key)+'</td><td>'+_this.escapeHTML(item.value)+'</td></tr>';
-				}
-				$('#website_stats_settings_table').html(html || '<tr><td colspan="2" style="text-align:center;color:#999;padding:18px;">暂无统计设置。</td></tr>');
-				}
-				var statusText = '近'+days+'日 · '+(_this._statistics_has_summary ? '数据生成于 '+_this._statistics_checked_at : '尚无缓存');
+				var statusText = period+' · '+(_this._statistics_has_summary ? '数据生成于 '+_this._statistics_checked_at : '尚无缓存');
 				if(res.error){
 					$('#website_stats_status').text(statusText+'；上次生成失败：'+res.error+'，请点击刷新重试').css('color','#d92d20');
 				}else if(res.loading){

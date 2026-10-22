@@ -93,7 +93,7 @@ try:
         target = plugin / 'install-status.json'
         if target.is_symlink():
             raise ValueError('安装状态文件路径不安全')
-        data = dict(product='aapanel GPT Firewall', version='0.1', plugin_name='free_waf',
+        data = dict(product='aapanel GPT Firewall', version='0.1.1', plugin_name='free_waf',
                     status=outcome, operation=operation, stage=stage, message=message,
                     runtime_changed=changed == 'true', waf_active=loaded == 'true',
                     rollback=rollback, runtime_backup=backup or None,
@@ -121,11 +121,12 @@ try:
             runtime = mapped('/www/server/free_waf')
             if runtime.is_symlink() or not runtime.is_dir():
                 raise ValueError('需要完整的既有运行目录，不支持首次安装')
-            for name in ('init.lua', 'free_waf_main.py', 'report_store.py', 'ban_store.py', 'index.html', 'info.json', 'rule.json'):
+            for name in ('init.lua', 'free_waf_main.py', 'report_store.py', 'ban_store.py',
+                         'website_statistics.py', 'update_service.py', 'index.html', 'info.json', 'rule.json'):
                 file(plugin / name)
             info = load(plugin / 'info.json', dict)
-            if info.get('name') != 'free_waf' or info.get('versions') != '0.1':
-                raise ValueError('需要内部标识为 free_waf、版本为 0.1 的兼容升级包')
+            if info.get('name') != 'free_waf' or info.get('versions') != '0.1.1':
+                raise ValueError('需要内部标识为 free_waf、版本为 0.1.1 的兼容升级包')
             load(plugin / 'rule.json', list)
             for name in ('init.lua', 'waf.lua', 'drop_ip.log'):
                 path = runtime / name
