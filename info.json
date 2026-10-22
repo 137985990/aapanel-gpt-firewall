@@ -1,0 +1,15 @@
+{
+	"title":"aapanel GPT Firewall",
+	"tip":"lib",
+	"name":"free_waf",
+	"type":"System Tools",
+	"ps":"网站应用防火墙 · 社区兼容升级版",
+	"versions":"0.1",
+	"shell":"free_waf.sh",
+	"checks":"/www/server/panel/plugin/free_waf",
+	"author":"民国三年一场雨",
+	"home":"民国三年一场雨",
+	"date":"2026-10-22",
+	"default":false,
+	"display":0
+}
