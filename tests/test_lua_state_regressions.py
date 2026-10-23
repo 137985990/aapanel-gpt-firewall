@@ -69,6 +69,9 @@ class LuaStateRegressionsTest(unittest.TestCase):
     def test_full_runtime_routes(self):
         self.run_fixture("audit_runtime_routes.lua")
 
+    def test_endpoint_policy(self):
+        self.run_fixture("audit_endpoint_policy.lua")
+
 
 if __name__ == "__main__":
     unittest.main()

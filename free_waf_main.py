@@ -60,6 +60,44 @@ BROAD_UA_TOKENS = [
 ]
 
 class free_waf_main:
+    SCAN_MAX_DEPTH = 16
+    SCAN_MAX_FILES = 1000
+    SCAN_MAX_ENTRIES = 10000
+    SCAN_MAX_FILE_BYTES = 1024 * 1024
+    SCAN_MAX_TOTAL_BYTES = 16 * 1024 * 1024
+    SCAN_REGEX_SECONDS = 2
+    SCAN_MAX_RULES = 1000
+    SCAN_MAX_RULE_BYTES = 4096
+    SCAN_MAX_MATCHES = 1000
+    SCAN_MAX_WORKER_OUTPUT = 32768
+    # Fixed stdlib-only worker: private contents enter through stdin, never argv.
+    SCAN_REGEX_WORKER = r'''
+import json, re, sys
+
+raw = sys.stdin.buffer.read(128 * 1024 * 1024 + 1)
+if len(raw) > 128 * 1024 * 1024:
+    raise ValueError('scan input limit')
+batch = json.loads(raw)
+if len(batch['files']) > 1000 or len(batch['rules']) > 1000:
+    raise ValueError('scan item limit')
+patterns, matches, partial, limited = [], [], False, False
+for index, rule in enumerate(batch['rules']):
+    try:
+        patterns.append((index, re.compile(rule)))
+    except (re.error, RecursionError, OverflowError):
+        partial = True
+for file_index, data in enumerate(batch['files']):
+    for rule_index, pattern in patterns:
+        if data and pattern.search(data):
+            matches.append([file_index, rule_index])
+            if len(matches) >= 1000:
+                partial = limited = True
+                break
+    if limited:
+        break
+sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limited),
+                           separators=(',', ':')))
+'''
     __path = '/www/server/free_waf/'
     __access_log_path = '/www/wwwlogs'
     __state = {True:'开启',False:'关闭',0:'停用',1:'启用'}
@@ -80,13 +118,13 @@ class free_waf_main:
         module = sys.modules.get(key)
         if (module is None or getattr(module, '__file__', None) != path
                 or getattr(module, '_source_signature', None) != signature
-                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.1'):
+                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.2'):
             spec = importlib.util.spec_from_file_location(key, path)
             module = importlib.util.module_from_spec(spec)
             # Read source explicitly: same-second upgrades must not reuse stale bytecode.
             source = spec.loader.get_source(key)
             exec(compile(source, path, 'exec', dont_inherit=True), module.__dict__)
-            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.1':
+            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.2':
                 raise ValueError('服务版本不匹配，请重新打开插件')
             module._source_signature = signature
             sys.modules[key] = module
@@ -329,47 +367,249 @@ class free_waf_main:
         else:
             return False
 
-    # 查询站点跟目录
-    def getdir(self, dir, pc='', lis=None):
-        if lis is None: lis = []
-        list = os.listdir(dir)
-        for l in list:
-            if os.path.isdir(dir + '/' + l):
-                lis = self.getdir(dir + '/' + l, pc, lis)
-            elif str(l.lower())[-4:] == '.php' and str(dir + '/' + l).find(pc) == -1:
-                print (dir + '/' + l)
-                lis.append(dir + '/' + l)
-        return lis
+    def __local_absolute_path(self, path):
+        if (type(path) is not str or not path or len(path) > 4096
+                or any(ord(c) < 32 or ord(c) == 127 for c in path)
+                or '..' in re.split(r'[\\/]', path) or not os.path.isabs(path)):
+            raise ValueError('路径不正确')
+        return os.path.abspath(path)
 
-    # 目录
-    def getdir_list(self, get):
-        path = get.path
-        if os.path.exists(path):
-            pc = 'hackcnm'
-            rs = self.getdir(path, pc)
-            return rs
+    def __no_link_path(self, path):
+        import stat
+        current = path
+        while True:
+            info = os.lstat(current)
+            if (stat.S_ISLNK(info.st_mode)
+                    or getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0)):
+                raise ValueError('不允许符号链接')
+            parent = os.path.dirname(current)
+            if parent == current:
+                return info if current == path else os.lstat(path)
+            current = parent
+
+    def __open_regular_file(self, path):
+        """No symlink components; POSIX directory descriptors also close rename races."""
+        import stat
+        path = self.__local_absolute_path(path)
+        before = self.__no_link_path(path)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError('不是普通文件')
+        flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
+        if os.open in os.supports_dir_fd and hasattr(os, 'O_NOFOLLOW'):
+            parts = path.split(os.sep)
+            directory = os.open(os.sep, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                for part in parts[1:-1]:
+                    child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                    os.close(directory)
+                    directory = child
+                descriptor = os.open(parts[-1], flags, dir_fd=directory)
+            finally:
+                os.close(directory)
         else:
+            descriptor = os.open(path, flags | getattr(os, 'O_BINARY', 0))
+        try:
+            after = os.fstat(descriptor)
+            self.__no_link_path(path)
+            if not stat.S_ISREG(after.st_mode) or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+                raise ValueError('文件已变更')
+            return os.fdopen(descriptor, 'rb')
+        except Exception:
+            os.close(descriptor)
+            raise
+
+    def __scan_roots(self):
+        import stat
+        roots = []
+        try:
+            rows = public.M('sites').field('name,path').select()
+            for row in rows:
+                try:
+                    path = self.__local_absolute_path(row['path'])
+                    if stat.S_ISDIR(self.__no_link_path(path).st_mode):
+                        roots.append(path)
+                except (OSError, ValueError, KeyError, TypeError):
+                    continue
+        except Exception:
+            return []
+        return roots
+
+    def __scan_path(self, path, roots, directory=False):
+        import stat
+        path = self.__local_absolute_path(path)
+        allowed = False
+        for root in roots:
+            try:
+                if os.path.normcase(os.path.commonpath([path, root])) == os.path.normcase(root):
+                    relative = os.path.relpath(path if directory else os.path.dirname(path), root)
+                    depth = 0 if relative == '.' else len(relative.split(os.sep))
+                    if depth <= self.SCAN_MAX_DEPTH:
+                        allowed = True
+                        break
+            except ValueError:
+                continue
+        if not allowed:
+            raise ValueError('仅允许扫描已配置网站根目录内的文件')
+        info = self.__no_link_path(path)
+        if directory:
+            if not stat.S_ISDIR(info.st_mode):
+                raise ValueError('不是目录')
+        elif not path.lower().endswith('.php') or not stat.S_ISREG(info.st_mode):
+            raise ValueError('仅允许普通 PHP 文件')
+        return path
+
+    def __new_scan_coverage(self):
+        self.__scan_coverage = dict(partial=False, timed_out=False, files=0, bytes_read=0,
+                                    notice='仅本地有界扫描；达到深度、文件、字节、规则、结果或计算时间上限时为部分扫描，不代表全站安全。')
+        return self.__scan_coverage
+
+    def get_security_boundary_report(self, get):
+        return dict(status=True, legacy_cloud_enabled=False, spider_cloud_enabled=False,
+                    cnlist_sync_enabled=False, scan=dict(getattr(self, '_free_waf_main__scan_coverage',
+                    dict(partial=False, timed_out=False, files=0, bytes_read=0, notice='尚未扫描；仅提供有界部分扫描，不代表全站安全。'))))
+
+    def getdir(self, dir, pc='', lis=None):
+        # Keep the legacy list shape, but never recurse outside the bounded enumerator.
+        from types import SimpleNamespace
+        result = self.getdir_list(SimpleNamespace(path=dir))
+        return [path for path in (result or []) if not pc or pc not in path]
+
+    def getdir_list(self, get):
+        coverage = self.__new_scan_coverage()
+        roots = self.__scan_roots()
+        try:
+            path = self.__scan_path(get.path, roots, directory=True)
+        except (OSError, ValueError, AttributeError, KeyError, TypeError):
+            coverage['partial'] = True
             return False
+        pending, result, visited = [path], [], 0
+        self.__scan_listing = result
+        while pending:
+            directory = pending.pop()
+            try:
+                directory = self.__scan_path(directory, roots, directory=True)
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        visited += 1
+                        if visited > self.SCAN_MAX_ENTRIES or len(result) >= self.SCAN_MAX_FILES:
+                            coverage['partial'] = True
+                            coverage['files'] = len(result)
+                            return result
+                        if entry.is_symlink():
+                            coverage['partial'] = True
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            try:
+                                pending.append(self.__scan_path(entry.path, roots, directory=True))
+                            except (OSError, ValueError):
+                                coverage['partial'] = True
+                        elif entry.name.lower().endswith('.php'):
+                            try:
+                                result.append(self.__scan_path(entry.path, roots))
+                            except (OSError, ValueError):
+                                coverage['partial'] = True
+            except (OSError, ValueError):
+                coverage['partial'] = True
+        coverage['files'] = len(result)
+        return result
+
+    def __evaluate_scan_batch(self, contents, rules, coverage):
+        import subprocess
+        import sys
+        try:
+            request = json.dumps(dict(files=contents, rules=rules), ensure_ascii=False).encode('utf-8')
+            process = subprocess.Popen(
+                [sys.executable, '-I', '-S', '-B', '-c', self.SCAN_REGEX_WORKER],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                shell=False, start_new_session=True, close_fds=True)
+            try:
+                output, _ = process.communicate(input=request, timeout=self.SCAN_REGEX_SECONDS)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                coverage.update(partial=True, timed_out=True,
+                                notice='本地正则检测超时，扫描进程已终止；结果为部分扫描，未完成的批次不返回匹配，不代表全站安全。')
+                return []
+            except BaseException:
+                process.kill()
+                process.communicate()
+                raise
+            if process.returncode != 0 or len(output) > self.SCAN_MAX_WORKER_OUTPUT:
+                raise ValueError('scan worker failed')
+            result = json.loads(output)
+            if (type(result) is not dict or set(result) != {'matches', 'partial', 'limited'}
+                    or type(result['partial']) is not bool or type(result['limited']) is not bool
+                    or type(result['matches']) is not list or len(result['matches']) > self.SCAN_MAX_MATCHES
+                    or result['limited'] and not result['partial']):
+                raise ValueError('invalid scan result')
+            previous = (-1, -1)
+            for match in result['matches']:
+                if (type(match) is not list or len(match) != 2
+                        or any(type(index) is not int for index in match)
+                        or not 0 <= match[0] < len(contents) or not 0 <= match[1] < len(rules)
+                        or tuple(match) <= previous):
+                    raise ValueError('invalid scan match')
+                previous = tuple(match)
+            if result['partial']:
+                coverage.update(partial=True,
+                                notice='部分规则无效或匹配结果达到上限；结果为部分扫描，不代表全站安全。')
+            return result['matches']
+        except (OSError, ValueError, TypeError):
+            coverage.update(partial=True,
+                            notice='本地扫描进程无法启动或返回异常；结果为部分扫描，不代表全站安全。')
+            return []
 
     def scan(self, filelist, rule):
-        self.__webshell_data=[]
-        import time
-        time_data = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-        ret = []
-        for file in filelist:
-            data = ''
+        self.__webshell_data = []
+        previous_partial = (getattr(self, '_free_waf_main__scan_listing', None) is filelist
+                            and getattr(self, '_free_waf_main__scan_coverage', {}).get('partial', False))
+        self.__scan_listing = None
+        coverage = self.__new_scan_coverage()
+        coverage['partial'] = previous_partial
+        roots = self.__scan_roots()
+        if not isinstance(filelist, (list, tuple)) or not isinstance(rule, (list, tuple)):
+            coverage['partial'] = True
+            return []
+        patterns = []
+        for value in rule[:self.SCAN_MAX_RULES]:
             try:
-                with open(file, encoding='utf-8', errors='replace') as stream:
-                    data = stream.read()
-            except:
-                pass
-            for r in rule:
-                if data and re.compile(r).findall(data):
-                    result = {}
-                    result[file] = r
-                    self.__webshell_data.append(result)
-                    log_entry = ("%s [!] %s %s  \n" % (time_data, file, r))
-                    self.insert_log(log_entry)
+                if (type(value) is not str or len(value) > self.SCAN_MAX_RULE_BYTES
+                        or len(value.encode('utf-8')) > self.SCAN_MAX_RULE_BYTES):
+                    raise ValueError('invalid scan rule')
+                patterns.append(value)
+            except ValueError:
+                coverage['partial'] = True
+        if len(rule) > self.SCAN_MAX_RULES:
+            coverage['partial'] = True
+        if not patterns:
+            coverage.update(partial=True, notice='没有可用的本地检测规则；结果为部分扫描，不代表全站安全。')
+            return []
+        paths, contents = [], []
+        for index, file in enumerate(filelist):
+            if index >= self.SCAN_MAX_FILES or coverage['bytes_read'] >= self.SCAN_MAX_TOTAL_BYTES:
+                coverage['partial'] = True
+                break
+            try:
+                path = self.__scan_path(file, roots)
+                with self.__open_regular_file(path) as stream:
+                    limit = min(self.SCAN_MAX_FILE_BYTES, self.SCAN_MAX_TOTAL_BYTES - coverage['bytes_read'])
+                    size = os.fstat(stream.fileno()).st_size
+                    payload = stream.read(limit)
+                coverage['files'] += 1
+                coverage['bytes_read'] += len(payload)
+                coverage['partial'] = coverage['partial'] or size > len(payload)
+                contents.append(payload.decode('utf-8', errors='replace'))
+                paths.append(file)
+            except (OSError, ValueError, TypeError):
+                coverage['partial'] = True
+                continue
+        if contents:
+            matches = self.__evaluate_scan_batch(contents, patterns, coverage)
+            stamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+            for file_index, rule_index in matches:
+                file, value = paths[file_index], patterns[rule_index]
+                self.__webshell_data.append({file: value})
+                self.insert_log('%s [!] %s %s  \n' % (stamp, file, value))
         return self.__webshell_data
 
     def insert_log(self, data):
@@ -403,14 +643,24 @@ class free_waf_main:
                 return self.__webshell_data
 
     def san_dir(self, get):
-        file = self.getdir_list(get)
-        if not file: return public.returnMsg(False, "未找到 PHP 文件")
-        rule = self.shell_get_rule(get)
-        if not rule: return public.returnMsg(False, "规则为空或规则文件错误")
         self.__webshell_data = []
+        file = self.getdir_list(get)
+        coverage = self.__scan_coverage
+        if file is False:
+            coverage['notice'] = '扫描路径不可用或不在允许的网站根目录内；扫描未完成，不代表全站安全。'
+            return dict(status=False, msg='扫描路径不可用', data=[], coverage=dict(coverage))
+        if not file:
+            if not coverage['partial']:
+                coverage['notice'] = '未找到 PHP 文件；未执行正则检测，不代表全站安全。'
+            return dict(status=True, data=[], coverage=dict(coverage))
+        rule = self.shell_get_rule(get)
+        if not isinstance(rule, (list, tuple)) or not rule:
+            coverage.update(partial=True, notice='本地检测规则为空或不可用；扫描未完成，不代表全站安全。')
+            return dict(status=False, msg='规则为空或规则文件错误', data=[], coverage=dict(coverage))
         result = self.scan(file, rule)
-        result = self.path_json(get.path, result)
-        return self.__webshell_data
+        if result:
+            self.path_json(get.path, result)
+        return dict(status=True, data=self.__webshell_data, coverage=dict(self.__scan_coverage))
 
     def xssencode(self, text):
         import cgi
@@ -486,12 +736,14 @@ class free_waf_main:
 
 
     def read_file_md5(self,filename):
-        if os.path.exists(filename):
-            with open(filename, 'rb') as fp:
-                data = fp.read()
-            file_md5 = hashlib.md5(data).hexdigest()
-            return file_md5
-        else:
+        import hashlib
+        try:
+            path = self.__scan_path(filename, self.__scan_roots())
+            with self.__open_regular_file(path) as stream:
+                if os.fstat(stream.fileno()).st_size > self.SCAN_MAX_FILE_BYTES:
+                    return False
+                return hashlib.md5(stream.read(self.SCAN_MAX_FILE_BYTES)).hexdigest()
+        except (OSError, ValueError, TypeError):
             return False
 
 
@@ -504,6 +756,12 @@ class free_waf_main:
     def check_webshell(self,get):
         return public.returnMsg(False, '旧版云检测已停用，未读取或上传文件；请使用本地扫描。')
 
+    def getSpiders(self, get):
+        return public.returnMsg(False, '旧版云蜘蛛服务已停用，未读取凭据或连接云端。')
+
+    def addSpider(self, get):
+        return public.returnMsg(False, '旧版云蜘蛛服务已停用，未读取凭据或连接云端。')
+
     def __get_md5(self, s):
         m = hashlib.md5()
         m.update(s.encode('utf-8'))
@@ -514,6 +772,316 @@ class free_waf_main:
         config.setdefault('from_data', True)
         config.setdefault('retry_cycle', 60)
         return config
+
+    def __endpoint_site_name(self, value):
+        if (type(value) is not str or not re.fullmatch(r'[A-Za-z0-9_\-][A-Za-z0-9_.\-]{0,252}', value)
+                or '..' in value):
+            raise ValueError('站点名称不正确')
+        return value
+
+    def __endpoint_id(self, value):
+        if type(value) is not str or not re.fullmatch(r'[0-9a-f]{32}', value):
+            raise ValueError('规则 ID 不正确')
+        return value
+
+    def __endpoint_path(self, value, policy=True):
+        if (type(value) is not str or not value.startswith('/') or len(value.encode('utf-8')) > 512
+                or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in value)
+                or any(c in value for c in ('?', '#', '\\')) or '//' in value
+                or any(component in ('.', '..') for component in value.split('/'))
+                or (policy and any(c in value for c in '%^$*+()[]{}|'))):
+            raise ValueError('路径必须为不含参数、编码歧义、正则或点路径段的绝对路径')
+        return value
+
+    def __endpoint_rule(self, policy, stored=False):
+        required = {'name', 'match', 'path', 'method', 'window_seconds', 'max_requests', 'ban_seconds'}
+        optional = {'id', 'enabled', 'action'}
+        if type(policy) is not dict or set(policy) - (required | optional) or not required.issubset(policy):
+            raise ValueError('规则字段不完整或包含未知字段')
+        if stored and not optional.issubset(policy):
+            raise ValueError('已有规则字段不完整')
+        result = dict(policy)
+        result.setdefault('enabled', False)
+        result.setdefault('action', 'observe')
+        name = result['name']
+        if (type(name) is not str or not name.strip() or len(name) > 128
+                or any(ord(c) < 32 or ord(c) == 127 for c in name)):
+            raise ValueError('规则名称须为 1 至 128 字符且不含控制字符')
+        if type(result['enabled']) is not bool:
+            raise ValueError('启用状态必须是布尔值')
+        for key, choices in (('action', ('observe', 'reject', 'ban')), ('match', ('exact', 'prefix')),
+                             ('method', ('ALL', 'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'))):
+            if type(result[key]) is not str or result[key] not in choices:
+                raise ValueError('规则选项不正确：' + key)
+        result['path'] = self.__endpoint_path(result['path'])
+        for key, maximum in (('window_seconds', 3600), ('max_requests', 100000), ('ban_seconds', 28800)):
+            if type(result[key]) is not int or not 1 <= result[key] <= maximum:
+                raise ValueError('规则数值类型或范围不正确：' + key)
+        if 'id' in result:
+            self.__endpoint_id(result['id'])
+        return result
+
+    def __endpoint_site(self, get):
+        site_name = self.__endpoint_site_name(getattr(get, 'siteName', None))
+        # Unlike get_site_config, this read cannot migrate sites, prune logs or reload.
+        raw = public.readFile(self.__path + 'site.json')
+        config = json.loads(raw)
+        if type(config) is not dict or type(config.get(site_name)) is not dict:
+            raise ValueError('站点不存在或站点配置不正确')
+        rules = config[site_name].get('endpoint_limits', [])
+        if type(rules) is not list or len(rules) > 50:
+            raise ValueError('接口规则必须为最多 50 条的列表')
+        rules = [self.__endpoint_rule(rule, stored=True) for rule in rules]
+        if len({rule['id'] for rule in rules}) != len(rules):
+            raise ValueError('已有规则 ID 重复')
+        return site_name, config, rules, raw
+
+    def get_endpoint_policies(self, get):
+        try:
+            site_name, config, rules, raw = self.__endpoint_site(get)
+            return dict(status=True, siteName=site_name, rules=rules)
+        except Exception:
+            return public.returnMsg(False, '无法读取接口规则，请检查站点名称和已有规则格式。')
+
+    def __checked_nginx_reload(self):
+        self.__reload_panel_nginx()
+
+    def __endpoint_transaction(self):
+        from contextlib import contextmanager
+        import stat
+
+        @contextmanager
+        def locked():
+            path = self.__path + '.endpoint-policy.lock'
+            self.__no_link_path(os.path.dirname(path))
+            flags = os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
+            descriptor = os.open(path, flags, 0o600)
+            try:
+                info = os.fstat(descriptor)
+                current = self.__no_link_path(path)
+                if (not stat.S_ISREG(info.st_mode)
+                        or (info.st_dev, info.st_ino) != (current.st_dev, current.st_ino)):
+                    raise ValueError('配置锁不安全')
+                # Separate descriptors serialize both panel threads and worker processes.
+                if os.name == 'posix':
+                    import fcntl
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                else:
+                    import msvcrt
+                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                yield
+            finally:
+                os.close(descriptor)
+        return locked()
+
+    def __write_endpoint_policies(self, site_name, config, rules, original):
+        path = self.__path + 'site.json'
+        config[site_name]['endpoint_limits'] = rules
+        candidate = json.dumps(config)
+        if public.readFile(path) != original:
+            return public.returnMsg(False, '站点配置已变更，请刷新后重试。')
+        try:
+            if public.writeFile(path, candidate) is not True:
+                raise OSError('写入失败')
+            if public.readFile(path) != candidate:
+                raise OSError('写入核实失败')
+            if self.__checked_nginx_reload() is False:
+                raise RuntimeError('生效失败')
+        except Exception:
+            try:
+                # Roll back only our optional field; retain unrelated concurrent edits.
+                current_raw = public.readFile(path)
+                try:
+                    current = json.loads(current_raw)
+                    previous = json.loads(original)
+                    if current_raw in (original, candidate):
+                        restore = original
+                    else:
+                        if (type(current) is not dict or type(current.get(site_name)) is not dict
+                                or current[site_name].get('endpoint_limits') != rules):
+                            raise ValueError('配置已被其他操作修改')
+                        if 'endpoint_limits' in previous[site_name]:
+                            current[site_name]['endpoint_limits'] = previous[site_name]['endpoint_limits']
+                        else:
+                            current[site_name].pop('endpoint_limits', None)
+                        restore = json.dumps(current)
+                except (json.JSONDecodeError, TypeError):
+                    restore = original
+                if public.writeFile(path, restore) is not True:
+                    raise OSError('恢复失败')
+                if public.readFile(path) != restore:
+                    raise OSError('恢复核实失败')
+                if self.__checked_nginx_reload() is False:
+                    raise RuntimeError('恢复生效失败')
+            except Exception:
+                return public.returnMsg(False, '接口规则保存或生效失败，自动恢复未确认，可能已部分处理；请检查配置和 Nginx 状态。')
+            return public.returnMsg(False, '接口规则保存或生效失败，已恢复原接口规则；请检查后重试。')
+        return dict(status=True, siteName=site_name, rules=rules)
+
+    def save_endpoint_policy(self, get):
+        if not self.__update_request_is_post():
+            return public.returnMsg(False, '接口规则保存仅接受面板 POST 请求。')
+        try:
+            with self.__endpoint_transaction():
+                return self.__save_endpoint_policy_locked(get)
+        except Exception:
+            return public.returnMsg(False, '配置正在修改或配置锁不可用，未保存；请稍后重试。')
+
+    def __save_endpoint_policy_locked(self, get):
+        try:
+            text = getattr(get, 'policy', None)
+            if type(text) is not str or len(text) > 16384:
+                raise ValueError('规则须为 JSON 对象字符串')
+            submitted = json.loads(text)
+            policy = self.__endpoint_rule(submitted)
+            site_name, config, rules, raw = self.__endpoint_site(get)
+            if 'id' in policy:
+                index = next((i for i, rule in enumerate(rules) if rule['id'] == policy['id']), None)
+                if index is None:
+                    raise ValueError('规则不存在于此站点')
+                for optional in ('enabled', 'action'):
+                    if optional not in submitted:
+                        policy[optional] = rules[index][optional]
+                rules[index] = policy
+            else:
+                if len(rules) >= 50:
+                    raise ValueError('每站点最多 50 条接口规则')
+                import uuid
+                policy['id'] = uuid.uuid4().hex
+                rules.append(policy)
+            return self.__write_endpoint_policies(site_name, config, rules, raw)
+        except Exception:
+            return public.returnMsg(False, '接口规则保存失败：请检查站点、规则字段、ID 和数值范围。')
+
+    def delete_endpoint_policy(self, get):
+        if not self.__update_request_is_post():
+            return public.returnMsg(False, '接口规则删除仅接受面板 POST 请求。')
+        try:
+            with self.__endpoint_transaction():
+                return self.__delete_endpoint_policy_locked(get)
+        except Exception:
+            return public.returnMsg(False, '配置正在修改或配置锁不可用，未删除；请稍后重试。')
+
+    def __delete_endpoint_policy_locked(self, get):
+        try:
+            ident = self.__endpoint_id(getattr(get, 'id', None))
+            site_name, config, rules, raw = self.__endpoint_site(get)
+            remaining = [rule for rule in rules if rule['id'] != ident]
+            if len(remaining) == len(rules):
+                raise ValueError('规则不存在于此站点')
+            return self.__write_endpoint_policies(site_name, config, remaining, raw)
+        except Exception:
+            return public.returnMsg(False, '接口规则删除失败：请检查站点和规则 ID。')
+
+    def __endpoint_event(self, row):
+        import datetime
+        import ipaddress
+        if type(row) is not dict:
+            raise ValueError('事件格式不正确')
+        timestamp = row.get('timestamp')
+        if type(timestamp) is not str or len(timestamp) != 19:
+            raise ValueError('时间不正确')
+        datetime.datetime.strptime(timestamp, '%Y-%m-%d %H:%M:%S')
+        site = self.__endpoint_site_name(row.get('site'))
+        ip = row.get('ip')
+        if type(ip) is not str or '%' in ip or len(ip) > 45:
+            raise ValueError('IP 不正确')
+        ip = str(ipaddress.ip_address(ip))
+        path = row.get('path')
+        if type(path) is not str:
+            raise ValueError('路径不正确')
+        path = self.__endpoint_path(path.split('?', 1)[0].split('#', 1)[0], policy=False)
+        method, action = row.get('method'), row.get('action')
+        if method not in ('GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'):
+            raise ValueError('请求方法不正确')
+        if action not in ('observe', 'reject', 'ban'):
+            raise ValueError('动作不正确')
+        name = row.get('rule_name')
+        if type(name) is not str or len(name) > 240:
+            raise ValueError('规则名称不正确')
+        name = ''.join(c for c in name if ord(c) >= 32 and ord(c) != 127)
+        # JSON values stay raw; the UI owns the single HTML-escaping boundary.
+        event = dict(timestamp=timestamp, site=site, ip=ip, path=path,
+                     method=method, rule_id=self.__endpoint_id(row.get('rule_id')), rule_name=name, action=action)
+        for key, low, high in (('count', 0, 9007199254740991), ('limit', 1, 100000),
+                               ('window_seconds', 1, 3600), ('retry_after', 0, 28800)):
+            value = row.get(key)
+            if type(value) is not int or not low <= value <= high:
+                raise ValueError('事件数值不正确')
+            event[key] = value
+        return event
+
+    def get_endpoint_policy_events(self, get):
+        import datetime
+        try:
+            days = getattr(get, 'days', 1)
+            if type(days) is str and re.fullmatch(r'[1-7]', days):
+                days = int(days)
+            if type(days) is not int or not 1 <= days <= 7:
+                raise ValueError('天数必须为 1 至 7')
+            site = getattr(get, 'siteName', '')
+            ident = getattr(get, 'rule_id', '')
+            if site:
+                self.__endpoint_site_name(site)
+            if ident:
+                self.__endpoint_id(ident)
+            if type(site) is not str or type(ident) is not str:
+                raise ValueError('筛选条件不正确')
+        except Exception:
+            return public.returnMsg(False, '事件查询参数不正确。')
+        root = '/www/wwwlogs/free_waf_log'
+        try:
+            # Only the trusted server config may choose the log directory, never get.*.
+            root = self.get_config(None).get('logs_path') or root
+            root = self.__local_absolute_path(root)
+        except Exception:
+            root = '/www/wwwlogs/free_waf_log'
+        coverage = dict(partial=False, notice='仅展示采样记录事件，不代表全部请求、全部命中或精确历史总量；最多读取 1MB、返回最近 200 条。')
+        remaining, events = 1024 * 1024, []
+        today = datetime.date.today()
+        for offset in range(days):
+            if remaining <= 0:
+                coverage['partial'] = True
+                break
+            day = (today - datetime.timedelta(days=offset)).isoformat()
+            path = os.path.join(root, 'endpoint_' + day + '.jsonl')
+            try:
+                with self.__open_regular_file(path) as stream:
+                    size = stream.seek(0, os.SEEK_END)
+                    amount = min(remaining, size)
+                    start = max(0, size - amount)
+                    stream.seek(start)
+                    payload = stream.read(amount)
+                    remaining -= len(payload)
+                    if start:
+                        coverage['partial'] = True
+                        # The first suffix record may have started outside our read budget.
+                        payload = payload.partition(b'\n')[2]
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError):
+                coverage['partial'] = True
+                continue
+            for line in reversed(payload.splitlines()):
+                if not line.strip():
+                    continue
+                try:
+                    event = self.__endpoint_event(json.loads(line))
+                    if event['timestamp'][:10] != day:
+                        raise ValueError('事件日期不匹配')
+                except (ValueError, TypeError, OverflowError, RecursionError):
+                    coverage['partial'] = True
+                    continue
+                if (not site or event['site'] == site) and (not ident or event['rule_id'] == ident):
+                    events.append(event)
+        events.sort(key=lambda event: event['timestamp'], reverse=True)
+        if len(events) > 200:
+            coverage['partial'] = True
+            events = events[:200]
+        summary = dict(recorded_events=len(events), observed=0, rejected=0, banned=0)
+        for event in events:
+            summary[{'observe': 'observed', 'reject': 'rejected', 'ban': 'banned'}[event['action']]] += 1
+        return dict(status=True, events=events, coverage=coverage, summary=summary)
     
     def get_site_config(self,get):
         if not os.path.exists('/www/wwwlogs/free_waf_log'):os.mkdir('/www/wwwlogs/free_waf_log')
@@ -3107,20 +3675,7 @@ class free_waf_main:
         return conf
     
     def sync_cnlist(self,get):
-        if not get:
-            self.get_config(None)
-            self.get_site_config(None)
-        rcnlist = public.httpGet(public.get_url() + '/cnlist.json')
-        if not rcnlist: return public.returnMsg(False,'连接云端失败')
-        cloudList = json.loads(rcnlist)
-        cnlist = self.__get_rule('cn')
-        n = 0
-        for ipd in cloudList:
-            if ipd in cnlist: continue;
-            cnlist.append(ipd)
-            n += 1
-        self.__write_rule('cn', cnlist)
-        if get: return public.returnMsg(True,'同步成功，本次共新增 ' + str(n) + ' 个 IP 段')
+        return public.returnMsg(False, '旧版国内 IP 库联网同步已停用：未下载未经验证的数据，现有本地规则保持不变。')
         
     def __remove_log_file(self,siteName):
         total = json.loads(public.readFile(self.__path + 'total.json'))
@@ -3144,31 +3699,3 @@ class free_waf_main:
     
     def __write_log(self,msg):
         public.WriteLog(self.__log_types[0],msg)
-        
-    def __check_cjson(self):
-        cjson = '/usr/local/lib/lua/5.1/cjson.so'
-        if os.path.exists(cjson): 
-            if os.path.exists('/usr/lib64/lua/5.1'):
-                if not os.path.exists('/usr/lib64/lua/5.1/cjson.so'):
-                    public.ExecShell("ln -sf /usr/local/lib/lua/5.1/cjson.so /usr/lib64/lua/5.1/cjson.so");
-            if os.path.exists('/usr/lib/lua/5.1'):
-                if not os.path.exists('/usr/lib/lua/5.1/cjson.so'):
-                    public.ExecShell("ln -sf /usr/local/lib/lua/5.1/cjson.so /usr/lib/lua/5.1/cjson.so");
-            return True
-        
-        c = '''wget -O lua-cjson-2.1.0.tar.gz http://download.bt.cn/install/src/lua-cjson-2.1.0.tar.gz -T 20
-tar xvf lua-cjson-2.1.0.tar.gz
-rm -f lua-cjson-2.1.0.tar.gz
-cd lua-cjson-2.1.0
-make
-make install
-cd ..
-rm -rf lua-cjson-2.1.0
-ln -sf /usr/local/lib/lua/5.1/cjson.so /usr/lib64/lua/5.1/cjson.so
-ln -sf /usr/local/lib/lua/5.1/cjson.so /usr/lib/lua/5.1/cjson.so
-/etc/init.d/nginx reload
-'''
-        public.writeFile('/root/install_cjson.sh',c)
-        public.ExecShell('cd /root && bash install_cjson.sh')
-        return True
-    

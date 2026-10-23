@@ -124,14 +124,15 @@
     }	
 
 	/* official-style baseline shell */
-	.waf_conter{position:relative;box-sizing:border-box;height:calc(100vh - 64px);min-height:0;width:100%;background:#f5f7fb;color:#1f2933;border:1px solid #e6eaf0;border-radius:8px;overflow:hidden}
-	.waf_left_menu{width:168px;height:100%;background:#101828;color:#d0d5dd;overflow-y:auto}
-	.waf_left_menu li{height:46px;line-height:46px;padding:0 18px;color:#d0d5dd}
-	.waf_left_menu li.active{background:#1d2939;border-left:3px solid #12b76a;padding-left:15px}
-	.waf_left_menu .icon i{color:#98a2b3;font-size:15px}
-	.waf_left_menu li.active .icon i,.waf_left_menu li.active span{color:#fff}
+	.waf_conter{position:relative;box-sizing:border-box;height:calc(100vh - 64px);min-height:0;width:100%;background:#f5f8f6;color:#263b32;border:1px solid #e1e9e4;border-radius:8px;overflow:hidden;font-family:"Microsoft YaHei UI","PingFang SC",sans-serif}
+	.waf_left_menu{width:148px;height:100%;background:#fff;color:#52635b;overflow-y:auto;border-right:1px solid #e1e9e4;padding-top:12px}
+	.waf_left_menu li{height:42px;line-height:42px;padding:0 16px;color:#52635b;margin:2px 8px;border-radius:4px}
+	.waf_left_menu li:hover{background:#f4f8f5}
+	.waf_left_menu li.active{background:#eaf6ee;border-left:3px solid #289463;padding-left:13px}
+	.waf_left_menu .icon i{color:#82958a;font-size:15px}
+	.waf_left_menu li.active .icon i,.waf_left_menu li.active span{color:#20774f}
 	.waf_left_menu span{color:inherit;font-size:13px}
-	.waf_rigth_body{left:168px;height:100%;background:#f5f7fb;padding:18px;overflow:auto}
+	.waf_rigth_body{left:148px;height:100%;background:linear-gradient(135deg,#f1f7f3 0%,#f7f9f8 45%);padding:16px;overflow:auto}
 	.waf_rigth_body .item_con{min-height:100%}
 	.waf-page-title{margin-bottom:14px;padding:16px 18px;background:#fff;border:1px solid #e6eaf0;border-radius:8px}
 	.waf-page-title h3{margin:0 0 6px;font-size:18px;font-weight:600;color:#101828}
@@ -280,11 +281,46 @@
 	.waf_conter .website_stats_meta{font-size:12px;color:#667085;line-height:1.8;margin:8px 0;overflow-wrap:anywhere}
 	.waf_conter .plugin_update_notes{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;background:#f8fafb;border:1px solid #e4e7ec;border-radius:4px;padding:14px;font:13px/1.8 inherit}
 	.waf_conter #plugin_update_job{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.8}
+	.waf-shell-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 0 12px;margin-bottom:14px;border-bottom:1px solid #dfe8e2;font-size:12px;color:#75877c}
+	.waf-shell-heading strong{color:#29553d;font-size:14px;font-weight:600;letter-spacing:.2px}
+	.waf-shell-heading span{border-left:1px solid #d5e2d9;padding-left:12px}
+	.waf_conter .waf-page-title{padding:14px 16px;border-color:#e1e9e4}
+	.waf_conter .waf-page-title h3{font-size:18px;color:#263b32}
+	.waf_conter .waf-card{border-color:#e1e9e4}
+	.waf_conter .btn-success{background:#289463;border-color:#24865b}
+	.waf_conter button:focus-visible,.waf_conter a:focus-visible,.waf_conter input:focus-visible,.waf_conter select:focus-visible{outline:2px solid #289463;outline-offset:2px}
+	.waf-policy-layout{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(300px,1fr);gap:14px;align-items:start}
+	.waf-policy-layout>.waf-card{margin-bottom:14px;min-width:0}
+	.waf-policy-form{display:grid;grid-template-columns:1fr 1fr;gap:12px;border:0;padding:0;margin:12px 0;min-width:0}
+	.waf-policy-form label{display:flex;flex-direction:column;gap:6px;font-size:12px;font-weight:400;color:#40564a;min-width:0;margin:0}
+	.waf-policy-form .wide{grid-column:1/-1}
+	.waf-policy-form input:not([type="checkbox"]),.waf-policy-form select,#endpoint_policy_site{height:34px;width:100%;border:1px solid #cedbd2;border-radius:4px;background:#fff;padding:5px 8px;box-sizing:border-box;color:#263b32;font-size:13px}
+	#endpoint_policy_site{width:240px;max-width:100%}
+	.waf-policy-form small{font-size:11px;line-height:1.6;color:#75877c}
+	.waf-policy-form label.waf-policy-check{display:flex;flex-direction:row;align-items:center;flex-wrap:wrap;gap:8px;padding:9px 10px;background:#f1f8f3;border:1px solid #dcece1;border-radius:4px}
+	.waf-policy-check input{margin:0;accent-color:#289463}
+	.waf-policy-scroll{overflow-x:auto}
+	.waf-policy-scroll table{width:100%;min-width:620px}
+	#endpoint_policy_events_table{min-width:1080px}
+	.waf_conter .waf-policy-scroll .waf_table th{white-space:nowrap;height:32px;line-height:1.5;padding:9px 10px;font-size:12px;color:#64796c;background:#f5f9f6}
+	.waf_conter .waf-policy-scroll .waf_table td{line-height:1.7;padding:9px 10px;font-size:12px;vertical-align:top;max-width:220px;overflow-wrap:anywhere}
+	.waf-policy-meta{font-size:12px;line-height:1.8;color:#657c6e;overflow-wrap:anywhere;margin:8px 0}
+	.waf-policy-tag{display:inline-block;padding:1px 6px;border-radius:3px;background:#edf6f0;color:#24774e;font-size:11px;white-space:nowrap}
+	.waf-policy-tag.is-off{background:#f0f3f1;color:#79877f}
+	.waf-policy-actions{display:flex;gap:10px;white-space:nowrap}
+	.waf-policy-actions button{border:0;padding:0;color:#24865b;background:none;cursor:pointer;font-size:12px}
+	.waf-policy-actions button.endpoint-policy-delete{color:#b14c3b}
+	.waf_conter button:disabled{cursor:not-allowed;opacity:.55}
+	.waf-feature-guide{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:12px}
+	.waf-feature-guide h5{font-size:13px;font-weight:600;margin:0 0 6px;color:#335640}
+	@media (max-width:1100px){.waf-policy-layout{grid-template-columns:1fr}.waf-feature-guide{grid-template-columns:1fr}}
+	@media (max-width:720px){.waf_left_menu{width:88px}.waf_left_menu li{padding:0 6px;margin:2px 3px}.waf_left_menu li.active{padding-left:3px}.waf_left_menu span{font-size:12px;margin-left:3px}.waf_rigth_body{left:88px;padding:10px}.waf-shell-heading{align-items:flex-start;gap:6px;flex-direction:column}.waf-shell-heading span{padding:0;border:0}.waf-policy-form{grid-template-columns:1fr}.waf-policy-form .wide{grid-column:auto}.waf-policy-layout{gap:0}.waf_conter .waf-card{padding:12px}.waf_conter .waf-page-title{padding:12px}.waf_conter .waf-toolbar{gap:8px}}
 </style>
 <div class="waf_conter">
 	<ul class="waf_left_menu">
 		<li class="active" data-target="home"><div class="icon"><i class="iconfont iconshouye"></i></div><span>概览</span></li>
 		<li data-target="site"><div class="icon"><i class="iconfont iconwangzhan"></i></div><span>站点</span></li>
+		<li data-target="policies"><div class="icon"><i class="iconfont iconpeizhi"></i></div><span>接口策略</span></li>
 		<li data-target="overall"><div class="icon"><i class="iconfont iconpeizhi"></i></div><span>全局</span></li>
 		<li data-target="history"><div class="icon"><i class="iconfont iconsuo"></i></div><span>封禁</span></li>
 		<li data-target="blacklist"><div class="icon"><i class="iconfont iconsuo"></i></div><span>黑名单</span></li>
@@ -297,6 +333,7 @@
 		<li data-target="webshell"><div class="icon"><i class="iconfont iconsaomiao"></i></div><span>工具</span></li>
 	</ul>
 	<div class="waf_rigth_body pd20">
+		<div class="waf-shell-heading"><strong>GPT Firewall</strong><span>网站安全控制台 · 配置按需启用，变更手动确认</span></div>
 		<div class="item_con active" data-type="home">
 			<div class="waf-dashboard">
 				<div class="waf-overview-heading">
@@ -503,6 +540,54 @@
 				</table>
 			</div>
 		</div>
+		<div class="item_con" data-type="policies">
+			<div class="waf-page-title"><h3>接口策略</h3><p>按站点、路径与请求方法，为单个客户端 IP 设置固定窗口限流。先观察证据，再决定是否拦截。</p></div>
+			<div class="waf-notice-safe">可选功能：新建规则默认停用、动作为观察；观察仅记录超限事件，不拦截。只有手动启用并保存后才参与处理，不改变已有防护策略，也不自动修改全局白名单或黑名单。限域封禁仅影响当前站点匹配的接口，其他路径、其他站点不受该封禁影响。</div>
+			<div class="waf-card">
+				<div class="waf-toolbar"><label for="endpoint_policy_site">管理站点</label><select id="endpoint_policy_site" disabled><option value="">请先加载并选择站点</option></select><button type="button" class="btn btn-default btn-sm" id="endpoint_policy_sites_refresh">重新读取站点</button><button type="button" class="btn btn-default btn-sm" id="endpoint_policy_refresh" disabled>刷新规则</button></div>
+				<div id="endpoint_policy_status" class="waf-policy-meta" role="status" aria-live="polite">打开本页后读取站点配置，不会自动刷新。</div>
+			</div>
+			<div class="waf-policy-layout">
+				<div class="waf-card">
+					<div class="waf-dashboard-head"><div><h4>规则列表</h4><p id="endpoint_policy_rule_summary">请先选择站点。</p></div><button type="button" class="btn btn-default btn-sm" id="endpoint_policy_new" disabled>新建规则</button></div>
+					<div class="waf-policy-scroll"><table class="waf_table" id="endpoint_policy_rules_table"><thead><tr><th>规则 / 状态</th><th>路径 / 方法</th><th>窗口 / 阈值</th><th>超限动作</th><th>操作</th></tr></thead><tbody id="endpoint_policy_rules"><tr><td colspan="5">请先选择站点，所有已启用和已停用规则都会显示在此。</td></tr></tbody></table></div>
+					<p class="waf-policy-meta">每站点最多 50 条。此处不显示未经统计的“累计命中”；近期行为请查看下方采样证据。</p>
+				</div>
+				<div class="waf-card">
+					<h4 id="endpoint_policy_editor_title">新建规则 · 默认停用</h4>
+					<form id="endpoint_policy_editor">
+						<fieldset class="waf-policy-form" id="endpoint_policy_fields" disabled>
+							<label class="wide" for="endpoint_policy_name">规则名称<input type="text" id="endpoint_policy_name" autocomplete="off" placeholder="例如：登录入口观察" /><small>1–128 个字符，不含控制字符。</small></label>
+							<label class="wide" for="endpoint_policy_path">接口路径<input type="text" id="endpoint_policy_path" autocomplete="off" placeholder="例如：/api/login" aria-describedby="endpoint_policy_path_help" /><small id="endpoint_policy_path_help">以 / 开头，最多 512 个 UTF-8 字节；不含查询串、片段、正则、% 编码、重复斜线或 . / .. 路径段。使用 Nginx 规范化路径匹配。</small></label>
+							<label for="endpoint_policy_match">路径匹配<select id="endpoint_policy_match"><option value="exact">精确路径</option><option value="prefix">路径段前缀</option></select><small>/api 前缀匹配 /api 与 /api/login，不匹配 /apix。</small></label>
+							<label for="endpoint_policy_method">请求方法<select id="endpoint_policy_method" aria-describedby="endpoint_policy_method_help"><option value="ALL">ALL · 所有方法</option><option value="GET">GET</option><option value="POST">POST</option><option value="PUT">PUT</option><option value="PATCH">PATCH</option><option value="DELETE">DELETE</option><option value="HEAD">HEAD</option><option value="OPTIONS">OPTIONS</option></select><small id="endpoint_policy_method_help">ALL 将所有请求方法合并计数；指定方法仅统计该方法的请求。</small></label>
+							<label for="endpoint_policy_window_seconds">统计窗口（秒）<input type="number" id="endpoint_policy_window_seconds" min="1" max="3600" step="1" value="60" /><small>1–3600 秒，同一客户端 IP 单独计数。</small></label>
+							<label for="endpoint_policy_max_requests">窗口内允许请求数<input type="number" id="endpoint_policy_max_requests" min="1" max="100000" step="1" value="30" /><small>1–100000 次，超过阈值执行所选动作。</small></label>
+							<label for="endpoint_policy_action">超限动作<select id="endpoint_policy_action"><option value="observe">观察 · 仅记录</option><option value="reject">拒绝 · 本次请求</option><option value="ban">限域封禁 · 匹配接口</option></select><small>拒绝 / 封禁返回 429 和 Retry-After，不进行人机验证。</small></label>
+							<label for="endpoint_policy_ban_seconds">限域封禁时长（秒）<input type="number" id="endpoint_policy_ban_seconds" min="1" max="28800" step="1" value="60" /><small>1–28800 秒（8 小时），仅 ban 动作使用。</small></label>
+							<label class="wide waf-policy-check" for="endpoint_policy_enabled"><input type="checkbox" id="endpoint_policy_enabled" />启用此规则<small>默认不勾选；勾选后仍需保存。</small></label>
+						</fieldset>
+						<div class="waf-toolbar"><button type="button" class="btn btn-success btn-sm" id="endpoint_policy_save" disabled>保存规则</button><button type="button" class="btn btn-default btn-sm" id="endpoint_policy_cancel" disabled>取消编辑</button></div>
+					</form>
+					<p class="waf-policy-meta">保存仅作用于当前站点。切换页面会取消等待，不保证撤销服务器已收到的写入；如请求失败，请重新读取规则核对。</p>
+				</div>
+			</div>
+			<div class="waf-card">
+				<div class="waf-dashboard-head"><div><h4>近 1 日采样事件证据</h4><p>已记录事件不等于全部请求数，也不是规则精确的历史总命中数；不会自动刷新。</p></div><button type="button" class="btn btn-default btn-sm" id="endpoint_policy_events_refresh" disabled>刷新证据</button></div>
+				<div id="endpoint_policy_event_summary" class="waf-policy-meta">已记录事件：--</div>
+				<div id="endpoint_policy_coverage" class="waf-policy-meta" role="status">尚未读取。无事件不代表没有流量或没有超限。</div>
+				<div class="waf-policy-scroll"><table class="waf_table" id="endpoint_policy_events_table"><thead><tr><th>时间 / 站点</th><th>IP / 方法</th><th>路径</th><th>规则 / ID</th><th>动作</th><th>窗口计数 / 阈值</th><th>窗口 / 重试等待</th></tr></thead><tbody id="endpoint_policy_events"><tr><td colspan="7">请先选择站点。</td></tr></tbody></table></div>
+				<p class="waf-policy-meta">证据仅包含已采样的超限事件与路径，不含查询参数、请求头、Cookie 或请求体。覆盖范围以本次后端说明为准。</p>
+			</div>
+			<div class="waf-card" id="endpoint_policy_guide">
+				<h4>功能指南</h4><p>按范围配置、按证据调整，避免把局部问题扩大为整站误封。</p>
+				<div class="waf-feature-guide">
+					<div><h5>01 / 基础防护</h5><p>“站点”管理站点开关、常规规则、URI 规则与可信代理；“全局”影响多个站点。CC 为固定阈值限流与增强限流，不是动态智能 CC，也不提供可信机器人验证。</p></div>
+					<div><h5>02 / 接口策略</h5><p>选择站点 → 新建并保存停用规则 → 勾选启用、保持观察并保存 → 手动查看证据 → 必要时改为拒绝或限域封禁。观察只记录，不放行或绕过原有规则；现有显式白名单仍优先。</p></div>
+					<div><h5>03 / 核对与排障</h5><p>“统计”与“日志”辅助排障，注意采样和覆盖说明；安全巡检需手动运行。“更新”仅检查，不会自动安装。当前不提供 JSON 请求体检测；不要用全局白名单替代精确规则调整。</p></div>
+				</div>
+			</div>
+		</div>
 		<div class="item_con" data-type="overall">
 			<div class="waf-page-title">
 				<h3>全局规则</h3>
@@ -683,6 +768,7 @@
 						<button class="btn btn-success va0" id="san_webshell_event">扫描木马</button>
 					</div>
 					<div class="waf_nav_body">
+						<p id="webshell_scan_coverage" role="status" class="website_stats_meta">尚未执行本地扫描。</p>
 						<div id="scan_webshell_table"></div>
 					</div>
 					<ul class="help-info-text c7">
@@ -1443,6 +1529,7 @@
 			this.dispose_dashboard_charts();
 			this.stop_statistics_polling();
 			this.stop_plugin_update_status();
+			this.stop_endpoint_requests();
 			clearTimeout(this._shell_timer);
 			var timers = this._timers || [];
 			for(var t=0;t<timers.length;t++) clearTimeout(timers[t]);
@@ -1487,6 +1574,7 @@
 			this.$root = $('.waf_conter').last();
 			this._requests = [];
 			this._active_page = 'home';
+			this.init_endpoint_policies();
 			this._tools_loaded = false;
 			this._map_expanded = false;
 			this._dashboard_data = null;
@@ -2240,6 +2328,7 @@
 			var _this = this;
 			if(this._active_page === 'statistics' && type !== 'statistics') this.stop_statistics_polling();
 			if(this._active_page === 'updates' && type !== 'updates') this.stop_plugin_update_status();
+			if(this._active_page === 'policies' && type !== 'policies') this.stop_endpoint_requests();
 			if(type !== 'home'){
 				this.expand_attack_map(false);
 				this.dispose_dashboard_charts();
@@ -2247,6 +2336,9 @@
 			}
 			this._active_page = type;
 			switch(type){
+				case 'policies':
+					this.load_endpoint_sites();
+				break;
 				case 'home': //首页
 					this.get_total_all(function(res){
 						var rules = res.total.rules,_html = '';
@@ -2582,6 +2674,12 @@
 		// 渲染扫描webshell
 		render_san_webshell:function(obj,callback){
 			var _this = this;
+			var report=obj.data, rows=$.isArray(report)?report:(report && $.isArray(report.data)?report.data:[]);
+			var coverage=report && !$.isArray(report)?report.coverage:null;
+			var notice='旧版结果未提供覆盖信息，不能据此确认全站安全。';
+			if(report && report.status===false) notice=String(report.msg || '扫描失败，请检查站点路径和本地规则。');
+			else if(coverage) notice=(coverage.partial?'扫描结果不完整：':'本地有界扫描完成：')+String(coverage.notice || '只报告已扫描内容的规则命中，不代表全站安全。');
+			$('#webshell_scan_coverage').text(notice);
 			this.refresh_table_view({
 				el:'#scan_webshell_table',
 				form_id:'scan_webshell_table', //用于重置
@@ -2589,17 +2687,17 @@
 				config:[
 					{fid:'0',title:'文件名',templet:function(row,index){
 						var _file = Object.keys(row)[0].split('/');
-						return '<a href="javascript:;" class="btlink file_rule_link" title="'+ Object.keys(row)[0] +'"  onclick="OnlineEditFile(0,\''+ Object.keys(row)[0]+'\')" >' + _file[_file.length -1] + '</a>';
-					}},
+						return '<span><a href="javascript:;" class="btlink file_rule_link" data-event="scan_webshell_table_0" title="'+ _this.escapeHTML(Object.keys(row)[0]) +'">'+_this.escapeHTML(_file[_file.length-1])+'</a></span>';
+					},event:function(row){ OnlineEditFile(0,Object.keys(row)[0]); }},
 					{fid:'1',title:'规则',width:200,class:'file_rule table-text-cell',templet:function(row,index){
-						return  '<span>' + row[Object.keys(row)[0]] + '</span>';
+						return  '<span>' + _this.escapeHTML(row[Object.keys(row)[0]]) + '</span>';
 					}},
 					{fid:'total',title:'操作',width:290,style:'text-align: right;',group:[
 						{title:'打开文件',event:function(row,index){
 							OnlineEditFile(0,Object.keys(row)[0]);
 						}},{title:'误报',event:function(row,index){
 							var _file = Object.keys(row)[0];
-							layer.confirm('确认提交误报反馈？', {title:'误报反馈',icon:0,closeBtn:2}, function () {
+							layer.confirm('确认将此结果标记为本地忽略？不会上传文件或反馈内容。', {title:'本地忽略',icon:0,closeBtn:2}, function () {
 								_this.lock_not_webshell({not_path:_file,path:obj['path']},function(res){
 									layer.msg(res.msg,{icon:res.status?1:2});
 								});
@@ -2607,14 +2705,14 @@
 						}}
 					]}
 				],
-				data:obj.data,
+				data:rows,
 				done:function(res){
 					$('#scan_webshell_table .fixed-table .file_rule').hover(function(e){
 						var _val = $(this).find('span').text(),_that = $(this);
 						$(this).append('<div class="rule_down_icon" style="top:'+ e.currentTarget.offsetTop +'px;right:274px"><i class="iconfont iconxialadown" style="font-size: 20px;"></i></div>')
 						$(this).off('click.free_waf.rule').on('click.free_waf.rule',function(e){
 							if(_that.find('.rule_mask').length === 0){
-								_that.append('<div class="rule_mask" style="top:'+ e.currentTarget.offsetTop +'px;"><div class="content">'+ _val +'</div><i class="iconfont iconguanbi" style="font-size: 25px;"></i></div>')
+								_that.append('<div class="rule_mask" style="top:'+ e.currentTarget.offsetTop +'px;"><div class="content">'+ _this.escapeHTML(_val) +'</div><i class="iconfont iconguanbi" style="font-size: 25px;"></i></div>')
 							}
 							e.preventDefault();
 							e.stopPropagation();
@@ -2834,7 +2932,7 @@
 						}},
 						{fid:'2',title:'站点'},
 						{fid:'3',title:'封锁原因',templet:function(row,index){
-							return row[5] === 'cc' ? 'CC攻击' : (row[5] === 'ip_black' ? '黑名单' : '多次恶意请求');
+							return row[5] === 'endpoint_limit' ? '接口限流（限域封禁）' : row[5] === 'cc' ? 'CC攻击' : (row[5] === 'ip_black' ? '黑名单' : '多次恶意请求');
 						}},
 						{fid:'4',title:'封禁时长',templet:function(row,index){
 							return row[4] + '秒';
@@ -3972,6 +4070,7 @@
 							<li class="key" style="display:'+ (obj.siteName?'none':'list-item') +'">这里设置的是初始值，新建站点会继承，已存在站点不会自动生效。</li>\
 							<li class="key" style="display:'+ (!obj.siteName?'none':'list-item') +'">这里的设置仅对当前站点有效。</li>\
 							<li><span class="waf_cc_cycle key">'+ obj.cc_cycle +'</span> 秒内同一 URL 累计请求超过 <span class="waf_cc_limit key">'+ obj.cc_limit +'</span> 次，将触发 CC 防御并封禁该 IP <span class ="waf_cc_endtime key">'+ obj.cc_endtime +'</span> 秒。</li>\
+							<li>四种模式均为固定阈值预设，不会自动学习流量；增强限流不进行人机验证。</li>\
 							<li class="key" style="display:'+ (!obj.siteName?'none':'list-item') +'">请不要设置过于严格的CC规则,以免影响正常用户体验</li>\
 						</ul>\
 					</div>\
@@ -6330,6 +6429,268 @@
 					if(callback) callback(res);
 				}
 			});
+		},
+		init_endpoint_policies:function(){
+			var _this = this;
+			this._endpoint_requests = {};
+			this._endpoint_sequences = {};
+			this._endpoint_sites = [];
+			this._endpoint_site = '';
+			this._endpoint_rules = [];
+			this._endpoint_ready = false;
+			this._endpoint_busy = false;
+			this._endpoint_confirmation = null;
+			this._endpoint_epoch = (this._endpoint_epoch || 0) + 1;
+			this.bind_panel_event('change','#endpoint_policy_site',function(){_this.select_endpoint_site($(this).val());});
+			this.bind_panel_event('click','#endpoint_policy_sites_refresh',function(){_this.load_endpoint_sites();});
+			this.bind_panel_event('click','#endpoint_policy_refresh',function(){_this.load_endpoint_rules();});
+			this.bind_panel_event('click','#endpoint_policy_events_refresh',function(){_this.load_endpoint_events();});
+			this.bind_panel_event('click','#endpoint_policy_new',function(){
+				if(_this.endpoint_editable()) _this.reset_endpoint_editor();
+			});
+			this.bind_panel_event('click','#endpoint_policy_cancel',function(){
+				if(_this.endpoint_editable()) _this.reset_endpoint_editor();
+			});
+			this.bind_panel_event('click','.endpoint-policy-edit',function(){_this.edit_endpoint_policy($(this).attr('data-id'));});
+			this.bind_panel_event('click','.endpoint-policy-delete',function(){_this.confirm_endpoint_delete($(this).attr('data-id'));});
+			this.bind_panel_event('click','#endpoint_policy_save',function(){_this.save_endpoint_policy_ui();});
+			this.bind_panel_event('submit','#endpoint_policy_editor',function(event){event.preventDefault();_this.save_endpoint_policy_ui();});
+		},
+		endpoint_alive:function(){
+			return !this._destroyed && this._active_page === 'policies' && this.$root && this.$root[0].isConnected;
+		},
+		endpoint_editable:function(){
+			return this.endpoint_alive() && !!this._endpoint_site && this._endpoint_ready && !this._endpoint_busy && !this._endpoint_confirmation;
+		},
+		endpoint_text:function(value){
+			return String(value === undefined || value === null ? '' : value).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+		},
+		stop_endpoint_requests:function(){
+			// Invalidate before abort: abort may synchronously invoke error/complete.
+			this._endpoint_epoch = (this._endpoint_epoch || 0) + 1;
+			var pending = this._endpoint_requests || {};
+			this._endpoint_requests = {};
+			this._endpoint_busy = false;
+			this._endpoint_ready = false;
+			var confirmation = this._endpoint_confirmation;
+			this._endpoint_confirmation = null;
+			if(confirmation && confirmation.layer !== undefined) layer.close(confirmation.layer);
+			for(var kind in pending) if(Object.prototype.hasOwnProperty.call(pending,kind) && pending[kind]) pending[kind].abort();
+		},
+		endpoint_request:function(kind,method,data,success,failure){
+			if(!this.endpoint_alive()) return false;
+			var _this = this, epoch = this._endpoint_epoch, owner = this._generation, site = this._endpoint_site;
+			var sequence = (this._endpoint_sequences[kind] || 0) + 1;
+			this._endpoint_sequences[kind] = sequence;
+			if(this._endpoint_requests[kind]) this._endpoint_requests[kind].abort();
+			function current(){
+				return _this.endpoint_alive() && owner === _this._generation && epoch === _this._endpoint_epoch && site === _this._endpoint_site && sequence === _this._endpoint_sequences[kind];
+			}
+			var xhr = this.http({method:method,type:'POST',data:data,load:2,msg:false,check:true,
+				success:function(res){if(current()) success(res);},
+				error:function(xhr,message){if(current() && failure) failure(message);},
+				complete:function(){if(current()) delete _this._endpoint_requests[kind];}
+			});
+			this._endpoint_requests[kind] = xhr;
+			return xhr;
+		},
+		endpoint_controls:function(){
+			var disabled = !this.endpoint_editable();
+			$('#endpoint_policy_fields').prop('disabled',disabled);
+			$('#endpoint_policy_save').prop('disabled',disabled);
+			$('#endpoint_policy_cancel').prop('disabled',disabled);
+			$('#endpoint_policy_new').prop('disabled',disabled);
+			$('.endpoint-policy-edit,.endpoint-policy-delete').prop('disabled',disabled);
+			$('#endpoint_policy_refresh').prop('disabled',!this._endpoint_site || this._endpoint_busy || !!this._endpoint_confirmation);
+			$('#endpoint_policy_events_refresh').prop('disabled',!this._endpoint_site);
+		},
+		reset_endpoint_editor:function(){
+			this._endpoint_edit_id = null;
+			var defaults = {name:'',path:'',match:'exact',method:'ALL',window_seconds:60,max_requests:30,action:'observe',ban_seconds:60};
+			for(var field in defaults) $('#endpoint_policy_'+field).val(defaults[field]);
+			$('#endpoint_policy_enabled').prop('checked',false);
+			$('#endpoint_policy_editor_title').text('新建规则 · 默认停用');
+			this.endpoint_controls();
+		},
+		clear_endpoint_view:function(){
+			this._endpoint_rules = [];
+			this.reset_endpoint_editor();
+			$('#endpoint_policy_rules').html('<tr><td colspan="5">请先选择站点，所有已启用和已停用规则都会显示在此。</td></tr>');
+			$('#endpoint_policy_rule_summary').text('请先选择站点。');
+			$('#endpoint_policy_events').html('<tr><td colspan="7">请先选择站点。</td></tr>');
+			$('#endpoint_policy_event_summary').text('已记录事件：--');
+			$('#endpoint_policy_coverage').text('尚未读取。无事件不代表没有流量或没有超限。');
+		},
+		load_endpoint_sites:function(){
+			if(!this.endpoint_alive()) return;
+			this.stop_endpoint_requests();
+			this._endpoint_site = '';
+			this._endpoint_sites = [];
+			this.clear_endpoint_view();
+			$('#endpoint_policy_site').html('<option value="">正在读取站点...</option>').val('').prop('disabled',true);
+			$('#endpoint_policy_status').text('正在读取站点配置，请稍候。');
+			var _this = this;
+			function failed(message){
+				$('#endpoint_policy_site').html('<option value="">站点读取失败</option>').prop('disabled',true);
+				$('#endpoint_policy_status').text('站点读取失败：'+message+'；可点击重新读取站点重试。');
+			}
+			this.endpoint_request('sites','get_site_config',{},function(res){
+				if(!Array.isArray(res)){failed((res && res.msg) || '返回格式不可用');return;}
+				var options = '<option value="">请选择站点</option>';
+				for(var i=0;i<res.length;i++){
+					var name = res[i] && res[i].siteName;
+					if(typeof name !== 'string' || !name || _this._endpoint_sites.indexOf(name) !== -1) continue;
+					_this._endpoint_sites.push(name);
+					options += '<option value="'+_this.endpoint_text(name)+'">'+_this.endpoint_text(name)+'</option>';
+				}
+				$('#endpoint_policy_site').html(options).val('').prop('disabled',!_this._endpoint_sites.length);
+				$('#endpoint_policy_status').text(_this._endpoint_sites.length ? '请选择站点后读取规则和近 1 日采样证据，不会自动刷新。' : '暂无可配置站点，请先在站点页面核对站点配置，再重新读取。');
+			},failed);
+		},
+		select_endpoint_site:function(site){
+			if(!this.endpoint_alive()) return;
+			this.stop_endpoint_requests();
+			this._endpoint_site = this._endpoint_sites.indexOf(site) !== -1 ? site : '';
+			$('#endpoint_policy_site').val(this._endpoint_site);
+			this.clear_endpoint_view();
+			if(!this._endpoint_site){$('#endpoint_policy_status').text('请先选择站点，不会读取或写入接口策略。');return;}
+			this.load_endpoint_rules();
+			this.load_endpoint_events();
+		},
+		load_endpoint_rules:function(){
+			if(!this.endpoint_alive() || !this._endpoint_site || this._endpoint_busy || this._endpoint_confirmation) return;
+			var _this = this, site = this._endpoint_site;
+			this._endpoint_ready = false;
+			this.endpoint_controls();
+			$('#endpoint_policy_status').text('正在读取 '+site+' 的规则；读取成功前不可编辑。');
+			function failed(message){
+				$('#endpoint_policy_status').text('规则读取失败：'+message+'；请手动刷新规则。');
+				_this.endpoint_controls();
+			}
+			this.endpoint_request('rules','get_endpoint_policies',{siteName:site},function(res){
+				if(!res || res.status !== true || res.siteName !== site || !Array.isArray(res.rules)){failed((res && res.msg) || '站点不匹配或返回格式不可用');return;}
+				_this._endpoint_rules = res.rules;
+				_this._endpoint_ready = true;
+				_this.render_endpoint_rules();
+				_this.endpoint_controls();
+				$('#endpoint_policy_status').text('已读取 '+site+' 的规则；变更需手动保存，不会自动刷新。');
+			},failed);
+		},
+		endpoint_action_label:function(action){
+			return action === 'observe' ? '观察 · 仅记录' : action === 'reject' ? '拒绝本次请求' : action === 'ban' ? '限域封禁' : action;
+		},
+		render_endpoint_rules:function(){
+			var html = '', enabled = 0;
+			for(var i=0;i<this._endpoint_rules.length;i++){
+				var row = this._endpoint_rules[i] || {}, active = row.enabled === true;
+				if(active) enabled++;
+				var tools = /^[a-f0-9]{32}$/.test(row.id || '') ? '<div class="waf-policy-actions"><button type="button" class="endpoint-policy-edit" data-id="'+row.id+'">编辑</button><button type="button" class="endpoint-policy-delete" data-id="'+row.id+'">删除</button></div>' : '标识无效，请重新读取';
+				html += '<tr><td>'+this.endpoint_text(row.name)+'<br><span class="waf-policy-tag'+(active ? '' : ' is-off')+'">'+(active ? '已启用' : '已停用')+'</span></td>'
+					+'<td>'+this.endpoint_text(row.path)+'<br>'+this.endpoint_text(row.match === 'exact' ? '精确路径' : row.match === 'prefix' ? '路径段前缀' : row.match)+' · '+this.endpoint_text(row.method)+'</td>'
+					+'<td>'+this.endpoint_text(row.window_seconds)+' 秒 / '+this.endpoint_text(row.max_requests)+' 次</td>'
+					+'<td>'+this.endpoint_text(this.endpoint_action_label(row.action))+(row.action === 'ban' ? '<br>'+this.endpoint_text(row.ban_seconds)+' 秒' : '')+'</td><td>'+tools+'</td></tr>';
+			}
+			$('#endpoint_policy_rules').html(html || '<tr><td colspan="5">本站点暂无接口规则；不会改变已有防护，可新建停用规则。</td></tr>');
+			$('#endpoint_policy_rule_summary').text('共 '+this._endpoint_rules.length+' 条 · 已启用 '+enabled+' 条 · 已停用 '+(this._endpoint_rules.length-enabled)+' 条');
+		},
+		edit_endpoint_policy:function(id){
+			if(!this.endpoint_editable() || !/^[a-f0-9]{32}$/.test(id || '')) return;
+			for(var i=0;i<this._endpoint_rules.length;i++){
+				var row = this._endpoint_rules[i];
+				if(!row || row.id !== id) continue;
+				this._endpoint_edit_id = row.id;
+				var fields = ['name','path','match','method','window_seconds','max_requests','action','ban_seconds'];
+				for(var j=0;j<fields.length;j++) $('#endpoint_policy_'+fields[j]).val(row[fields[j]]);
+				$('#endpoint_policy_enabled').prop('checked',row.enabled === true);
+				$('#endpoint_policy_editor_title').text('编辑规则：'+row.name);
+				return;
+			}
+		},
+		save_endpoint_policy_ui:function(){
+			if(!this.endpoint_editable()) return;
+			var policy = {}, fields = ['name','path','match','method','action'];
+			for(var i=0;i<fields.length;i++) policy[fields[i]] = String($('#endpoint_policy_'+fields[i]).val() || '');
+			var error = '';
+			if(!policy.name.trim() || Array.from(policy.name).length > 128 || /[\x00-\x1f\x7f]/.test(policy.name)) error = '名称须为 1–128 个字符且不含控制字符。';
+			var pathBytes = 513;
+			try{pathBytes = encodeURIComponent(policy.path).replace(/%[0-9a-f]{2}/gi,'x').length;}catch(invalidPath){}
+			if(policy.path.charAt(0) !== '/' || pathBytes > 512 || /[\s%?#\x00-\x1f\x7f\\^$*+()\[\]{}|]/.test(policy.path) || policy.path.indexOf('//') !== -1 || /(?:^|\/)\.{1,2}(?:\/|$)/.test(policy.path)) error = '路径须为最多 512 字节的绝对路径，不含空白、查询串、片段、正则、% 编码、重复斜线或点路径段。';
+			if(['exact','prefix'].indexOf(policy.match) === -1 || ['ALL','GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS'].indexOf(policy.method) === -1 || ['observe','reject','ban'].indexOf(policy.action) === -1) error = '请选择有效的匹配方式、请求方法与超限动作。';
+			var ranges = [['window_seconds',3600,'统计窗口'],['max_requests',100000,'请求阈值'],['ban_seconds',28800,'封禁时长']];
+			for(var n=0;n<ranges.length;n++){
+				var key = ranges[n][0], value = String($('#endpoint_policy_'+key).val());
+				policy[key] = Number(value);
+				if(!/^\d+$/.test(value) || policy[key] < 1 || policy[key] > ranges[n][1]) error = ranges[n][2]+'必须为 1–'+ranges[n][1]+' 的整数。';
+			}
+			if(!this._endpoint_edit_id && this._endpoint_rules.length >= 50) error = '每站点最多 50 条规则，请先整理现有规则。';
+			if(error){$('#endpoint_policy_status').text('未保存：'+error);return;}
+			policy.enabled = $('#endpoint_policy_enabled').prop('checked') === true;
+			if(this._endpoint_edit_id) policy.id = this._endpoint_edit_id;
+			this.write_endpoint_policy('save_endpoint_policy',{siteName:this._endpoint_site,policy:JSON.stringify(policy)});
+		},
+		write_endpoint_policy:function(method,data){
+			if(!this.endpoint_editable()) return;
+			var _this = this;
+			this._endpoint_busy = true;
+			this.endpoint_controls();
+			$('#endpoint_policy_status').text('正在'+(method === 'delete_endpoint_policy' ? '删除' : '保存')+'规则，请勿重复提交。');
+			function failed(message){
+				_this._endpoint_busy = false;
+				$('#endpoint_policy_status').text('写入失败：'+message+'；保留编辑内容。若连接中断，请先刷新规则核对服务器状态再重试。');
+				_this.endpoint_controls();
+			}
+			this.endpoint_request('write',method,data,function(res){
+				if(!res || res.status !== true){failed((res && res.msg) || '服务器未确认成功');return;}
+				_this._endpoint_busy = false;
+				_this.reset_endpoint_editor();
+				_this.load_endpoint_rules();
+			},failed);
+		},
+		confirm_endpoint_delete:function(id){
+			if(!this.endpoint_editable() || !/^[a-f0-9]{32}$/.test(id || '')) return;
+			var row = null;
+			for(var i=0;i<this._endpoint_rules.length;i++) if(this._endpoint_rules[i] && this._endpoint_rules[i].id === id) row = this._endpoint_rules[i];
+			if(!row) return;
+			var _this = this, epoch = this._endpoint_epoch, owner = this._generation, site = this._endpoint_site, token = {};
+			this._endpoint_confirmation = token;
+			this.endpoint_controls();
+			function cancel(){
+				if(_this._endpoint_confirmation !== token) return;
+				_this._endpoint_confirmation = null;
+				if(_this.endpoint_alive()) _this.endpoint_controls();
+			}
+			token.layer = layer.confirm('确认删除站点 '+this.endpoint_text(site)+' 的规则「'+this.endpoint_text(row.name)+'」？删除不会修改全局白名单或黑名单。',
+				{title:'删除接口规则',btn:['确认删除','取消'],icon:0,closeBtn:2,cancel:cancel,end:cancel},
+				function(index){
+					if(!_this.endpoint_alive() || epoch !== _this._endpoint_epoch || owner !== _this._generation || site !== _this._endpoint_site || _this._endpoint_confirmation !== token) return;
+					_this._endpoint_confirmation = null;
+					layer.close(index);
+					_this.write_endpoint_policy('delete_endpoint_policy',{siteName:site,id:id});
+				},cancel);
+		},
+		load_endpoint_events:function(){
+			if(!this.endpoint_alive() || !this._endpoint_site) return;
+			var _this = this;
+			$('#endpoint_policy_coverage').text('正在读取近 1 日采样证据，不会自动刷新。');
+			function failed(message){
+				$('#endpoint_policy_event_summary').text('已记录事件：--');
+				$('#endpoint_policy_events').html('<tr><td colspan="7">证据读取失败，可手动刷新重试。</td></tr>');
+				$('#endpoint_policy_coverage').text('证据读取失败：'+message+'；无法据此判断流量或超限情况。');
+			}
+			this.endpoint_request('events','get_endpoint_policy_events',{siteName:this._endpoint_site,days:1},function(res){
+				if(!res || res.status !== true || !Array.isArray(res.events)){failed((res && res.msg) || '返回格式不可用');return;}
+				var summary = res.summary || {}, coverage = res.coverage || {}, html = '';
+				function count(value){return typeof value === 'number' && isFinite(value) && value >= 0 ? Math.floor(value) : '--';}
+				$('#endpoint_policy_event_summary').text('近 1 日已记录事件：'+count(summary.recorded_events)+' · 观察 '+count(summary.observed)+' · 拒绝 '+count(summary.rejected)+' · 限域封禁 '+count(summary.banned));
+				$('#endpoint_policy_coverage').text((coverage.partial === false ? '后端声明本次读取范围完整，仍仅代表已记录的采样事件。' : '部分覆盖或采样完整性未确认。')+(coverage.notice || '')+' 不代表全部请求数或精确历史命中；无事件不代表没有超限。');
+				for(var i=0;i<res.events.length;i++){
+					var row = res.events[i] || {}, e = function(value){return _this.endpoint_text(value);};
+					html += '<tr><td>'+e(row.timestamp)+'<br>'+e(row.site)+'</td><td>'+e(row.ip)+'<br>'+e(row.method)+'</td><td>'+e(row.path)+'</td>'
+						+'<td>'+e(row.rule_name)+'<br>'+e(row.rule_id)+'</td><td>'+e(_this.endpoint_action_label(row.action))+'</td><td>'+e(row.count)+' / '+e(row.limit)+'</td>'
+						+'<td>'+e(row.window_seconds)+' 秒 / '+e(row.retry_after)+' 秒</td></tr>';
+				}
+				$('#endpoint_policy_events').html(html || '<tr><td colspan="7">本次未返回已记录事件。可能尚未启用、未超限或采样未覆盖，请勿据此判断没有流量。</td></tr>');
+			},failed);
 		},
 		// 请求封装
 		http: function (obj) {

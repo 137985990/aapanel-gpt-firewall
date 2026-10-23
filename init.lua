@@ -504,10 +504,163 @@ function encode_json_array(data)
 	return json.encode(data)
 end
 
+function endpoint_normalize_ip(value)
+	if not is_runtime_ban_ip(value) then return nil end
+	if is_runtime_ban_ipv4(value) then return value end
+	local address = string.lower(value)
+	if string.find(address, '.', 1, true) then
+		local prefix,a,b,c,d = string.match(address, '^(.*:)(%d+)%.(%d+)%.(%d+)%.(%d+)$')
+		address = prefix .. string.format('%x:%x', tonumber(a)*256+tonumber(b), tonumber(c)*256+tonumber(d))
+	end
+	local left,right = string.match(address, '^(.-)::(.-)$')
+	local groups = {}
+	for item in string.gmatch(left or address, '[^:]+') do groups[#groups+1] = tonumber(item,16) end
+	if left then
+		local tail = {}
+		for item in string.gmatch(right, '[^:]+') do tail[#tail+1] = tonumber(item,16) end
+		for _=1,8-#groups-#tail do groups[#groups+1] = 0 end
+		for _,item in ipairs(tail) do groups[#groups+1] = item end
+	end
+	local best_start,best_length,index = nil,1,1
+	while index <= 8 do
+		if groups[index] == 0 then
+			local finish = index
+			while finish <= 8 and groups[finish] == 0 do finish=finish+1 end
+			if finish-index > best_length then best_start,best_length=index,finish-index end
+			index=finish
+		else index=index+1 end
+	end
+	local a,b = {},{}
+	for i,item in ipairs(groups) do
+		if not best_start or i < best_start then a[#a+1]=string.format('%x',item)
+		elseif i >= best_start+best_length then b[#b+1]=string.format('%x',item) end
+	end
+	return table.concat(a,':') .. (best_start and '::' or '') .. table.concat(b,':')
+end
+
+function endpoint_state_key(kind, site, rule, client_ip)
+	-- Policy revisions do not inherit counters or bans from an edited rule.
+	local revision = ngx.md5(json.encode({rule.path,rule.match,rule.method,rule.action,rule.window_seconds,rule.max_requests,rule.ban_seconds}))
+	return 'endpoint:v1:' .. kind .. ':' .. #site .. ':' .. site .. ':' .. rule.id .. '.' .. revision .. ':' .. client_ip
+end
+
+function endpoint_state_ip(key, include_counters)
+	if type(key) ~= 'string' then return nil end
+	local kind,length,rest = string.match(key, '^endpoint:v1:([^:]+):(%d+):(.*)$')
+	if not length or (kind ~= 'ban' and (not include_counters or (kind ~= 'count' and kind ~= 'event'))) then return nil end
+	length=tonumber(length)
+	if length < 1 or length > 253 or string.sub(rest,length+1,length+1) ~= ':' then return nil end
+	local identity,client_ip=string.match(string.sub(rest,length+2), '^([^:]+):(.*)$')
+	if not identity or #identity ~= 65 or string.sub(identity,33,33) ~= '.' then return nil end
+	if not string.match(string.sub(identity,1,32),'^[0-9a-f]+$') or not string.match(string.sub(identity,34),'^[0-9a-f]+$') then return nil end
+	return endpoint_normalize_ip(client_ip)
+end
+
+function endpoint_valid_rule(rule)
+	if type(rule) ~= 'table' or rule.enabled ~= true then return false end
+	if type(rule.id) ~= 'string' or #rule.id ~= 32 or not string.match(rule.id,'^[0-9a-f]+$') then return false end
+	if rule.action ~= 'observe' and rule.action ~= 'reject' and rule.action ~= 'ban' then return false end
+	if rule.match ~= 'exact' and rule.match ~= 'prefix' then return false end
+	if type(rule.path) ~= 'string' or #rule.path < 1 or #rule.path > 512 or string.sub(rule.path,1,1) ~= '/' then return false end
+	if string.find(rule.path,'[%c%%?#\\]') or string.find(rule.path,'//',1,true) then return false end
+	for component in string.gmatch(rule.path,'[^/]+') do if component=='.' or component=='..' then return false end end
+	local methods = {ALL=true,GET=true,POST=true,PUT=true,PATCH=true,DELETE=true,HEAD=true,OPTIONS=true}
+	if not methods[rule.method] then return false end
+	for _,item in ipairs({{'window_seconds',3600},{'max_requests',100000},{'ban_seconds',28800}}) do
+		local n=rule[item[1]]
+		if type(n)~='number' or n~=n or n<1 or n>item[2] or n~=math.floor(n) then return false end
+	end
+	return true
+end
+
+function endpoint_path_matches(rule, path, request_method)
+	if rule.method ~= 'ALL' and rule.method ~= request_method then return false end
+	if path==rule.path then return true end
+	if rule.match~='prefix' then return false end
+	if rule.path=='/' then return true end
+	local prefix=rule.path
+	if string.sub(prefix,-1)~='/' then prefix=prefix..'/' end
+	return string.sub(path,1,#prefix)==prefix
+end
+
+function endpoint_record_event(rule, site, client_ip, path, count, retry_after)
+	if config.log ~= true or (site_config[site] and site_config[site].log == false) then return false end
+	local key=endpoint_state_key('event',site,rule,client_ip)
+	if not ngx.shared.free_waf:safe_add(key,true,rule.window_seconds) then return false end
+	local entry={timestamp=ngx.localtime(),site=site,ip=client_ip,path=string.sub(path,1,512),method=method,
+		rule_id=rule.id,rule_name=string.sub(tostring(rule.name or ''),1,240),action=rule.action,
+		count=count,limit=rule.max_requests,window_seconds=rule.window_seconds,retry_after=retry_after}
+	local fp=io.open(config.logs_path..'/endpoint_'..ngx.today()..'.jsonl','ab')
+	if not fp then return false end
+	local written=fp:write(json.encode(entry)..'\n')
+	fp:close()
+	return not not written
+end
+
+function endpoint_limit_response(retry_after)
+	ngx.header['Retry-After']=tostring(math.max(1,math.ceil(retry_after)))
+	ngx.header.content_type='application/json; charset=utf-8'
+	ngx.header['Cache-Control']='no-store'
+	ngx.status=429
+	ngx.say(json.encode({error={type='rate_limit_exceeded',message='请求过于频繁，请稍后重试。'}}))
+	ngx.exit(429)
+	return true
+end
+
+function endpoint_policy_guard()
+	local site=site_config[server_name]
+	if type(site)~='table' or type(site.endpoint_limits)~='table' then return false end
+	if type(server_name)~='string' or #server_name>253 then return false end
+	local client_ip=endpoint_normalize_ip(ip)
+	local path=ngx.var.uri
+	if not client_ip or type(path)~='string' then return false end
+	local shared=ngx.shared.free_waf
+	for index,rule in ipairs(site.endpoint_limits) do
+		if index>50 then break end
+		if endpoint_valid_rule(rule) and endpoint_path_matches(rule,path,method) then
+			local now=ngx.time()
+			local ban_key=endpoint_state_key('ban',server_name,rule,client_ip)
+			local banned_until=shared:get(ban_key)
+			if type(banned_until)=='number' and banned_until>now then return endpoint_limit_response(banned_until-now) end
+			local count_key=endpoint_state_key('count',server_name,rule,client_ip)
+			shared:safe_add(count_key,0,rule.window_seconds)
+			local count=shared:incr(count_key,1)
+			if count and count>rule.max_requests then
+				local wait=rule.window_seconds
+				if rule.action=='ban' then
+					wait=rule.ban_seconds
+					if not shared:safe_set(ban_key,now+wait,wait) then return false end
+					write_drop_ip_entry(client_ip,server_name,path,wait,'endpoint_limit')
+				end
+				endpoint_record_event(rule,server_name,client_ip,path,count,wait)
+				if rule.action~='observe' then return endpoint_limit_response(wait) end
+			end
+		end
+	end
+	return false
+end
+
+function clear_endpoint_state(target_ips)
+	local normalized={}
+	for value in pairs(target_ips) do local v=endpoint_normalize_ip(value); if v then normalized[v]=true end end
+	local shared=ngx.shared.free_waf
+	for _,key in ipairs(shared:get_keys(0)) do
+		local client_ip=endpoint_state_ip(key,true)
+		if client_ip and normalized[client_ip] then shared:delete(key) end
+	end
+end
+
+function cc_counter_key()
+	local path=ngx.var.uri or uri or '/'
+	local site=tostring(server_name or '')
+	return ngx.md5('cc:v2:' .. #site .. ':' .. site .. ':' .. tostring(ip) .. ':' .. path)
+end
+
 function cc()
 	if not config['cc']['open'] or not site_cc then return false end
-	local token = ngx.md5(ip .. '_' .. request_uri)
-	local count,_ = ngx.shared.free_waf:get(token)
+	local token = cc_counter_key()
+	ngx.shared.free_waf:safe_add(token,0,cycle)
+	local count = ngx.shared.free_waf:incr(token,1)
 	if count then
 		if count > limit then
 			local safe_count,_ = ngx.shared.free_waf_drop_sum:get(ip)
@@ -525,11 +678,7 @@ function cc()
 			write_drop_ip('cc',lock_time)
 			ngx.exit(config['cc']['status'])
 			return true
-		else
-			ngx.shared.free_waf:incr(token,1)
 		end
-	else
-		ngx.shared.free_waf:set(token,1,cycle)
 	end
 	return false
 end
@@ -539,11 +688,13 @@ function cc2()
 	if not site_config[server_name] then return false end
 	if not site_config[server_name]['cc']['increase'] then return false end
 	if ngx_match(uri,"\\.(jpg|png|gif|css|js|swf|ts)$","isjo") then return false end
-	sv,_ = ngx.shared.free_waf:get(ip)
-	if sv == 666 then return false end
 	local token2 = ngx.md5(method .. server_name .. tostring(request_header['user-agent']) .. tostring(request_header['host']) .. tostring(request_header['accept-language']) .. tostring(request_header['connection']) .. tostring(request_header['accept']) .. tostring(request_header['accept-encoding']) .. tostring(request_header['upgrade-insecure-requests']) .. tostring(request_header['cache-control'])) .. '_' .. 'cc2'
+	local path=ngx.var.uri or uri or '/'
+	local site=tostring(server_name or '')
+	token2 = ngx.md5('cc2:v2:'..#site..':'..site..':'..#path..':'..path..':'..token2)..'_cc2'
 	local cc2_limit = limit * 3
-	local count,_ = ngx.shared.free_waf:get(token2)
+	ngx.shared.free_waf:safe_add(token2,0,cycle)
+	local count = ngx.shared.free_waf:incr(token2,1)
 	if count then
 		if count > cc2_limit then
 			local safe_count,_ = ngx.shared.free_waf_drop_sum:get(ip)
@@ -564,40 +715,15 @@ function cc2()
 				return true
 			end
 			security_verification()
-		else
-			ngx.shared.free_waf:incr(token2,1)
 		end
-	else
-		ngx.shared.free_waf:safe_set(token2,1,cycle)
 	end
 	return false
 end
 
 function security_verification()
-	if uri_request_args['btwaf'] then
-		vn3,_ = ngx.shared.free_waf:get(ip)
-		if tostring(vn3) == uri_request_args['btwaf'] then
-			ngx.shared.free_waf:delete(ip)
-			ngx.shared.free_waf:delete(ngx.md5(ip .. '_' .. uri))
-			ngx.shared.free_waf:set(ip,666,3600)
-			return false
-		end
-	end
-	math.randomseed(tostring(os.time()):reverse():sub(1, 6))
-	local n1 = math.random(0,20)
-	local n2 = math.random(0,20)
-	local n3 = n1 + n2
-	ngx.shared.free_waf:set(ip,n3,300)
-	local vargs = '&btwaf='
-	sargs = string.gsub(request_uri,'.?btwaf=.*','')
-	if not string.find(sargs,'?',1,true) then vargs = '?btwaf=' end
-	ngx.header.charset = 'utf-8'
-	local jsbody = string.format([[
-<script type="text/javascript">var pre = prompt("检测到您的请求异常!\n请输入右边的计算结果: %s = ?");window.location.href='%s'+pre</script>
-	]],tostring(n1) .. ' + ' .. tostring(n2),sargs .. vargs)
-	ngx.header.content_type = "text/html;charset=utf8"
-	ngx.say(jsbody)
-	ngx.exit(403)
+	-- Retired predictable arithmetic/URL-script challenge; never grant an IP bypass.
+	local wait=tonumber(cycle) or 60
+	return endpoint_limit_response(math.max(1,math.min(wait,3600)))
 end
 
 function scan_black()
@@ -1168,7 +1294,21 @@ function get_btwaf_drop_ip()
 	local scopes = registration_guard_scopes()
 	for _,key in ipairs(shared:get_keys(0))
 	do
-		local client_ip = registration_state_ip(key, false, scopes)
+		local client_ip = endpoint_state_ip(key, false)
+		if client_ip then
+			local length,rest=string.match(key,'^endpoint:v1:ban:(%d+):(.*)$')
+			local site=string.sub(rest,1,tonumber(length))
+			local current=site_config[site]
+			local active=false
+			local deadline=shared:get(key)
+			if type(deadline)=='number' and deadline>ngx.time() and type(current)=='table' and type(current.endpoint_limits)=='table' then
+				for index,rule in ipairs(current.endpoint_limits) do
+					if index>50 then break end
+					if endpoint_valid_rule(rule) and rule.action=='ban' and key==endpoint_state_key('ban',site,rule,client_ip) then active=true; break end
+				end
+			end
+			if not active then client_ip=nil end
+		else client_ip=registration_state_ip(key,false,scopes) end
 		if client_ip and shared:get(key) and not seen[client_ip] then
 			seen[client_ip] = true
 			table.insert(data, client_ip)
@@ -1196,6 +1336,7 @@ function remove_btwaf_drop_ip()
 	ngx.shared.free_waf_drop_ip:delete(target_ip)
 	-- The legacy IP-only interface revokes this IP across every guard scope.
 	clear_registration_state({[target_ip] = true})
+	clear_endpoint_state({[target_ip] = true})
 	return get_return_state(true,target_ip .. '已解封')
 end
 
@@ -1206,6 +1347,13 @@ function clean_btwaf_drop_ip()
 	for _,value in ipairs(data)
 	do
 		drop_map[value] = true
+	end
+	local endpoint_map = {}
+	for value in pairs(drop_map) do endpoint_map[value]=true end
+	-- Cleanup includes old revisions hidden from the current enforcement view.
+	for _,key in ipairs(ngx.shared.free_waf:get_keys(0)) do
+		local client_ip=endpoint_state_ip(key,true)
+		if client_ip then endpoint_map[client_ip]=true end
 	end
 	local rules = read_file('ip_black')
 	local new_rules = {}
@@ -1235,6 +1383,7 @@ function clean_btwaf_drop_ip()
 		ngx.shared.free_waf_drop_ip:delete(value)
 	end
 	clear_registration_state(drop_map)
+	clear_endpoint_state(endpoint_map)
 	return get_return_state(true,'已解封所有封锁IP')
 end
 
@@ -1400,6 +1549,7 @@ function run_btwaf()
 	if user_agent_white() then return true end
 
 	if url_white() then return true end
+	endpoint_policy_guard()
 	ban_empty_ua()
 	url_black()
 	drop_abroad()

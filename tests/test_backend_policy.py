@@ -304,7 +304,15 @@ class BackendPolicyTest(unittest.TestCase):
 
     def test_frontend_methods_exist_in_backend(self):
         defs = set(re.findall(r"^\s+def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", self.backend, re.M))
-        methods = set(re.findall(r"method\s*:\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]", self.frontend))
+        calls = re.findall(r"\bhttp\s*\(\s*\{(.*?)\bsuccess\s*:", self.frontend, re.S)
+        methods = set()
+        for call in calls:
+            # Only the transport's method is an API name; policy payloads also have a method.
+            match = re.search(r"\bmethod\s*:\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]", call)
+            if match:
+                methods.add(match.group(1))
+        self.assertIn('get_total_all', methods)
+        self.assertIn('send_baota', methods)
         missing = sorted(m for m in methods if m not in defs)
         self.assertEqual([], missing)
 

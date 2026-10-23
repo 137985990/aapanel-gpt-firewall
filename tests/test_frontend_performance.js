@@ -455,6 +455,40 @@ test('hovering a scan result repeatedly does not accumulate close handlers', () 
   assert.equal(h.bindings.filter(b => b.delegated === '.iconguanbi').length, 1);
 });
 
+test('tenant filenames and scan signatures never become HTML or inline script', () => {
+  const h = harness();
+  let table;
+  h.waf.refresh_table_view = options => { table = options; };
+  const filename = "/site/x');globalThis.injected=1;('y<img src=x onerror=alert(1)>.php";
+  const signature = '<img src=x onerror=alert(2)>';
+  const row = { [filename]: signature };
+  h.waf.render_san_webshell({ data: [row] });
+  const cell = table.config[0].templet(row, 0);
+  assert.doesNotMatch(cell, /\bonclick\s*=|<img\b/);
+  assert.match(cell, /&lt;img/);
+  assert.doesNotMatch(table.config[1].templet(row, 0), /<img\b/);
+  assert.equal(typeof table.config[0].event, 'function');
+  let opened;
+  h.context.OnlineEditFile = (mode, path) => { opened = path; };
+  table.config[0].event(row, 0);
+  assert.equal(opened, filename);
+  assert.equal(h.context.injected, undefined);
+});
+
+test('scan incomplete coverage and failures remain explicit plain text', () => {
+  const h = harness();
+  let table;
+  h.waf.refresh_table_view = options => { table = options; };
+  h.waf.render_san_webshell({ data: { status: true, data: [], coverage: { partial: true, notice: '<timeout>' } } });
+  assert.equal(table.data.length, 0);
+  assert.match(h.$('#webshell_scan_coverage').text(), /结果不完整/);
+  assert.match(h.$('#webshell_scan_coverage').text(), /<timeout>/);
+  h.waf.render_san_webshell({ data: { status: false, msg: '扫描失败<fixture>' } });
+  assert.match(h.$('#webshell_scan_coverage').text(), /扫描失败<fixture>/);
+  h.waf.render_san_webshell({ data: [] });
+  assert.match(h.$('#webshell_scan_coverage').text(), /未提供覆盖信息/);
+});
+
 test('poll responses without site_options preserve the initial selectable sites', () => {
   const h = harness();
   h.navigate('statistics');

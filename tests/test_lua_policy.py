@@ -178,6 +178,20 @@ class LuaPolicyTest(unittest.TestCase):
                 self.assertNotIn("if lock_time > 86400", body)
                 self.assertNotIn("endtime * safe_count", body)
 
+    def test_legacy_challenge_cannot_create_or_honor_an_ip_bypass(self):
+        challenge = self._function_body("security_verification")
+        self.assertNotIn("request_uri", challenge)
+        self.assertNotIn("math.random", challenge)
+        self.assertIn("endpoint_limit_response", challenge)
+        self.assertNotIn("== 666", self._function_body("cc2"))
+
+    def test_optional_endpoint_policy_preserves_explicit_whitelists(self):
+        body = self._function_body("run_btwaf")
+        guard = self._call_pos(body, "endpoint_policy_guard()")
+        for call in ("if ip_white() then return true end", "if user_agent_white() then return true end", "if url_white() then return true end"):
+            self.assertLess(self._call_pos(body, call), guard)
+        self.assertLess(guard, self._call_pos(body, "cc()"))
+
 
 if __name__ == "__main__":
     unittest.main()

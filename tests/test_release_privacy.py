@@ -21,6 +21,7 @@ class ReleasePrivacyTest(unittest.TestCase):
             httpPost=Mock(side_effect=AssertionError('cloud request attempted')),
             ExecShell=Mock(side_effect=AssertionError('external upload attempted')),
             ReadFile=Mock(side_effect=AssertionError('file content read for upload')),
+            M=Mock(),
         )
         self.backend = load_backend(self.public)
 
@@ -28,6 +29,8 @@ class ReleasePrivacyTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'fixture.php'
             path.write_text('fixture-malware-marker')
+            self.public.M.return_value.field.return_value.select.return_value = [
+                dict(name='fixture.example', path=directory)]
             self.backend.send_baota2 = Mock(side_effect=AssertionError('automatic upload attempted'))
             self.backend.insert_log = Mock()
             result = self.backend.scan([str(path)], ['fixture-malware-marker'])
@@ -47,6 +50,14 @@ class ReleasePrivacyTest(unittest.TestCase):
         self.public.httpPost.assert_not_called()
         self.public.ReadFile.assert_not_called()
         self.public.ExecShell.assert_not_called()
+
+    def test_disabled_cloud_methods_do_not_even_inspect_private_file_arguments(self):
+        class PrivateArgs:
+            def __getattribute__(self, name):
+                raise AssertionError('private argument inspected: ' + name)
+        for method in ('send_baota', 'upload_file_url', 'check_webshell'):
+            self.assertFalse(getattr(self.backend, method)(PrivateArgs())['status'])
+        self.assertFalse(self.backend.send_baota2(PrivateArgs()))
 
     def test_false_positive_action_does_not_upload_or_add_global_bypass(self):
         source = (ROOT / 'index.html').read_text(encoding='utf-8')

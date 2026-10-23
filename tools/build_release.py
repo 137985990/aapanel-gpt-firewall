@@ -7,7 +7,7 @@ import re
 import zipfile
 
 
-VERSION = '0.1.1'
+VERSION = '0.1.2'
 PLUGIN_FILES = (
     'info.json', 'install.sh', 'free_waf_main.py', 'index.html',
     'init.lua', 'ban_store.py', 'report_store.py', 'website_statistics.py', 'update_service.py',
@@ -18,8 +18,10 @@ PLUGIN_FILES = (
 )
 SOURCE_FILES = PLUGIN_FILES + (
     '.gitignore', '.gitattributes', 'tools/ci-template.yml',
+    'docs/images/policies.png', 'docs/images/statistics.png',
     'tools/build_release.py', 'tools/check.py',
     'tools/audit_registration_state.lua', 'tools/audit_rule_identity.lua', 'tools/audit_runtime_routes.lua',
+    'tools/audit_endpoint_policy.lua',
     'tests/__init__.py', 'tests/test_attack_geography.py',
     'tests/test_backend_policy.py', 'tests/test_ban_store.py', 'tests/test_branding.py',
     'tests/test_frontend_ui_contract.py', 'tests/test_lua_policy.py',
@@ -30,6 +32,7 @@ SOURCE_FILES = PLUGIN_FILES + (
     'tests/test_attack_charts.js', 'tests/test_frontend_performance.js',
     'tests/test_website_statistics.py', 'tests/test_update_service.py', 'tests/test_v011_integration.py',
     'tests/test_statistics_v011.js', 'tests/test_plugin_update_ui.js',
+    'tests/test_endpoint_policy.py', 'tests/test_security_boundary.py', 'tests/test_endpoint_policy_ui.js',
 )
 SECRET_PATTERNS = (
     r'(?m)^-----BEGIN (?:OPENSSH |RSA |EC )?PRIVATE KEY-----',
@@ -52,7 +55,7 @@ def build(root, output):
         if path.is_symlink() or not path.resolve().is_relative_to(root):
             raise ValueError('不允许发布符号链接或工作区外的文件：' + name)
         data = path.read_bytes()
-        if name == 'docs/images/overview.png':
+        if name.startswith('docs/images/') and name.endswith('.png'):
             if not data.startswith(b'\x89PNG\r\n\x1a\n') or len(data) > 2 * 1024 * 1024:
                 raise ValueError('示例截图格式或大小不正确。')
             payloads[name] = data
@@ -71,7 +74,7 @@ def build(root, output):
     archive = output / ('aapanel-gpt-firewall-' + VERSION + '-upgrade.zip')
     with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as package:
         for name in sorted(PLUGIN_FILES):
-            info = zipfile.ZipInfo('free_waf/' + name, date_time=(2026, 10, 22, 0, 0, 0))
+            info = zipfile.ZipInfo('free_waf/' + name, date_time=(2026, 10, 23, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
             info.create_system = 3
             info.external_attr = (0o100755 if name == 'install.sh' else 0o100644) << 16
