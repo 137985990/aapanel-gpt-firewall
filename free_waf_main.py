@@ -118,13 +118,13 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         module = sys.modules.get(key)
         if (module is None or getattr(module, '__file__', None) != path
                 or getattr(module, '_source_signature', None) != signature
-                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.4'):
+                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.5'):
             spec = importlib.util.spec_from_file_location(key, path)
             module = importlib.util.module_from_spec(spec)
             # Read source explicitly: same-second upgrades must not reuse stale bytecode.
             source = spec.loader.get_source(key)
             exec(compile(source, path, 'exec', dont_inherit=True), module.__dict__)
-            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.4':
+            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.5':
                 raise ValueError('服务版本不匹配，请重新打开插件')
             module._source_signature = signature
             sys.modules[key] = module
@@ -3541,7 +3541,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             finally:
                 process.stdout.close()
 
-    def __nginx_integration(self, body):
+    def __nginx_directives(self, body):
         # Preserve quoted delimiters and skip Lua bodies rather than lexing Lua as shell.
         long_lua = re.compile(r'\[(=*)\[')
 
@@ -3626,6 +3626,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                 if char == ';' and current:
                     statements.append(current)
                 if char == '{' and current and current[0].endswith('_by_lua_block'):
+                    statements.append(current + ['{'])
                     position = skip_lua(position + 1)
                     current = []
                     continue
@@ -3633,6 +3634,10 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             position += 1
         if quote or started or current:
             raise ValueError('unfinished_nginx_directive')
+        return statements
+
+    def __nginx_integration(self, body):
+        statements = self.__nginx_directives(body)
         keys = ('init_by_lua_file', 'access_by_lua_file', 'lua_shared_dict')
         entries = [row for row in statements if row[0] in keys]
         dictionaries = ('free_waf', 'free_waf_drop_ip', 'free_waf_drop_sum')
@@ -3651,6 +3656,26 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                 return 'incomplete'
         return 'configured'
 
+    def __integration_service(self):
+        return self.__local_service('update_service').IntegrationRepairService(
+            self.__PATH, read_configuration=self.__read_nginx_configuration,
+            directives=self.__nginx_directives)
+
+    def get_integration_repair_plan(self, get):
+        try:
+            return self.__integration_service().preview()
+        except Exception:
+            return public.returnMsg(False, '无法准备接入修复，请检查既有安装；没有修改配置。')
+
+    def repair_nginx_integration(self, get):
+        if not self.__update_request_is_post():
+            return public.returnMsg(False, '接入修复仅接受面板确认后的 POST 请求。')
+        try:
+            return self.__integration_service().repair(
+                getattr(get, 'revision', ''), getattr(get, 'confirmation', ''))
+        except Exception:
+            return public.returnMsg(False, '接入修复状态未确认，请重新核验并检查修复记录；不要重复提交。')
+
     def get_runtime_status(self, get):
         """Manual, local configuration evidence, not running-worker attestation."""
         result = dict(status=False, integration='unknown', execution_verified=False,
@@ -3664,6 +3689,13 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             result['configured_open'] = bool(self.get_config(None).get('open'))
             result['integration'] = self.__nginx_integration(self.__read_nginx_configuration())
             result['status'] = True
+            if result['integration'] == 'configured':
+                try:
+                    proof = self.__integration_service().probe_if_managed()
+                    if proof.get('execution_verified') is True:
+                        result.update(execution_verified=True, verification_scope='local_health_probe')
+                except Exception:
+                    pass
         except Exception as error:
             code = str(error) if str(error) in messages else 'inspection_failed'
             result.update(diagnostic_code=code, message=messages.get(code, '无法核验接入状态，请在服务器本地检查。'))

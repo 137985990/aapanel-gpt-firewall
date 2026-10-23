@@ -59,6 +59,18 @@ class RuntimeStatusTest(unittest.TestCase):
         self.assertEqual(result['integration'], 'configured')
         self.assertIs(result['execution_verified'], False)
 
+    def test_managed_local_probe_evidence_is_explicit_and_probe_failure_is_not_success(self):
+        service = Mock()
+        service.probe_if_managed.return_value = {'execution_verified': True, 'worker_pid': 123}
+        self.backend._free_waf_main__integration_service = Mock(return_value=service)
+        result = self.inspect(HOOKS)
+        self.assertIs(result['execution_verified'], True)
+        self.assertEqual(result['verification_scope'], 'local_health_probe')
+        service.probe_if_managed.side_effect = RuntimeError('private token')
+        result = self.inspect(HOOKS)
+        self.assertIs(result['execution_verified'], False)
+        self.assertNotIn('private token', json.dumps(result))
+
     def test_commented_hooks_are_not_integration(self):
         result = self.inspect('\n'.join('# ' + line for line in HOOKS.splitlines()))
         self.assertEqual(result['integration'], 'missing')
@@ -119,6 +131,17 @@ class RuntimeStatusTest(unittest.TestCase):
                 self.assertEqual(result['integration'], 'unknown')
                 self.assertNotIn('secret=value', json.dumps(result))
                 self.assertIs(result['execution_verified'], False)
+
+    def test_repair_write_requires_post_and_never_trusts_client_paths(self):
+        service = Mock()
+        self.backend._free_waf_main__integration_service = Mock(return_value=service)
+        self.backend._free_waf_main__update_request_is_post = Mock(return_value=False)
+        result = self.backend.repair_nginx_integration(types.SimpleNamespace(revision='a'*64, path='/tmp/evil'))
+        self.assertIs(result['status'], False)
+        service.repair.assert_not_called()
+        self.backend._free_waf_main__update_request_is_post.return_value = True
+        self.backend.repair_nginx_integration(types.SimpleNamespace(revision='a'*64, confirmation='confirmed', path='/tmp/evil'))
+        service.repair.assert_called_once_with('a'*64, 'confirmed')
 
     @unittest.skipIf(os.name == 'nt', 'Nginx inspection uses Linux pipe selectors')
     def test_inspection_uses_fixed_panel_binary_and_kills_bounded_children(self):

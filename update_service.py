@@ -5,7 +5,7 @@ import hashlib
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shlex
 import signal
@@ -27,7 +27,7 @@ except ImportError:
     fcntl = None
 
 
-PLUGIN_VERSION = '0.1.4'
+PLUGIN_VERSION = '0.1.5'
 REPOSITORY = '137985990/aapanel-gpt-firewall'
 API_URL = 'https://api.github.com/repos/' + REPOSITORY + '/releases'
 DOWNLOAD_URL = 'https://github.com/' + REPOSITORY + '/releases/download/'
@@ -533,6 +533,9 @@ class UpdateService:
             if not release or not release['available']:
                 raise UpdateError('release', '所选版本不在可验证的已发布版本列表中。')
             with self._lock():
+                repair_record = self.store / 'integration-repair.json'
+                if repair_record.exists() and self._json(repair_record).get('state') not in ('succeeded', 'rolled_back'):
+                    raise UpdateError('recovery_required', '接入修复尚未完整结束，请先检查修复记录与备份，未开始更新。')
                 previous = self._job()
                 if previous and (previous['state'] in ('queued', 'running') or
                                  previous.get('rollback', {}).get('state') == 'failed'):
@@ -852,9 +855,20 @@ def main():
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument('--job')
     action.add_argument('--fetch-url')
+    action.add_argument('--probe-integration')
     parser.add_argument('--network-timeout', type=float, default=NETWORK_SECONDS)
     parser.add_argument('--max-bytes', type=int, default=MAX_JSON)
     args = parser.parse_args()
+    if args.probe_integration:
+        if not re.fullmatch(r'[1-9][0-9]{0,9}:[0-9]{1,24}', args.probe_integration):
+            return 2
+        try:
+            proof = IntegrationRepairService._probe_loop(
+                Path('/www/server/nginx/sbin/nginx'), args.probe_integration)
+            print(json.dumps(proof))
+            return 0
+        except Exception:
+            return 2
     if args.fetch_url:
         if not 0 < args.network_timeout <= NETWORK_SECONDS or not 0 < args.max_bytes <= MAX_ARCHIVE:
             return 2
@@ -866,6 +880,480 @@ def main():
             return 2
     result = UpdateService(Path(__file__).absolute().parent).run_job(args.job)
     return 0 if result['status'] else 1
+
+
+class IntegrationRepairService(UpdateService):
+    """Explicit missing-include recovery; never edits rules or foreign Lua hooks."""
+
+    INCLUDE = b'''# aapanel GPT Firewall managed integration v1
+lua_shared_dict free_waf 10m;
+lua_shared_dict free_waf_drop_ip 10m;
+lua_shared_dict free_waf_drop_sum 10m;
+init_by_lua_file /www/server/free_waf/init.lua;
+access_by_lua_file /www/server/free_waf/waf.lua;
+server {
+    listen 127.0.0.1:39091;
+    server_name gpt-firewall-health.invalid;
+    access_log off;
+    keepalive_timeout 5s;
+    keepalive_requests 100;
+    location / { root /www/server/free_waf/.health-no-content; }
+}
+'''
+    CONFIRMATION = 'REPAIR_NGINX_INTEGRATION'
+
+    def __init__(self, plugin_dir, *, read_configuration, directives, test_mode=False):
+        super().__init__(plugin_dir, test_mode=test_mode)
+        self.server = self.plugin.parents[2]
+        self.main = self.server / 'nginx/conf/nginx.conf'
+        self.include = self.server / 'panel/vhost/nginx/free_waf.conf'
+        self.binary = self.server / 'nginx/sbin/nginx'
+        self.record = self.store / 'integration-repair.json'
+        self._configuration = read_configuration
+        self._directives = directives
+        self._owned_include = None
+
+    @contextmanager
+    def _activation_lock(self):
+        with self._lock():
+            install_lock = self.plugin / '.gpt-firewall-install.lock'
+            self._safe(install_lock, directory=True, missing=True)
+            try:
+                install_lock.mkdir(mode=0o700)
+            except FileExistsError:
+                raise UpdateError('busy', '已有安装任务，未开始接入修复。') from None
+            try:
+                yield
+            finally:
+                install_lock.rmdir()
+
+    def _snapshot(self):
+        self._safe(self.binary)
+        self._safe(self.include, missing=True)
+        if self.include.exists():
+            raise UpdateError('integration_exists', '接入文件已存在，不会覆盖；请先核验，冲突或不完整配置需人工处理。')
+        if self.record.exists():
+            previous = self._json(self.record)
+            if previous.get('state') not in ('succeeded', 'rolled_back'):
+                raise UpdateError('recovery_required', '上次修复未完整结束，请先检查本机修复记录和备份，禁止重复操作。')
+        main = self._read(self.main)
+        if ['include', '/www/server/panel/vhost/nginx/*.conf'] not in self._directives(main.decode('utf-8')):
+            raise UpdateError('unsupported_include', '未发现受支持的宝塔 HTTP 站点配置入口，不会自动改写 nginx.conf。')
+        configuration = self._configuration()
+        rows = self._directives(configuration)
+        if ['include', '/www/server/panel/vhost/nginx/*.conf'] not in rows:
+            raise UpdateError('unsupported_include', '读取到的宝塔配置未包含受支持的站点入口，请人工核对。')
+        if any(row[0].startswith(('init_by_lua', 'access_by_lua')) or
+               row[0] == 'lua_shared_dict' and len(row) > 1 and row[1] in
+               ('free_waf', 'free_waf_drop_ip', 'free_waf_drop_sum') for row in rows):
+            raise UpdateError('integration_conflict', '发现已有 Lua 初始化、访问入口或同名共享字典；不会覆盖其他防护配置。')
+        files = {self.main: main}
+        for source in re.findall(r'^# configuration file (.+):$', configuration, re.MULTILINE):
+            path = Path(source)
+            if not path.is_absolute():
+                raise UpdateError('unsupported_include', '无法核对配置来源，未修改任何文件。')
+            files[path] = self._read(path)
+        for name in ('config.json', 'site.json', 'init.lua', 'waf.lua'):
+            files[self.runtime / name] = self._read(self.runtime / name)
+        if files[self.runtime / 'init.lua'] != self._read(self.plugin / 'init.lua'):
+            raise UpdateError('runtime_mismatch', '插件与运行 Lua 版本不一致，请先完成代码升级。')
+        if not re.fullmatch(rb'\s*run_btwaf\(\s*\)\s*;?\s*', files[self.runtime / 'waf.lua']):
+            raise UpdateError('runtime_entrypoint', '现有访问入口不兼容，未修改任何文件。')
+        config = json.loads(files[self.runtime / 'config.json'].decode('utf-8-sig'))
+        sites = json.loads(files[self.runtime / 'site.json'].decode('utf-8-sig'))
+        if (not isinstance(config, dict) or type(config.get('open')) is not bool or
+                not isinstance(config.get('cc'), dict) or
+                not all(key in config['cc'] for key in ('cycle', 'limit', 'endtime')) or
+                not isinstance(sites, dict)):
+            raise UpdateError('runtime_incomplete', '现有运行配置不完整，未重置配置或启用防护。')
+        rules = {}
+        for name in ('cn', 'ip_black', 'ip_white', 'url_white', 'url_black', 'user_agent_white',
+                     'user_agent', 'header', 'post', 'cookie', 'args', 'url', 'head_white', 'scan_black'):
+            path = self.runtime / 'rule' / (name + '.json')
+            files[path] = self._read(path)
+            value = json.loads(files[path].decode('utf-8-sig'))
+            if not isinstance(value, dict if name == 'scan_black' else list):
+                raise UpdateError('runtime_incomplete', '现有规则结构不完整，未覆盖规则。')
+            rules[name] = value
+        self._validate_runtime(config, sites, rules)
+        logs = config.get('logs_path')
+        if not isinstance(logs, str) or not PurePosixPath(logs).is_absolute():
+            raise UpdateError('runtime_incomplete', '日志目录配置不兼容，未修改配置。')
+        log_path = self.server.parent / logs[5:] if self._test_mode and logs.startswith('/www/') else Path(logs)
+        self._safe(log_path, directory=True)
+        template = config.get('reqfile_path', '').rstrip('/')
+        if template != '/www/server/free_waf/html':
+            raise UpdateError('runtime_incomplete', '响应模板不在受支持的运行目录，请人工检查接入。')
+        for key in ('get', 'post', 'cookie', 'user-agent', 'other'):
+            name = config.get(key, {}).get('reqfile')
+            if not isinstance(name, str) or Path(name).name != name:
+                raise UpdateError('runtime_incomplete', '响应模板名称不兼容，未修改配置。')
+            path = self.runtime / 'html' / name
+            files[path] = self._read(path)
+        digest = hashlib.sha256(configuration.encode('utf-8'))
+        for path, data in sorted(files.items(), key=lambda row: str(row[0])):
+            digest.update(str(path).encode('utf-8') + b'\0' + hashlib.sha256(data).digest())
+        return dict(files=files, configuration=configuration.rstrip(), revision=digest.hexdigest(), configured_open=config['open'],
+                    enabled_sites=sum(isinstance(site, dict) and site.get('open') is True for site in sites.values()))
+
+    @staticmethod
+    def _validate_runtime(config, sites, rules):
+        def require(condition):
+            if not condition:
+                raise UpdateError('runtime_incomplete', '现有运行配置或规则缺少必要字段，未重置数据或启用防护；请先完成配置诊断。')
+
+        def integer(value, minimum=1, maximum=2147483647):
+            return type(value) is int and minimum <= value <= maximum
+
+        def strings(value):
+            return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+        def patterns(value):
+            return isinstance(value, str) or strings(value)
+
+        def ip_ranges(value, expiry=False):
+            require(isinstance(value, list))
+            for row in value:
+                require(isinstance(row, list) and 2 <= len(row) <= (3 if expiry else 2))
+                for address in row[:2]:
+                    require(isinstance(address, list) and len(address) == 4
+                            and all(integer(octet, 0, 255) for octet in address))
+                if len(row) > 2:
+                    require(integer(row[2], 0, 2 ** 53 - 1))
+
+        def counters(item, cc=False):
+            require(isinstance(item, dict))
+            for key in (('cycle', 'limit', 'endtime') if cc else ('retry', 'retry_time', 'retry_cycle')):
+                require(integer(item.get(key)))
+            if cc:
+                require(type(item.get('open')) is bool)
+
+        counters(config)
+        counters(config.get('cc'), cc=True)
+        for key in ('cc', 'scan', 'drop_abroad', 'get', 'post', 'cookie', 'user-agent', 'other'):
+            item = config.get(key)
+            require(isinstance(item, dict) and integer(item.get('status'), 400, 599))
+            if key != 'other':
+                require(type(item.get('open')) is bool)
+        for site in sites.values():
+            require(isinstance(site, dict) and type(site.get('open')) is bool)
+            counters(site)
+            counters(site.get('cc'), cc=True)
+            for key in ('disable_php_path', 'disable_path', 'disable_ext', 'disable_upload_ext'):
+                require(strings(site.get(key)))
+            if site.get('cdn'):
+                require(strings(site.get('cdn_header')))
+            if 'cdn_trusted_proxy' in site:
+                ip_ranges(site['cdn_trusted_proxy'])
+            for key in ('url_white',):
+                if key in site:
+                    require(patterns(site[key]))
+            for key, length in (('url_rule', 2), ('url_tell', 3)):
+                require(isinstance(site.get(key), list))
+                for row in site[key]:
+                    require(isinstance(row, list) and len(row) >= length and isinstance(row[0], str))
+                    require(patterns(row[1]) if key == 'url_rule' else all(isinstance(value, str) for value in row[:3]))
+            if 'disable_rule' in site:
+                require(isinstance(site['disable_rule'], dict))
+                for disabled in site['disable_rule'].values():
+                    require(isinstance(disabled, list) and all(integer(value, 0) for value in disabled))
+        for key in ('cookie', 'args', 'header'):
+            require(patterns(rules['scan_black'].get(key)))
+        for key in ('user_agent_white', 'user_agent', 'header', 'post', 'cookie', 'args', 'url'):
+            for row in rules[key]:
+                require(isinstance(row, list) and len(row) >= 2 and type(row[0]) is int
+                        and row[0] in (0, 1) and isinstance(row[1], str))
+        for key in ('url_white', 'url_black', 'head_white'):
+            require(strings(rules[key]))
+        for key in ('cn', 'ip_black', 'ip_white'):
+            ip_ranges(rules[key], expiry=key == 'ip_black')
+
+    def _assert_files_unchanged(self, snapshot):
+        for path, expected in snapshot['files'].items():
+            if self._read(path) != expected:
+                raise UpdateError('concurrent_edit', '配置或运行文件发生变化，已停止；不会重载其他操作的修改。')
+
+    def _owned_bytes(self, path=None):
+        path = self.include if path is None else path
+        self._safe(path.parent, directory=True)
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+        try:
+            info = os.fstat(descriptor)
+            if (not stat.S_ISREG(info.st_mode) or self._owned_include != (info.st_dev, info.st_ino)
+                    or info.st_size > len(self.INCLUDE)):
+                raise UpdateError('concurrent_edit', '接入文件已被替换，已保留文件并停止自动恢复。')
+            data = os.read(descriptor, len(self.INCLUDE) + 1)
+            if data != self.INCLUDE:
+                raise UpdateError('concurrent_edit', '接入文件已被其他操作修改，已停止自动恢复。')
+            return data
+        finally:
+            os.close(descriptor)
+
+    def _assert_unchanged(self, snapshot, owned=False):
+        self._assert_files_unchanged(snapshot)
+        if owned:
+            self._owned_bytes()
+        elif self.include.exists():
+            raise UpdateError('concurrent_edit', '出现其他接入文件，未重载配置。')
+        body = self._configuration()
+        pattern = (r'^# configuration file ' + re.escape(str(self.include)) +
+                   r':\n.*?(?=^# configuration file |\Z)')
+        sections = re.findall(pattern, body, re.MULTILINE | re.DOTALL)
+        if len(sections) > 1 or (sections and (not owned or
+                sections[0].split('\n', 1)[1].strip() != self.INCLUDE.decode().strip())):
+            raise UpdateError('concurrent_edit', '接入配置来源发生变化，未重载。')
+        if owned and not sections and not self._test_mode:
+            raise UpdateError('concurrent_edit', '未能在宝塔配置中确认本次接入文件，未重载。')
+        body = re.sub(pattern, '', body, flags=re.MULTILINE | re.DOTALL).rstrip()
+        if body != snapshot['configuration']:
+            raise UpdateError('concurrent_edit', 'Nginx 配置发生变化，已停止；不会重载其他操作的修改。')
+        self._assert_files_unchanged(snapshot)
+        if owned:
+            self._owned_bytes()
+
+    def _quarantine_owned(self, backup):
+        self._owned_bytes()
+        quarantine = backup / ('removed-include-' + uuid.uuid4().hex + '.conf')
+        # Retain the moved inode even on a race; never unlink a pathname after a separate check.
+        os.rename(self.include, quarantine)
+        try:
+            self._owned_bytes(quarantine)
+        except Exception:
+            try:
+                os.link(quarantine, self.include)
+            except FileExistsError:
+                pass
+            raise
+        if self.include.exists():
+            raise UpdateError('concurrent_edit', '撤销期间出现其他接入文件，已保留双方文件并停止重载。')
+
+    @staticmethod
+    def _failure(error):
+        if isinstance(error, UpdateError):
+            return dict(status=False, can_repair=False, diagnostic_code=error.code, msg=str(error))
+        return dict(status=False, can_repair=False, diagnostic_code='repair_failed',
+                    msg='接入检查或修复未完成，请核对本机修复记录；未返回配置内容。')
+
+    def preview(self):
+        try:
+            snapshot = self._snapshot()
+            return dict(status=True, can_repair=True, integration='missing',
+                        revision=snapshot['revision'], configured_open=snapshot['configured_open'],
+                        enabled_sites=snapshot['enabled_sites'],
+                        msg='确认后备份并补齐接入、测试和平滑重载宝塔 Nginx；保留原开关和规则。现有已开启规则将开始处理请求。')
+        except Exception as error:
+            return self._failure(error)
+
+    @staticmethod
+    def _check_probe_port():
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+            try:
+                server.bind(('127.0.0.1', 39091))
+            except OSError:
+                raise UpdateError('health_port_busy', '本机健康检查端口已占用，未接入；请人工处理端口冲突。') from None
+
+    @staticmethod
+    def _process_identity(pid, binary, role):
+        process = Path('/proc') / str(pid)
+        if not (process / 'exe').samefile(binary):
+            raise ValueError('unexpected process')
+        if not (process / 'cmdline').read_bytes().startswith(b'nginx: ' + role):
+            raise ValueError('unexpected role')
+        fields = (process / 'stat').read_text().rsplit(')', 1)[1].split()
+        return int(fields[1]), fields[19]
+
+    def _master_identity(self):
+        rows = self._directives(self._configuration())
+        pid_rows = [row for row in rows if row[0] == 'pid']
+        if len(pid_rows) > 1 or pid_rows and len(pid_rows[0]) != 2:
+            raise UpdateError('health_process', '无法确认宝塔 Nginx 主进程，未确认接入。')
+        path = Path(pid_rows[0][1]) if pid_rows else Path('logs/nginx.pid')
+        if not path.is_absolute():
+            path = self.server / 'nginx' / path
+        pid = self._read(path, limit=32).strip()
+        if not re.fullmatch(rb'[1-9][0-9]{0,9}', pid):
+            raise UpdateError('health_process', '无法确认宝塔 Nginx 主进程，未确认接入。')
+        _, started = self._process_identity(int(pid), self.binary, b'master process')
+        return pid.decode('ascii') + ':' + started
+
+    @staticmethod
+    def _verify_peer(connection, worker_pid, binary, expected_master, port=39091):
+        if connection.sock is None or os.name != 'posix' or type(worker_pid) is not int or worker_pid < 1:
+            return False
+        import socket
+        try:
+            master, _ = IntegrationRepairService._process_identity(worker_pid, binary, b'worker process')
+            _, started = IntegrationRepairService._process_identity(master, binary, b'master process')
+            if str(master) + ':' + started != expected_master:
+                return False
+            client = connection.sock.getsockname()
+            peer = connection.sock.getpeername()
+            if client[0] != '127.0.0.1' or peer != ('127.0.0.1', port):
+                return False
+            def address(value):
+                return socket.inet_aton(value[0])[::-1].hex().upper() + ':%04X' % value[1]
+            endpoints = (address(peer), address(client))
+            inodes = set()
+            for line in Path('/proc/net/tcp').read_text().splitlines()[1:]:
+                fields = line.split()
+                if len(fields) > 9 and tuple(fields[1:3]) == endpoints and fields[3] == '01':
+                    inodes.add('socket:[' + fields[9] + ']')
+            if not inodes:
+                return False
+            for descriptor in (Path('/proc') / str(worker_pid) / 'fd').iterdir():
+                try:
+                    if os.readlink(descriptor) in inodes:
+                        return True
+                except OSError:
+                    continue
+        except (OSError, ValueError, IndexError):
+            pass
+        return False
+
+    @staticmethod
+    def _probe_loop(binary, expected_master, port=39091):
+        import http.client
+        nonce = uuid.uuid4().hex
+        deadline = time.monotonic() + 4
+        while time.monotonic() < deadline:
+            connection = http.client.HTTPConnection('127.0.0.1', port, timeout=0.5)
+            try:
+                connection.request('GET', '/_gpt_firewall_health/' + nonce,
+                                   headers={'Host': 'gpt-firewall-health.invalid', 'Connection': 'keep-alive'})
+                response = connection.getresponse()
+                payload = response.read(4097)
+                if response.status == 200 and len(payload) <= 4096:
+                    data = json.loads(payload)
+                    if (data.get('product') == 'aapanel GPT Firewall' and data.get('version') == PLUGIN_VERSION
+                            and data.get('nonce') == nonce and type(data.get('worker_pid')) is int
+                            and IntegrationRepairService._verify_peer(connection, data['worker_pid'], binary, expected_master, port)):
+                        return dict(execution_verified=True, worker_pid=data['worker_pid'])
+            except (OSError, ValueError, http.client.HTTPException):
+                pass
+            finally:
+                connection.close()
+            time.sleep(0.1)
+        raise UpdateError('health_probe_failed', '本机请求未验证 Lua 执行，不能确认接入成功。')
+
+    def _probe(self):
+        identity = self._master_identity()
+        process = subprocess.Popen([
+            sys.executable, '-B', str(Path(__file__).absolute()), '--probe-integration', identity,
+        ], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            start_new_session=True, close_fds=True, shell=False)
+        try:
+            output, _ = process.communicate(timeout=5)
+        except BaseException as error:
+            process.kill()
+            process.communicate()
+            if isinstance(error, subprocess.TimeoutExpired):
+                raise UpdateError('health_probe_timeout', '本机验证超时，已结束验证进程；不能确认接入成功。') from None
+            raise
+        if process.returncode != 0 or len(output) > 4096:
+            raise UpdateError('health_probe_failed', '本机请求未验证 Lua 执行，不能确认接入成功。')
+        proof = json.loads(output)
+        if proof.get('execution_verified') is not True or type(proof.get('worker_pid')) is not int:
+            raise UpdateError('health_probe_failed', '本机请求未验证 Lua 执行，不能确认接入成功。')
+        return dict(execution_verified=True, worker_pid=proof['worker_pid'])
+
+    def probe_if_managed(self):
+        if self._read(self.include) != self.INCLUDE:
+            return dict(execution_verified=False)
+        return self._probe()
+
+    def _nginx(self, operation):
+        arguments = [str(self.binary)] + (['-s', 'reload'] if operation == 'reload' else ['-t'])
+        arguments += ['-p', str(self.server / 'nginx') + '/', '-c', str(self.main)]
+        if self._command(arguments, timeout=5)[0] != 0:
+            raise UpdateError('nginx_' + operation + '_failed', '宝塔 Nginx 检查或重载失败，正在恢复接入前状态。')
+
+    def _create_include(self):
+        self._safe(self.include.parent, directory=True)
+        descriptor, temporary = tempfile.mkstemp(prefix='.gpt-firewall-', dir=str(self.include.parent))
+        try:
+            with os.fdopen(descriptor, 'wb') as stream:
+                stream.write(self.INCLUDE)
+                stream.flush()
+                if os.name == 'posix':
+                    os.fchmod(stream.fileno(), 0o644)
+                os.fsync(stream.fileno())
+            # Publish atomically without ever overwriting an existing/conflicting include.
+            info = os.stat(temporary, follow_symlinks=False)
+            os.link(temporary, self.include)
+            self._owned_include = (info.st_dev, info.st_ino)
+        finally:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+
+    def repair(self, revision, confirmation):
+        if confirmation != self.CONFIRMATION or not isinstance(revision, str) or not re.fullmatch(r'[a-f0-9]{64}', revision):
+            return self._failure(UpdateError('confirmation', '缺少本次修复预览与明确确认，未修改任何配置。'))
+        try:
+            self._production()
+            with self._activation_lock():
+                job = self._job()
+                if job and (job.get('state') in ('queued', 'running') or
+                            job.get('rollback', {}).get('state') in ('recovery_required', 'failed')):
+                    raise UpdateError('busy', '已有更新或待恢复任务，未开始接入修复。')
+                snapshot = self._snapshot()
+                if snapshot['revision'] != revision:
+                    raise UpdateError('revision_changed', '配置在预览后发生变化，请重新预览确认，未开始接入。')
+                self._check_probe_port()
+                backup = self.store / 'integration-backups' / uuid.uuid4().hex
+                self._mkdir(backup)
+                manifest = []
+                for index, (path, data) in enumerate(snapshot['files'].items()):
+                    name = str(index) + '.backup'
+                    self._atomic_write(backup / name, data)
+                    manifest.append(dict(path=str(path), backup=name, sha256=hashlib.sha256(data).hexdigest()))
+                self._save(backup / 'manifest.json', dict(revision=revision, files=manifest, include_existed=False))
+                # Stop if an administrator edited any input while the backup was written.
+                if self._snapshot()['revision'] != revision:
+                    raise UpdateError('revision_changed', '备份期间配置发生变化，未创建接入文件，请重新确认。')
+                record = dict(state='applying', backup=str(backup), revision=revision, checked_at=int(time.time()))
+                self._save(self.record, record)
+                self._owned_include = None
+                reload_attempted = False
+                try:
+                    self._create_include()
+                    self._assert_unchanged(snapshot, owned=True)
+                    self._nginx('test')
+                    self._assert_unchanged(snapshot, owned=True)
+                    reload_attempted = True
+                    self._nginx('reload')
+                    proof = self._probe()
+                    self._assert_unchanged(snapshot, owned=True)
+                    record.update(state='succeeded', **proof)
+                    self._save(self.record, record)
+                    return dict(status=True, integration='configured', execution_verified=True,
+                                verification_scope='local_health_probe', configured_open=snapshot['configured_open'],
+                                backup=str(backup), msg='接入修复完成，本机健康请求已执行 Lua；原开关和规则未改动。此验证不代表所有站点及 location 均已覆盖。')
+                except Exception as error:
+                    rollback = 'restored'
+                    try:
+                        if self._owned_include is not None:
+                            self._assert_files_unchanged(snapshot)
+                            self._quarantine_owned(backup)
+                            self._assert_unchanged(snapshot)
+                            if reload_attempted:
+                                self._nginx('test')
+                                self._assert_unchanged(snapshot)
+                                self._nginx('reload')
+                        record.update(state='rolled_back')
+                    except Exception:
+                        rollback = 'recovery_required'
+                        record.update(state='recovery_required')
+                    self._save(self.record, record)
+                    result = self._failure(error)
+                    result.update(rollback=rollback, backup=str(backup), execution_verified=False)
+                    result['msg'] += (' 已撤销本次接入文件，保留原配置；重载信号不等于旧工作进程已经完成恢复。'
+                                      if rollback == 'restored' else ' 自动恢复未确认，已停止重试；请在本机检查备份与修复记录。')
+                    return result
+        except Exception as error:
+            return self._failure(error)
 
 
 if __name__ == '__main__':

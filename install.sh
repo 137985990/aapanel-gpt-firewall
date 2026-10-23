@@ -121,7 +121,7 @@ try:
         target = plugin / 'install-status.json'
         if target.is_symlink():
             raise ValueError('安装状态文件路径不安全')
-        data = dict(product='aapanel GPT Firewall', version='0.1.4', plugin_name='free_waf',
+        data = dict(product='aapanel GPT Firewall', version='0.1.5', plugin_name='free_waf',
                     status=outcome, operation=operation, stage=stage, message=message,
                     runtime_changed=changed == 'true', waf_active=loaded == 'true',
                     rollback=rollback, runtime_backup=backup or None,
@@ -160,8 +160,8 @@ try:
                          'website_statistics.py', 'update_service.py', 'index.html', 'info.json', 'rule.json'):
                 file(plugin / name)
             info = load(plugin / 'info.json', dict)
-            if info.get('name') != 'free_waf' or info.get('versions') != '0.1.4':
-                raise CheckError('package_identity', '需要内部标识为 free_waf、版本为 0.1.4 的兼容升级包', 'info.json')
+            if info.get('name') != 'free_waf' or info.get('versions') != '0.1.5':
+                raise CheckError('package_identity', '需要内部标识为 free_waf、版本为 0.1.5 的兼容升级包', 'info.json')
             load(plugin / 'rule.json', list)
             for name in ('init.lua', 'waf.lua', 'drop_ip.log'):
                 path = runtime / name

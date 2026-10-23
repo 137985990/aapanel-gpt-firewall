@@ -1438,6 +1438,15 @@ end
 
 function min_route()
 	if ngx.var.remote_addr ~= '127.0.0.1' then return false end
+	if ngx.var.server_name == 'gpt-firewall-health.invalid' then
+		local nonce = string.match(uri or '', '^/_gpt_firewall_health/([0-9a-f]+)$')
+		if nonce and #nonce == 32 then
+			return_message(200, {product='aapanel GPT Firewall', version='0.1.5',
+				nonce=nonce, worker_pid=ngx.worker.pid()})
+		else
+			ngx.exit(404)
+		end
+	end
 	if uri == '/get_btwaf_drop_ip' then
 		return_message(200,get_btwaf_drop_ip(),true)
 	elseif uri == '/remove_btwaf_drop_ip' then

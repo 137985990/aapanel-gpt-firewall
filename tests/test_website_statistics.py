@@ -45,7 +45,7 @@ class StatisticsContractTests(unittest.TestCase):
         )
 
     def test_version_and_empty_response_preserve_legacy_contract(self):
-        self.assertEqual(self.module.PLUGIN_VERSION, "0.1.4")
+        self.assertEqual(self.module.PLUGIN_VERSION, "0.1.5")
         result = self.service().build()
         self.assertEqual(result["schema_version"], 2)
         self.assertTrue(result["status"])

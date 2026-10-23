@@ -443,6 +443,7 @@
 			<div class="waf-card">
 				<h4>配置与接入状态 <small id="waf_state_status" style="color:#667085;"></small></h4>
 				<p id="runtime_status_detail" role="status">请点击顶部“核验接入”。只读检查当前磁盘配置，不自动启用防护，也不代表运行中的工作进程已经执行 Lua。</p>
+				<p>缺少接入时，请前往“维护工具 → 诊断工具 → 一键修复”，预览影响范围并确认后再修复。</p>
 				<div class="waf_switch mtb20">
 					<span>防火墙配置开关</span>
 					<div class="switch-wrapper" id="waf_master_switch">
@@ -767,7 +768,7 @@
 		<div class="item_con" data-type="webshell">
 			<div class="waf-page-title">
 				<h3>工具</h3>
-				<p>Webshell 扫描、检测规则、误报处理和规则备份集中在这里，不改变运行时防护策略。</p>
+				<p>本地扫描、规则演练、配置诊断与备份集中在这里；接入修复需单独确认，不会自动执行。</p>
 			</div>
 				<div class="waf_nav_group">
 					<span class="active">检测</span>
@@ -777,6 +778,7 @@
 					<span>配置诊断</span>
 					<span>误报处理</span>
 					<span>规则备份</span>
+					<span>一键修复</span>
 				</div>
 			<div class="waf_nav_content">
 				<div class="active waf_nav_item" data-type="killing">
@@ -898,6 +900,21 @@
 						<ul class="waf_tips_list mtl0 c7 ptb10">
 							<li>默认排除：IP黑名单、IP白名单、临时封禁和运行时封禁历史。</li>
 							<li>导入需要人工确认；应用前请先检查 JSON 内容。</li>
+						</ul>
+					</div>
+				</div>
+				<div class="waf_nav_item" data-type="integration_repair">
+					<div class="waf-card">
+						<h4>一键修复</h4>
+						<p>修复防火墙未接入宝塔 Nginx 的问题。点击后先检查修复条件、展示影响范围，确认后才开始修改。</p>
+						<div class="waf-toolbar">
+							<button type="button" class="btn btn-success btn-sm" id="runtime_repair_start">一键修复</button>
+						</div>
+						<p id="runtime_repair_result" role="status" aria-live="polite">尚未检查。修复会先备份，再校验和平滑重载；失败尝试回退，冲突时停止并提示人工处理。</p>
+						<ul class="waf_tips_list mtl0 c7 ptb10">
+							<li>保留原有开关、名单和规则，不会覆盖其他 WAF 的接入配置。</li>
+							<li>接入成功后，原本已开启的站点规则会开始处理请求，请先确认规则适合当前业务。</li>
+							<li>本机检查通过不代表全部站点和 location 均已覆盖，仍需核验实际业务访问。</li>
 						</ul>
 					</div>
 				</div>
@@ -1636,6 +1653,10 @@
 			if(state === 'missing') detail='当前磁盘配置中未发现本插件接入，不能据此认为防护已生效；本次没有修改配置或重载 Nginx。';
 			if(state === 'incomplete') detail='发现不完整或冲突的插件入口，请人工核对；不会自动补写接入、启用防护或重载 Nginx。';
 			if(state === 'configured') detail='当前磁盘配置包含兼容入口，但不代表运行中的工作进程已加载或执行 Lua，也不代表全部站点防护生效。';
+			if(state === 'configured' && result.execution_verified === true && result.verification_scope === 'local_health_probe'){
+				title='本机接入已验证';
+				detail='本次本机健康请求已验证 Lua 访问入口执行；不代表全部站点及 location 均已覆盖，具体拦截仍取决于开关和规则。';
+			}
 			if(state === 'unknown') detail='本次无法确认接入状态，请稍后重试或在服务器本地检查；不代表已生效，也不代表没有防护。';
 			if(configured === false){title='配置已关闭';detail='防火墙配置开关已关闭。'+detail;}
 			$('#waf_config_status').text(typeof configured === 'boolean' ? '配置开关：'+(configured?'开启':'关闭') : '配置开关：未确认');
@@ -1651,10 +1672,46 @@
 			this.render_runtime_status({integration:'unverified'});
 			$('#runtime_status_refresh').prop('disabled',true);
 			$('#waf_shell_status').text('正在核验接入');
-			this._runtime_request=this.http({method:'get_runtime_status',load:2,msg:false,check:true,timeout:10000,
-				success:function(res){if(sequence === _this._runtime_sequence) _this.render_runtime_status({status:!!res && res.status === true,configured_open:res && res.configured_open,integration:res && res.integration});},
+			this._runtime_request=this.http({method:'get_runtime_status',load:2,msg:false,check:true,timeout:15000,
+				success:function(res){if(sequence === _this._runtime_sequence) _this.render_runtime_status({status:!!res && res.status === true,configured_open:res && res.configured_open,integration:res && res.integration,execution_verified:res && res.execution_verified,verification_scope:res && res.verification_scope});},
 				error:function(){if(sequence === _this._runtime_sequence) _this.render_runtime_status({status:false});},
 				complete:function(){if(sequence === _this._runtime_sequence){_this._runtime_request=null;$('#runtime_status_refresh').prop('disabled',false);}}
+			});
+		},
+		begin_integration_repair:function(){
+			if(this._repair_busy || this._destroyed) return;
+			var _this=this, generation=this._generation, sequence=(this._repair_sequence || 0)+1;
+			this._repair_sequence=sequence;
+			this._repair_busy=true;
+			$('#runtime_repair_start').prop('disabled',true);
+			$('#runtime_repair_result').text('正在只读检查修复条件；尚未修改任何配置。');
+			var submitted=false;
+			function current(){return _this._repair_busy === true && !_this._destroyed && generation === _this._generation && sequence === _this._repair_sequence;}
+			function finish(message){if(!current()) return;_this._repair_busy=false;$('#runtime_repair_start').prop('disabled',false);if(message) $('#runtime_repair_result').text(message);}
+			this.http({method:'get_integration_repair_plan',load:2,msg:false,check:true,timeout:15000,
+				success:function(plan){
+					if(!current()) return;
+					if(!plan || plan.status !== true || plan.can_repair !== true || !/^[a-f0-9]{64}$/.test(plan.revision || '')){
+						finish(plan && plan.msg || '当前条件不支持自动修复，未修改任何配置。');return;
+					}
+					var count=Number(plan.enabled_sites);if(!Number.isSafeInteger(count) || count<0) count=0;
+					layer.confirm('当前有 '+count+' 个站点配置为开启。确认后将备份并补齐缺失入口、测试和平滑重载宝塔 Nginx；原有已开启规则会开始拦截请求。不会修改开关、名单或规则，失败将尝试回退。是否继续？',
+						{title:'确认修复防火墙接入',btn:['备份并修复','取消']},function(index){
+							layer.close(index);if(!current() || submitted) return;submitted=true;
+							_this.invalidate_runtime_status();
+							_this._runtime_sequence=(_this._runtime_sequence || 0)+1;
+							$('#runtime_repair_result').text('正在备份和修复接入，请勿重复操作。关闭页面不会撤销服务器已开始的操作。');
+							_this.http({method:'repair_nginx_integration',type:'POST',data:{revision:plan.revision,confirmation:'REPAIR_NGINX_INTEGRATION'},load:2,msg:false,check:true,timeout:45000,
+								success:function(result){
+									if(!current()) return;
+									if(result && result.status === true){_this.invalidate_runtime_status();_this.render_runtime_status(result);finish(result.msg || '修复完成，请继续核验站点业务。');}
+									else{_this.render_runtime_status({status:false});finish(result && result.msg || '修复未确认，请检查修复记录并重新核验；不要重复提交。');}
+								},
+								error:function(){if(current()){_this.render_runtime_status({status:false});finish('修复请求中断，服务器可能仍在处理。请先核验接入并检查修复记录，不要直接重试。');}}
+							});
+						},function(){finish('已取消，未修改接入配置。');});
+				},
+				error:function(){finish('修复条件检查失败，未修改任何配置。');}
 			});
 		},
 		// 初始化
@@ -1668,6 +1725,7 @@
 			this._active_page = 'home';
 			this._section_last = {};
 			this._configured_open = null;
+			this._repair_busy = false;
 			this.init_endpoint_policies();
 			this._tools_loaded = false;
 			this._map_expanded = false;
@@ -1717,6 +1775,7 @@
 				if(page) _this.refresh_data_total(page);
 			});
 			_this.bind_panel_event('click','#runtime_status_refresh',function(){_this.inspect_runtime_status();});
+			_this.bind_panel_event('click','#runtime_repair_start',function(){_this.begin_integration_repair();});
 			_this.bind_panel_event('click', '#site_detail_back', function(){
 				_this.show_site_list_view(true);
 			});

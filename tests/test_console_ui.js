@@ -117,3 +117,80 @@ test('master switch binding and state updates cannot target the site configurati
   h.fire('#waf_master_switch');
   assert.equal(h.of('set_open').length, 1);
 });
+
+test('repair is never automatic and requires a preview plus explicit confirmation', () => {
+  const h=harness();
+  assert.equal(h.of('get_integration_repair_plan').length,0);
+  assert.equal(h.of('repair_nginx_integration').length,0);
+  assert.equal(typeof h.waf.begin_integration_repair,'function');
+  h.waf.begin_integration_repair();
+  h.of('get_integration_repair_plan').at(-1).resolve({status:true,can_repair:true,revision:'a'.repeat(64),configured_open:true,enabled_sites:3});
+  assert.equal(h.of('repair_nginx_integration').length,0);
+  assert.match(h.confirms.at(-1).message,/3/);
+  h.confirms.at(-1).yes(1);
+  const write=h.of('repair_nginx_integration').at(-1);
+  assert.equal(write.options.type,'POST');
+  assert.equal(write.options.data.revision,'a'.repeat(64));
+  assert.equal(write.options.data.confirmation,'REPAIR_NGINX_INTEGRATION');
+});
+
+test('one-click repair is the last diagnostic tool, never a header action', () => {
+  const header = html.match(/<header class="waf-shell-header">([\s\S]*?)<\/header>/)[1];
+  const tools = html.split('<div class="item_con" data-type="webshell">')[1]
+    .split('<div class="item_con" data-type="history">')[0];
+  assert.doesNotMatch(header, /runtime_repair_start/);
+  assert.match(header, /runtime_status_refresh/);
+  assert.match(tools, /<span>一键修复<\/span>\s*<\/div>/);
+  const repair = tools.split('data-type="integration_repair"')[1];
+  assert.ok(repair, 'repair needs its own final tools tab');
+  assert.match(repair, /<button[^>]*id="runtime_repair_start"[^>]*>一键修复<\/button>/);
+  assert.match(repair, /id="runtime_repair_result"[^>]*role="status"/);
+  assert.doesNotMatch(repair, /class="waf_nav_item"/);
+  assert.equal((html.match(/id="runtime_repair_start"/g) || []).length, 1);
+  assert.equal((html.match(/id="runtime_repair_result"/g) || []).length, 1);
+});
+
+test('cancelled or stale repair confirmation cannot activate anything',()=>{
+  const h=harness();
+  h.waf.begin_integration_repair();
+  h.of('get_integration_repair_plan').at(-1).resolve({status:true,can_repair:true,revision:'b'.repeat(64),enabled_sites:1});
+  h.confirms.at(-1).cancel();
+  assert.equal(h.of('repair_nginx_integration').length,0);
+  assert.equal(h.$('#runtime_repair_start').prop('disabled'),false);
+  h.waf.begin_integration_repair();
+  h.of('get_integration_repair_plan').at(-1).resolve({status:true,can_repair:true,revision:'c'.repeat(64),enabled_sites:1});
+  const confirmation=h.confirms.at(-1);
+  h.close(); confirmation.yes(1);
+  assert.equal(h.of('repair_nginx_integration').length,0);
+});
+
+test('repair failures stay literal and cannot display successful protection',()=>{
+  const h=harness();
+  h.waf.begin_integration_repair();
+  h.of('get_integration_repair_plan').at(-1).resolve({status:false,msg:'<script>secret</script>'});
+  assert.equal(h.confirms.length,0);
+  assert.equal(h.$('#runtime_repair_result').text(),'<script>secret</script>');
+  assert.equal(h.$('#runtime_repair_start').prop('disabled'),false);
+});
+
+test('a local Lua probe never claims every site is protected',()=>{
+  const h=harness();
+  h.waf.render_runtime_status({status:true,configured_open:true,integration:'configured',execution_verified:true,verification_scope:'local_health_probe'});
+  assert.match(h.$('#waf_shell_status').text(),/本机接入已验证/);
+  assert.match(h.$('#runtime_status_detail').text(),/不代表全部站点/);
+  h.waf.render_runtime_status({status:true,configured_open:false,integration:'configured',execution_verified:true,verification_scope:'local_health_probe'});
+  assert.match(h.$('#waf_shell_status').text(),/关闭/);
+});
+
+test('double confirmation cannot start two repairs and a late inspection cannot erase proof',()=>{
+  const h=harness();
+  h.waf.begin_integration_repair();
+  h.of('get_integration_repair_plan').at(-1).resolve({status:true,can_repair:true,revision:'a'.repeat(64),enabled_sites:1});
+  const dialog=h.confirms.at(-1); dialog.yes(1); dialog.yes(1);
+  assert.equal(h.of('repair_nginx_integration').length,1);
+  h.waf.inspect_runtime_status();
+  const stale=h.of('get_runtime_status').at(-1);
+  h.of('repair_nginx_integration').at(-1).resolve({status:true,configured_open:true,integration:'configured',execution_verified:true,verification_scope:'local_health_probe',msg:'修复完成'});
+  stale.options.success({status:true,configured_open:true,integration:'missing'});
+  assert.match(h.$('#waf_shell_status').text(),/本机接入已验证/);
+});
