@@ -35,6 +35,7 @@ local function dictionary(values, expires)
         values[key] = value + amount
         return values[key]
     end
+    dict.safe_add,dict.safe_set = dict.add,dict.set
     return dict
 end
 
@@ -68,6 +69,11 @@ local function fixture()
         ngx_match = function(value, pattern) return string.find(value, pattern) end,
         write_log = function() end,
         write_drop_ip_entry = function() return true end,
+        -- This fixture isolates legacy guard state; escalation has its own real-helper suite.
+        repeat_ban_policy = function() return nil end,
+        repeat_ban_event = function() return false end,
+        repeat_ban_rows = function() return {} end,
+        repeat_ban_clear = function() return true end,
         return_html = function() error('fixture_blocked', 0) end,
     }, {__index = _G})
     env.get_registration_guard_config = function() return env.guard end
@@ -77,7 +83,7 @@ local function fixture()
     for _, name in ipairs({
         'split', 'arrlen', 'is_ipaddr', 'trim_string', 'get_return_state',
         'is_runtime_ban_ipv4', 'is_runtime_ban_ip', 'registration_guard_state_key',
-        'endpoint_normalize_ip', 'endpoint_state_ip', 'clear_endpoint_state',
+        'endpoint_normalize_ip', 'endpoint_state_ip', 'clear_endpoint_state', 'repeat_ban_state_identity',
         'registration_guard_scopes', 'registration_state_ip', 'registration_state_ambiguous', 'clear_registration_state',
         'get_btwaf_drop_ip', 'remove_btwaf_drop_ip', 'clean_btwaf_drop_ip',
         'registration_guard_path_matches', 'registration_guard',

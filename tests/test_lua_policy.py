@@ -132,6 +132,43 @@ class LuaPolicyTest(unittest.TestCase):
         self.assertNotIn("ngx.exit", body)
         self.assertNotIn("return_html", body)
 
+    def test_repeat_ban_is_site_scoped_and_ip_allowlist_has_priority(self):
+        body = self._function_body('run_btwaf')
+        allow = self._call_pos(body, 'if ip_white() then return true end')
+        guard = self._call_pos(body, 'repeat_ban_guard()')
+        self.assertLess(allow, guard)
+        self.assertLess(guard, self._call_pos(body, "if url_white() then return true end"))
+        self.assertNotIn('add_ip_black_exact', self._function_body('repeat_ban_event'))
+
+    def test_only_successfully_created_automatic_bans_feed_repeat_escalation(self):
+        for name in ('cc', 'cc2', 'registration_guard', 'endpoint_policy_guard'):
+            body = self._function_body(name)
+            self.assertIn('repeat_ban_event(', body, name)
+            self.assertIn(':safe_add(', body, name)
+        for name in ('write_log', 'url_black', 'ban_empty_ua'):
+            self.assertNotIn('repeat_ban_event(', self._function_body(name), name)
+
+    def test_all_existing_global_unban_paths_also_revoke_repeat_bans(self):
+        for name in ('remove_btwaf_drop_ip', 'clean_btwaf_drop_ip', 'remove_permanent_ban_ip'):
+            self.assertIn('repeat_ban_clear(', self._function_body(name), name)
+
+    def test_repeat_ban_response_captures_the_configured_html_lexically(self):
+        declaration = re.search(r'^local other_html\s*$', self.init_lua, re.M)
+        self.assertIsNotNone(declaration, 'other_html needs a lexical forward declaration')
+        self.assertLess(declaration.start(), self.init_lua.index('function repeat_ban_guard('))
+        self.assertRegex(self.init_lua, r"(?m)^other_html = read_file_body\(config\[\"reqfile_path\"\]")
+
+    def test_repeat_ban_file_lock_is_not_taken_on_the_request_guard_path(self):
+        guard = self._function_body('repeat_ban_guard')
+        self.assertNotIn('repeat_ban_lock(', guard)
+        self.assertNotIn('repeat_ban_lock(', self._function_body('repeat_ban_snapshot'))
+        lock = self._function_body('repeat_ban_lock')
+        self.assertIn('.repeat-bans.lock', lock)
+        self.assertIn('flock', lock)
+        self.assertNotIn('shared.free_waf', lock)
+        self.assertNotIn('repeat:v1:lock', self.init_lua)
+        self.assertNotRegex(self.init_lua, r"(?:remove|unlink)\([^\n]*\.repeat-bans\.lock")
+
     def test_404_auto_ban_requires_scan_like_path_and_higher_threshold(self):
         body = self._function_body("ban_404_accumulate")
         self.assertIn("is_scan_like_404_path(current_uri)", body)

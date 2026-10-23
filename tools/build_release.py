@@ -7,7 +7,7 @@ import re
 import zipfile
 
 
-VERSION = '0.1.6'
+VERSION = '0.1.7'
 PLUGIN_FILES = (
     'info.json', 'install.sh', 'free_waf_main.py', 'index.html',
     'init.lua', 'ban_store.py', 'report_store.py', 'website_statistics.py', 'update_service.py',
@@ -22,7 +22,7 @@ SOURCE_FILES = PLUGIN_FILES + (
     'docs/images/task-manager.png',
     'tools/build_release.py', 'tools/check.py',
     'tools/audit_registration_state.lua', 'tools/audit_rule_identity.lua', 'tools/audit_runtime_routes.lua',
-    'tools/audit_endpoint_policy.lua',
+    'tools/audit_endpoint_policy.lua', 'tools/audit_repeat_ban.lua',
     'tests/__init__.py', 'tests/test_attack_geography.py',
     'tests/test_backend_policy.py', 'tests/test_ban_store.py', 'tests/test_branding.py',
     'tests/test_frontend_ui_contract.py', 'tests/test_lua_policy.py',
@@ -37,6 +37,7 @@ SOURCE_FILES = PLUGIN_FILES + (
     'tests/test_runtime_status.py', 'tests/test_console_ui.js',
     'tests/test_integration_repair.py', 'tests/test_integration_runtime.py', 'tests/test_integration_probe.py',
     'tests/test_task_manager.py', 'tests/test_task_manager_ui.js',
+    'tests/test_repeat_ban_policy.py', 'tests/test_repeat_ban_runtime.py', 'tests/test_repeat_ban_ui.js',
 )
 SECRET_PATTERNS = (
     r'(?m)^-----BEGIN (?:OPENSSH |RSA |EC )?PRIVATE KEY-----',

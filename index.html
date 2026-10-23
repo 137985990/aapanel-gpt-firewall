@@ -331,8 +331,12 @@
 	.waf-policy-form{display:grid;grid-template-columns:1fr 1fr;gap:12px;border:0;padding:0;margin:12px 0;min-width:0}
 	.waf-policy-form label{display:flex;flex-direction:column;gap:6px;font-size:12px;font-weight:400;color:#40564a;min-width:0;margin:0}
 	.waf-policy-form .wide{grid-column:1/-1}
-	.waf-policy-form input:not([type="checkbox"]),.waf-policy-form select,#endpoint_policy_site{height:34px;width:100%;border:1px solid #cedbd2;border-radius:4px;background:#fff;padding:5px 8px;box-sizing:border-box;color:#263b32;font-size:13px}
-	#endpoint_policy_site{width:240px;max-width:100%}
+	.waf-policy-form input:not([type="checkbox"]),.waf-policy-form select,#endpoint_policy_site,#repeat_ban_site{height:34px;width:100%;border:1px solid #cedbd2;border-radius:4px;background:#fff;padding:5px 8px;box-sizing:border-box;color:#263b32;font-size:13px}
+	#endpoint_policy_site,#repeat_ban_site{width:240px;max-width:100%}
+	.repeat-ban-tier{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;align-items:end;gap:12px;padding:12px 0;border-bottom:1px solid #e1e9e4}
+	#repeat_ban_tiers{grid-column:1/-1;min-width:0}
+	#repeat_ban_table{min-width:1050px}
+	@media (max-width:720px){.repeat-ban-tier{grid-template-columns:1fr}.repeat-ban-tier button{justify-self:start}}
 	.waf-policy-form small{font-size:11px;line-height:1.6;color:#75877c}
 	.waf-policy-form label.waf-policy-check{display:flex;flex-direction:row;align-items:center;flex-wrap:wrap;gap:8px;padding:9px 10px;background:#f1f8f3;border:1px solid #dcece1;border-radius:4px}
 	.waf-policy-check input{margin:0;accent-color:#289463}
@@ -371,6 +375,7 @@
 			<li class="active" data-target="home" data-section="overview"><button type="button" aria-current="page">防护概览</button></li>
 			<li data-target="site" data-section="protection" hidden><button type="button">站点防护</button></li>
 			<li data-target="policies" data-section="protection" hidden><button type="button">接口策略</button></li>
+			<li data-target="repeat_ban" data-section="protection" hidden><button type="button">重复封禁升级</button></li>
 			<li data-target="overall" data-section="protection" hidden><button type="button">全局配置</button></li>
 			<li data-target="history" data-section="access" hidden><button type="button">当前封禁</button></li>
 			<li data-target="blacklist" data-section="access" hidden><button type="button">黑名单</button></li>
@@ -591,6 +596,47 @@
 					<thead><tr><th style="width:80px;">级别</th><th style="width:160px;">范围</th><th style="width:130px;">规则集</th><th>规则内容</th><th style="width:220px;">原因</th><th style="width:260px;">人工处理建议</th></tr></thead>
 					<tbody id="rule_risk_table"><tr><td colspan="6" style="text-align:center;color:#999;padding:18px;">点击刷新风险后开始检查。</td></tr></tbody>
 				</table>
+			</div>
+		</div>
+		<div class="item_con" data-type="repeat_ban">
+			<div class="waf-page-title"><h3>重复封禁升级</h3><p>按站点配置滚动窗口与升级阶梯。默认停用，只有明确启用并保存后才生效；不会自动刷新。</p></div>
+			<div class="waf-notice-safe">仅统计同一站点、同一 IP 的独立且成功的自动封禁；已封禁期间的重复请求不计数，也不会触发升级或延长封禁。手动封禁、普通规则命中，以及仅观察或仅拒绝的接口策略均不计数。默认滚动 24 小时：达到 5 次对应 7 天，达到 10 次对应 30 天。</div>
+			<div class="waf-card">
+				<div class="waf-toolbar"><label for="repeat_ban_site">管理站点</label><select id="repeat_ban_site" disabled><option value="">请先加载并选择站点</option></select><button type="button" class="btn btn-default btn-sm" id="repeat_ban_sites_refresh">重新读取站点</button><button type="button" class="btn btn-default btn-sm" id="repeat_ban_policy_refresh" disabled>重读策略</button></div>
+				<div id="repeat_ban_status" class="waf-policy-meta" role="status" aria-live="polite">打开本页后读取站点，选定站点后才读取策略与封禁记录。</div>
+			</div>
+			<div class="waf-policy-layout">
+				<div class="waf-card">
+					<h4>本站点升级阶梯</h4>
+					<form id="repeat_ban_editor">
+						<fieldset class="waf-policy-form" id="repeat_ban_fields" disabled>
+							<label class="wide" for="repeat_ban_window_seconds">滚动统计窗口（秒）<input type="number" id="repeat_ban_window_seconds" min="60" max="604800" step="1" value="86400" /><small>60 至 604800 秒；86400 秒 = 24 小时。</small></label>
+							<div id="repeat_ban_tiers"></div>
+							<div class="wide waf-toolbar"><button type="button" class="btn btn-default btn-sm" id="repeat_ban_tiers_add">添加档位</button><button type="button" class="btn btn-default btn-sm" id="repeat_ban_defaults">恢复默认阶梯</button></div>
+							<small class="wide">支持 1 至 8 档，次数为 2 至 1000，时长为 60 至 31536000 秒；各档次数和时长都必须严格递增。默认预设：24 小时，5 次 / 7 天，10 次 / 30 天；恢复预设不会启用或保存。</small>
+							<label class="wide waf-policy-check" for="repeat_ban_enabled"><input type="checkbox" id="repeat_ban_enabled" />启用此站点的重复封禁升级<small>默认不勾选；读取成功前不可保存，勾选后仍需确认并保存。</small></label>
+						</fieldset>
+						<p id="repeat_ban_preview" class="waf-policy-meta">默认预设不是当前生效状态，请先读取站点策略。</p>
+						<div class="waf-toolbar"><button type="button" class="btn btn-success btn-sm" id="repeat_ban_save" disabled>保存策略</button></div>
+					</form>
+				</div>
+				<div class="waf-card">
+					<h4>启用前请确认影响</h4>
+					<div class="waf-feature-guide" style="grid-template-columns:1fr">
+						<div><h5>仅本站点，但影响整个站点</h5><p>升级封禁不跨站点汇总，也不影响其他站点。即使原始违规仅来自某个接口，升级后也会封禁该 IP 对所选整个站点的访问，而不是只封禁原接口。</p></div>
+						<div><h5>IP 白名单优先</h5><p>IP 白名单优先于本策略。策略启用或记录存在，不代表白名单中的 IP 会被此策略拦截；不会自动修改白名单、黑名单或其他防护规则。</p></div>
+						<div><h5>共享出口与误封风险</h5><p>共享出口（NAT）或代理可能让多位正常用户使用同一 IP，整站长封禁可能造成误封。请先核对客户端 IP 识别与自动封禁证据，再决定是否启用。</p></div>
+						<div><h5>解封后如何继续计数</h5><p>默认解封保留滚动计数；提前解封后，在原滚动窗口内再次产生独立且成功的自动封禁，会在已有计数上继续累计。只有明确选择“解封并清零”才清零该 IP 在本站点的重复封禁计数，后续独立自动封禁重新累计。</p><p>默认 7 天封禁若自然到期，原 24 小时窗口内的旧计数已过期。10 次档位需要在有效滚动窗口内，经提前解封后再次产生足够的独立自动封禁才可能达到；封禁期间反复访问不会推进档位。</p></div>
+					</div>
+				</div>
+			</div>
+			<div class="waf-card">
+				<div class="waf-dashboard-head"><div><h4>本站点升级封禁记录</h4><p>原始记录仅属于所选站点；展示实际命中的档位，而非全部规则命中或请求次数。</p></div><button type="button" class="btn btn-default btn-sm" id="repeat_ban_refresh" disabled>刷新封禁记录</button></div>
+				<div id="repeat_ban_rows_status" class="waf-policy-meta" role="status" aria-live="polite">请先选择站点，执行状态尚未读取。</div>
+				<div id="repeat_ban_notes" class="waf-policy-meta"></div>
+				<div class="waf-policy-scroll"><table class="waf_table" id="repeat_ban_table"><thead><tr><th>站点 / IP</th><th>开始 / 到期时间（本地时区）</th><th>时长 / 剩余</th><th>触发次数 / 窗口 / 命中档位</th><th>原因 / 路径</th><th>本策略状态 / 操作</th></tr></thead><tbody id="repeat_ban_rows"><tr><td colspan="6">请先选择站点。</td></tr></tbody></table></div>
+				<div class="waf-toolbar"><button type="button" class="btn btn-default btn-sm" id="repeat_ban_prev" disabled>上一页</button><span id="repeat_ban_page_info">尚未读取 · 每页 50 条</span><button type="button" class="btn btn-default btn-sm" id="repeat_ban_next" disabled>下一页</button></div>
+				<p class="waf-policy-meta">剩余时间按本次服务器时间计算，不会自动倒计时。策略停用后，保留记录不由本策略执行。默认解除仅移除此站点、此 IP 的升级长封禁，保留滚动计数；“解封并清零”才同时清零重复封禁计数。两种操作都不清除独立的手动封禁或基础封禁，也不影响其他站点；切换页面不会撤销服务器已开始的操作。</p>
 			</div>
 		</div>
 		<div class="item_con" data-type="policies">
@@ -1646,6 +1692,7 @@
 			this.stop_statistics_polling();
 			this.stop_plugin_update_status();
 			this.stop_endpoint_requests();
+			this.stop_repeat_ban_requests();
 			this.stop_task_requests();
 			this._task_views = null;
 			this.clear_task_snapshot('processes','页面已关闭。');
@@ -1685,7 +1732,7 @@
 			$root.css({'height': panelHeight + 'px'});
 		},
 		panel_section:function(page){
-			var sections={home:'overview',site:'protection',policies:'protection',overall:'protection',history:'access',blacklist:'access',whitelist:'access',ipstats:'observation',statistics:'observation',notification:'observation',logs:'observation',updates:'maintenance',task_manager:'maintenance',webshell:'maintenance'};
+			var sections={home:'overview',site:'protection',policies:'protection',repeat_ban:'protection',overall:'protection',history:'access',blacklist:'access',whitelist:'access',ipstats:'observation',statistics:'observation',notification:'observation',logs:'observation',updates:'maintenance',task_manager:'maintenance',webshell:'maintenance'};
 			return Object.prototype.hasOwnProperty.call(sections,page) ? sections[page] : null;
 		},
 		section_page:function(section){
@@ -1803,6 +1850,7 @@
 			this._configured_open = null;
 			this._repair_busy = false;
 			this.init_endpoint_policies();
+			this.init_repeat_ban();
 			this.init_task_manager();
 			this._tools_loaded = false;
 			this._map_expanded = false;
@@ -2566,6 +2614,7 @@
 			if(this._active_page === 'statistics' && type !== 'statistics') this.stop_statistics_polling();
 			if(this._active_page === 'updates' && type !== 'updates') this.stop_plugin_update_status();
 			if(this._active_page === 'policies' && type !== 'policies') this.stop_endpoint_requests();
+			if(this._active_page === 'repeat_ban' && type !== 'repeat_ban') this.stop_repeat_ban_requests();
 			if(this._active_page === 'task_manager' && type !== 'task_manager') this.stop_task_requests();
 			if(type !== 'home'){
 				this.expand_attack_map(false);
@@ -2579,6 +2628,9 @@
 				break;
 				case 'policies':
 					this.load_endpoint_sites();
+				break;
+				case 'repeat_ban':
+					this.load_repeat_ban_sites();
 				break;
 				case 'home': //首页
 					this.invalidate_runtime_status();
@@ -3177,7 +3229,7 @@
 						}},
 						{fid:'2',title:'站点'},
 						{fid:'3',title:'封锁原因',templet:function(row,index){
-							return row[5] === 'endpoint_limit' ? '接口限流（限域封禁）' : row[5] === 'cc' ? 'CC攻击' : (row[5] === 'ip_black' ? '黑名单' : '多次恶意请求');
+							return row[5] === 'repeat_ban' ? '重复封禁升级（本站点）' : row[5] === 'endpoint_limit' ? '接口限流（限域封禁）' : row[5] === 'cc' ? 'CC攻击' : (row[5] === 'ip_black' ? '黑名单' : '多次恶意请求');
 						}},
 						{fid:'4',title:'封禁时长',templet:function(row,index){
 							return row[4] + '秒';
@@ -6682,6 +6734,331 @@
 					if(callback) callback(res);
 				}
 			});
+		},
+		init_repeat_ban:function(){
+			var _this = this;
+			this._repeat_requests = {};
+			this._repeat_epoch = (this._repeat_epoch || 0) + 1;
+			this._repeat_sites = [];
+			this._repeat_site = '';
+			this._repeat_busy = false;
+			this._repeat_confirmation = null;
+			this._repeat_defaults = {enabled:false,window_seconds:86400,tiers:[{threshold:5,ban_seconds:604800},{threshold:10,ban_seconds:2592000}]};
+			this.clear_repeat_ban_view();
+			this.bind_panel_event('change','#repeat_ban_site',function(){_this.select_repeat_ban_site($(this).val());});
+			this.bind_panel_event('click','#repeat_ban_sites_refresh',function(){_this.load_repeat_ban_sites();});
+			this.bind_panel_event('click','#repeat_ban_policy_refresh',function(){_this.load_repeat_ban_policy();});
+			this.bind_panel_event('click','#repeat_ban_refresh',function(){_this.load_repeat_bans(_this._repeat_page);});
+			this.bind_panel_event('click','#repeat_ban_prev',function(){_this.repeat_ban_page(-1);});
+			this.bind_panel_event('click','#repeat_ban_next',function(){_this.repeat_ban_page(1);});
+			this.bind_panel_event('click','#repeat_ban_save',function(){_this.save_repeat_ban_ui();});
+			this.bind_panel_event('submit','#repeat_ban_editor',function(event){event.preventDefault();_this.save_repeat_ban_ui();});
+			this.bind_panel_event('click','.repeat-ban-remove',function(){_this.remove_repeat_ban_ui($(this).attr('data-index'));});
+			this.bind_panel_event('click','.repeat-ban-reset',function(){_this.remove_repeat_ban_ui($(this).attr('data-index'),true);});
+			this.bind_panel_event('click','#repeat_ban_tiers_add',function(){_this.edit_repeat_ban_tiers(null);});
+			this.bind_panel_event('click','.repeat-ban-remove-tier',function(){_this.edit_repeat_ban_tiers($(this).attr('data-index'));});
+			this.bind_panel_event('input','.repeat-ban-tier-input',function(){_this.preview_repeat_ban();});
+			this.bind_panel_event('input','#repeat_ban_window_seconds',function(){_this.preview_repeat_ban();});
+			this.bind_panel_event('click','#repeat_ban_defaults',function(){
+				if(!_this.repeat_ban_editable()) return;
+				$('#repeat_ban_window_seconds').val(86400);
+				_this.render_repeat_ban_tiers([{threshold:5,ban_seconds:604800},{threshold:10,ban_seconds:2592000}]);
+			});
+		},
+		repeat_ban_alive:function(){
+			return !this._destroyed && this._active_page === 'repeat_ban' && this.$root && this.$root[0].isConnected;
+		},
+		repeat_ban_editable:function(){
+			return this.repeat_ban_alive() && !!this._repeat_site && this._repeat_ready && !this._repeat_busy && !this._repeat_confirmation;
+		},
+		cancel_repeat_ban_request:function(kind){
+			var token = (this._repeat_requests || {})[kind];
+			delete this._repeat_requests[kind];
+			if(token && token.xhr) token.xhr.abort();
+		},
+		stop_repeat_ban_requests:function(){
+			// Invalidate first: abort and layer.close may synchronously run callbacks.
+			this._repeat_epoch = (this._repeat_epoch || 0) + 1;
+			var pending = this._repeat_requests || {}, confirmation = this._repeat_confirmation;
+			this._repeat_requests = {};
+			this._repeat_confirmation = null;
+			this._repeat_ready = false;
+			this._repeat_busy = false;
+			this._repeat_rows_loading = false;
+			this._repeat_rows_ready = false;
+			$('#repeat_ban_enabled').prop('checked',false);
+			if(confirmation && confirmation.layer !== undefined) layer.close(confirmation.layer);
+			for(var kind in pending) if(Object.prototype.hasOwnProperty.call(pending,kind) && pending[kind].xhr) pending[kind].xhr.abort();
+			this.repeat_ban_controls();
+		},
+		repeat_ban_request:function(kind,method,data,success,failure){
+			if(!this.repeat_ban_alive()) return;
+			var _this = this, epoch = this._repeat_epoch, owner = this._generation, site = this._repeat_site, token = {};
+			this.cancel_repeat_ban_request(kind);
+			this._repeat_requests[kind] = token;
+			function current(){
+				return _this.repeat_ban_alive() && epoch === _this._repeat_epoch && owner === _this._generation && site === _this._repeat_site && _this._repeat_requests[kind] === token;
+			}
+			token.xhr = this.http({method:method,type:'POST',data:data,load:2,msg:false,check:true,
+				success:function(res){if(current() && !token.handled){token.handled = true;success(res);}},
+				error:function(xhr,message){if(current() && !token.handled){token.handled = true;failure(message);}},
+				complete:function(){if(current()) delete _this._repeat_requests[kind];}
+			});
+		},
+		repeat_ban_controls:function(){
+			var editable = this.repeat_ban_editable(), locked = !this.repeat_ban_alive() || !this._repeat_site || this._repeat_busy || !!this._repeat_confirmation;
+			$('#repeat_ban_fields').prop('disabled',!editable);
+			$('#repeat_ban_save').prop('disabled',!editable);
+			$('#repeat_ban_tiers_add').prop('disabled',!editable || this._repeat_tier_count >= 8);
+			$('.repeat-ban-remove-tier').prop('disabled',!editable || this._repeat_tier_count <= 1);
+			$('.repeat-ban-remove').prop('disabled',locked || !this._repeat_rows_ready || this._repeat_rows_loading);
+			$('.repeat-ban-reset').prop('disabled',locked || !this._repeat_rows_ready || this._repeat_rows_loading);
+			$('#repeat_ban_policy_refresh').prop('disabled',locked);
+			$('#repeat_ban_refresh').prop('disabled',locked);
+			$('#repeat_ban_sites_refresh').prop('disabled',!!this._repeat_busy || !!this._repeat_confirmation);
+			$('#repeat_ban_prev').prop('disabled',locked || !this._repeat_rows_ready || this._repeat_rows_loading || this._repeat_page <= 1);
+			$('#repeat_ban_next').prop('disabled',locked || !this._repeat_rows_ready || this._repeat_rows_loading || this._repeat_page * 50 >= this._repeat_total);
+		},
+		repeat_ban_policy_valid:function(policy){
+			if(!policy || typeof policy.enabled !== 'boolean' || !Number.isInteger(policy.window_seconds) || policy.window_seconds < 60 || policy.window_seconds > 604800 || !Array.isArray(policy.tiers) || policy.tiers.length < 1 || policy.tiers.length > 8) return false;
+			var threshold = 0, seconds = 0;
+			for(var i=0;i<policy.tiers.length;i++){
+				var tier = policy.tiers[i];
+				if(!tier || !Number.isInteger(tier.threshold) || tier.threshold < 2 || tier.threshold > 1000 || !Number.isInteger(tier.ban_seconds) || tier.ban_seconds < 60 || tier.ban_seconds > 31536000 || tier.threshold <= threshold || tier.ban_seconds <= seconds) return false;
+				threshold = tier.threshold; seconds = tier.ban_seconds;
+			}
+			return true;
+		},
+		repeat_ban_policy_response:function(res){
+			return !!res && res.status === true && res.siteName === this._repeat_site && typeof res.revision === 'string' && !!res.revision && this.repeat_ban_policy_valid(res.policy);
+		},
+		repeat_ban_duration:function(value){
+			if(!Number.isFinite(value) || value < 0) return '未知';
+			if(value > 0 && value % 86400 === 0) return (value / 86400)+' 天';
+			if(value > 0 && value % 3600 === 0) return (value / 3600)+' 小时';
+			return Math.floor(value)+' 秒';
+		},
+		repeat_ban_draft:function(){
+			var tiers = [];
+			for(var i=0;i<this._repeat_tier_count;i++) tiers.push({threshold:$('#repeat_ban_threshold_'+i).val(),ban_seconds:$('#repeat_ban_seconds_'+i).val()});
+			return tiers;
+		},
+		render_repeat_ban_tiers:function(tiers){
+			var html = '';
+			this._repeat_tier_count = tiers.length;
+			for(var i=0;i<tiers.length;i++) html += '<div class="repeat-ban-tier"><label for="repeat_ban_threshold_'+i+'">第 '+(i+1)+' 档：独立自动封禁次数<input type="number" class="repeat-ban-tier-input" id="repeat_ban_threshold_'+i+'" min="2" max="1000" step="1" /></label><label for="repeat_ban_seconds_'+i+'">升级封禁时长（秒）<input type="number" class="repeat-ban-tier-input" id="repeat_ban_seconds_'+i+'" min="60" max="31536000" step="1" /></label><button type="button" class="btn btn-default btn-sm repeat-ban-remove-tier" data-index="'+i+'">移除此档</button></div>';
+			$('#repeat_ban_tiers').html(html);
+			for(var j=0;j<tiers.length;j++){
+				$('#repeat_ban_threshold_'+j).val(tiers[j].threshold);
+				$('#repeat_ban_seconds_'+j).val(tiers[j].ban_seconds);
+			}
+			this.preview_repeat_ban();
+			this.repeat_ban_controls();
+		},
+		edit_repeat_ban_tiers:function(index){
+			if(!this.repeat_ban_editable()) return;
+			var tiers = this.repeat_ban_draft();
+			if(index === null){if(tiers.length >= 8) return;tiers.push({threshold:'',ban_seconds:''});}
+			else{if(!/^\d+$/.test(String(index)) || Number(index) >= tiers.length || tiers.length <= 1) return;tiers.splice(Number(index),1);}
+			this.render_repeat_ban_tiers(tiers);
+		},
+		preview_repeat_ban:function(){
+			var tiers = this.repeat_ban_draft(), text = [];
+			for(var i=0;i<tiers.length;i++) text.push('第 '+(i+1)+' 档：'+(tiers[i].threshold || '待填写')+' 次 / '+this.repeat_ban_duration(Number(tiers[i].ban_seconds)));
+			$('#repeat_ban_preview').text('编辑预览（不是生效确认）：滚动 '+this.repeat_ban_duration(Number($('#repeat_ban_window_seconds').val()))+'；'+text.join('；')+'。变更仅在保存成功后生效。');
+		},
+		clear_repeat_ban_view:function(){
+			this._repeat_ready = false; this._repeat_revision = null;
+			this._repeat_rows = []; this._repeat_rows_ready = false; this._repeat_rows_loading = false;
+			this._repeat_page = 1; this._repeat_total = 0;
+			$('#repeat_ban_enabled').prop('checked',false);
+			$('#repeat_ban_window_seconds').val(this._repeat_defaults.window_seconds);
+			this.render_repeat_ban_tiers(this._repeat_defaults.tiers);
+			$('#repeat_ban_rows').html('<tr><td colspan="6">请先选择站点。</td></tr>');
+			$('#repeat_ban_rows_status').text('请先选择站点，执行状态尚未读取。');
+			$('#repeat_ban_notes').text('');
+			$('#repeat_ban_page_info').text('尚未读取 · 每页 50 条');
+		},
+		load_repeat_ban_sites:function(){
+			if(!this.repeat_ban_alive() || this._repeat_busy || this._repeat_confirmation) return;
+			this.stop_repeat_ban_requests();
+			this._repeat_site = ''; this._repeat_sites = [];
+			this.clear_repeat_ban_view();
+			$('#repeat_ban_site').html('<option value="">正在读取站点...</option>').val('').prop('disabled',true);
+			$('#repeat_ban_status').text('正在读取站点，请稍候。');
+			var _this = this;
+			function failed(message){
+				$('#repeat_ban_site').html('<option value="">站点读取失败</option>').prop('disabled',true);
+				$('#repeat_ban_status').text('站点读取失败：'+message+'；请点击重新读取站点重试。');
+			}
+			this.repeat_ban_request('sites','get_repeat_ban_sites',{},function(res){
+				if(!res || res.status !== true || !Array.isArray(res.sites) || !_this.repeat_ban_policy_valid(res.defaults)){failed((res && res.msg) || '返回格式不可用');return;}
+				_this._repeat_defaults = {enabled:false,window_seconds:res.defaults.window_seconds,tiers:res.defaults.tiers};
+				_this.clear_repeat_ban_view();
+				var options = '<option value="">请选择站点</option>';
+				for(var i=0;i<res.sites.length;i++){
+					var name = res.sites[i] && res.sites[i].siteName;
+					if(typeof name !== 'string' || !name || _this._repeat_sites.indexOf(name) !== -1) continue;
+					_this._repeat_sites.push(name);
+					options += '<option value="'+_this.endpoint_text(name)+'">'+_this.endpoint_text(name)+'</option>';
+				}
+				$('#repeat_ban_site').html(options).val('').prop('disabled',!_this._repeat_sites.length);
+				$('#repeat_ban_status').text(_this._repeat_sites.length ? '请选择站点后读取策略与封禁记录，不会自动刷新。' : '暂无可配置站点，请核对站点配置后重新读取。');
+			},failed);
+		},
+		select_repeat_ban_site:function(site){
+			if(!this.repeat_ban_alive()) return;
+			this.stop_repeat_ban_requests();
+			this._repeat_site = this._repeat_sites.indexOf(site) !== -1 ? site : '';
+			$('#repeat_ban_site').val(this._repeat_site);
+			this.clear_repeat_ban_view();
+			if(!this._repeat_site){$('#repeat_ban_status').text('请先选择站点，不会读取或保存策略。');return;}
+			this.load_repeat_ban_policy();
+			this.load_repeat_bans(1);
+		},
+		load_repeat_ban_policy:function(){
+			if(!this.repeat_ban_alive() || !this._repeat_site || this._repeat_busy || this._repeat_confirmation) return;
+			var _this = this;
+			this._repeat_ready = false; this._repeat_revision = null;
+			$('#repeat_ban_enabled').prop('checked',false);
+			this.repeat_ban_controls();
+			$('#repeat_ban_status').text('正在读取 '+this._repeat_site+' 的策略；启用状态尚未确认，读取成功前不能保存。');
+			function failed(message){
+				$('#repeat_ban_status').text('策略读取失败：'+message+'；启用状态未知，请手动重读策略。');
+				_this.repeat_ban_controls();
+			}
+			this.repeat_ban_request('policy','get_repeat_ban_policy',{siteName:this._repeat_site},function(res){
+				if(!_this.repeat_ban_policy_response(res)){failed((res && res.msg) || '站点、版本或阶梯格式不匹配');return;}
+				_this._repeat_revision = res.revision; _this._repeat_ready = true;
+				$('#repeat_ban_window_seconds').val(res.policy.window_seconds);
+				$('#repeat_ban_enabled').prop('checked',res.policy.enabled);
+				_this.render_repeat_ban_tiers(res.policy.tiers);
+				$('#repeat_ban_status').text('已读取 '+_this._repeat_site+' 的策略：'+(res.policy.enabled ? '已启用' : '已停用')+'；编辑不会自动保存。');
+			},failed);
+		},
+		confirm_repeat_ban_action:function(message,title,action){
+			if(!this.repeat_ban_alive() || this._repeat_busy || this._repeat_confirmation) return;
+			var _this = this, epoch = this._repeat_epoch, owner = this._generation, site = this._repeat_site, token = {};
+			this._repeat_confirmation = token; this.repeat_ban_controls();
+			function cancel(){
+				if(_this._repeat_confirmation !== token) return;
+				_this._repeat_confirmation = null;
+				if(token.layer !== undefined) layer.close(token.layer);
+				_this.repeat_ban_controls();
+			}
+			token.layer = layer.confirm(message,{title:title,btn:['确认','取消'],icon:0,closeBtn:2,cancel:cancel,end:cancel},function(index){
+				if(!_this.repeat_ban_alive() || epoch !== _this._repeat_epoch || owner !== _this._generation || site !== _this._repeat_site || _this._repeat_confirmation !== token) return;
+				_this._repeat_confirmation = null;
+				layer.close(index);
+				action();
+			},cancel);
+		},
+		save_repeat_ban_ui:function(){
+			if(!this.repeat_ban_editable()) return;
+			var rawWindow = String($('#repeat_ban_window_seconds').val()), tiers = this.repeat_ban_draft(), numeric = /^\d+$/.test(rawWindow);
+			for(var i=0;i<tiers.length;i++){
+				numeric = numeric && /^\d+$/.test(String(tiers[i].threshold)) && /^\d+$/.test(String(tiers[i].ban_seconds));
+				tiers[i] = {threshold:Number(tiers[i].threshold),ban_seconds:Number(tiers[i].ban_seconds)};
+			}
+			var policy = {enabled:$('#repeat_ban_enabled').prop('checked') === true,window_seconds:Number(rawWindow),tiers:tiers};
+			if(!numeric || !this.repeat_ban_policy_valid(policy)){
+				$('#repeat_ban_status').text('未保存：窗口须为 60 至 604800 秒的整数；支持 1 至 8 档，次数须为 2 至 1000、时长须为 60 至 31536000 秒的整数，且各档次数和时长均严格递增。');return;
+			}
+			var _this = this, data = {siteName:this._repeat_site,policy:JSON.stringify(policy),revision:this._repeat_revision};
+			if(!policy.enabled){this.write_repeat_ban('save_repeat_ban_policy',data);return;}
+			this.confirm_repeat_ban_action('确认启用站点「'+this.endpoint_text(this._repeat_site)+'」的重复封禁升级？即使违规来自单个接口，升级也会影响此 IP 对整个站点的访问，其他站点不受影响。仅独立且成功的自动封禁计数，封禁期间重复请求不计数、不触发升级。默认解封保留滚动计数，再次独立自动封禁继续累计；只有明确选择“解封并清零”才重置计数。IP 白名单优先；共享出口或代理可能导致正常用户误封。请核对编辑预览中的窗口与各档次数、时长。','启用本站点整站升级封禁',function(){_this.write_repeat_ban('save_repeat_ban_policy',data);});
+		},
+		write_repeat_ban:function(method,data){
+			if(!this.repeat_ban_alive() || !this._repeat_site || this._repeat_busy || this._repeat_confirmation || data.siteName !== this._repeat_site) return;
+			if(method === 'save_repeat_ban_policy' && !this._repeat_ready) return;
+			if(this._repeat_rows_loading){
+				$('#repeat_ban_rows').html('<tr><td colspan="6">为提交操作已取消记录读取，请手动刷新。</td></tr>');
+				$('#repeat_ban_rows_status').text('记录读取已取消，执行状态未知；操作完成后可手动刷新。');
+				$('#repeat_ban_page_info').text('读取已取消 · 每页 50 条');
+			}
+			this.cancel_repeat_ban_request('rows');
+			this.cancel_repeat_ban_request('policy');
+			this._repeat_rows_loading = false;
+			this._repeat_busy = true; this.repeat_ban_controls();
+			$('#repeat_ban_status').text('正在'+(method === 'save_repeat_ban_policy' ? '保存策略' : data.reset_counts === '1' ? '解封并清零本站点重复封禁计数' : '解除本站点升级封禁（保留滚动计数）')+'，请勿重复提交；切换页面不会撤销服务器操作。');
+			var _this = this;
+			function failed(message){
+				_this._repeat_busy = false;
+				$('#repeat_ban_status').text('操作失败或未确认：'+message+'；保留编辑与记录。若连接中断，服务器可能已处理，请手动重读策略和刷新记录核对后重试。');
+				_this.repeat_ban_controls();
+			}
+			this.repeat_ban_request('write',method,data,function(res){
+				if(!res || res.status !== true || (res.siteName !== undefined && res.siteName !== _this._repeat_site) || (method === 'save_repeat_ban_policy' && !_this.repeat_ban_policy_response(res))){failed((res && res.msg) || '服务器未返回本站点的有效成功结果');return;}
+				_this._repeat_busy = false;
+				_this.load_repeat_ban_policy();
+				_this.load_repeat_bans(_this._repeat_page);
+			},failed);
+		},
+		repeat_ban_rows_valid:function(res){
+			if(!res || res.status !== true || res.siteName !== this._repeat_site || !Array.isArray(res.rows) || res.rows.length > 50 || !Number.isSafeInteger(res.total) || res.total < res.rows.length || !Number.isSafeInteger(res.page) || res.page < 1 || (res.page > Math.max(1,Math.ceil(res.total/50)) && res.rows.length) || res.per_page !== 50 || !Number.isSafeInteger(res.now) || res.now < 0 || typeof res.policy_enabled !== 'boolean') return false;
+			for(var i=0;i<res.rows.length;i++){
+				var row = res.rows[i];
+				if(!row || row.site !== this._repeat_site || typeof row.ip !== 'string' || !row.ip) return false;
+				var fields = ['started_at','expires_at','duration','trigger_count','window_seconds','threshold'];
+				for(var j=0;j<fields.length;j++) if(!Number.isSafeInteger(row[fields[j]]) || row[fields[j]] < 0) return false;
+			}
+			return true;
+		},
+		repeat_ban_reason:function(reason){
+			var labels = {cc:'CC 防护',registration_abuse_verify:'注册验证码滥用',registration_abuse_register:'异常注册',endpoint_limit:'接口限流','404_flood':'扫描式 404 请求'};
+			return Object.prototype.hasOwnProperty.call(labels,reason) ? labels[reason] : reason;
+		},
+		load_repeat_bans:function(page){
+			if(!this.repeat_ban_alive() || !this._repeat_site || this._repeat_busy || this._repeat_confirmation) return;
+			var _this = this;
+			this._repeat_rows_loading = true; this._repeat_rows_ready = false;
+			this._repeat_rows = [];
+			$('#repeat_ban_rows').html('<tr><td colspan="6">正在读取本站点封禁记录...</td></tr>');
+			$('#repeat_ban_rows_status').text('正在读取服务器时间与执行状态，不会自动刷新。');
+			$('#repeat_ban_notes').text('');
+			$('#repeat_ban_page_info').text('正在读取 · 每页 50 条');
+			this.repeat_ban_controls();
+			function failed(message){
+				_this._repeat_rows_loading = false; _this._repeat_total = 0;
+				$('#repeat_ban_rows').html('<tr><td colspan="6">封禁记录读取失败，请手动刷新重试。</td></tr>');
+				$('#repeat_ban_rows_status').text('记录读取失败：'+message+'；执行状态未知，不代表没有封禁。');
+				$('#repeat_ban_page_info').text('读取失败 · 每页 50 条');
+				_this.repeat_ban_controls();
+			}
+			this.repeat_ban_request('rows','get_repeat_bans',{siteName:this._repeat_site,page:page || 1,per_page:50},function(res){
+				if(!_this.repeat_ban_rows_valid(res)){failed((res && res.msg) || '站点或记录格式不匹配');return;}
+				_this._repeat_rows = res.rows; _this._repeat_page = res.page; _this._repeat_total = res.total;
+				_this._repeat_rows_loading = false; _this._repeat_rows_ready = true;
+				var e = function(value){return _this.endpoint_text(value);}, html = '';
+				for(var i=0;i<res.rows.length;i++){
+					var row = res.rows[i], remaining = Math.max(0,row.expires_at - res.now);
+					var state = !res.policy_enabled ? '策略已停用，不执行此记录' : !remaining ? '已到期，不执行此记录' : '策略已启用，仍以 IP 白名单优先';
+					html += '<tr><td>'+e(row.site)+'<br>'+e(row.ip)+'</td><td>'+e(new Date(row.started_at*1000).toLocaleString('zh-CN'))+'<br>'+e(new Date(row.expires_at*1000).toLocaleString('zh-CN'))+'</td>'
+						+'<td>'+e(row.duration)+' 秒（'+e(_this.repeat_ban_duration(row.duration))+'）<br>'+(remaining ? '剩余 '+e(_this.repeat_ban_duration(remaining)) : '已到期')+'</td>'
+						+'<td>'+e(row.trigger_count)+' 次 / '+e(row.window_seconds)+' 秒<br>命中 '+e(row.threshold)+' 次档位</td><td>'+e(_this.repeat_ban_reason(row.reason))+'<br>'+e(row.path)+'</td>'
+						+'<td>'+state+'<br><button type="button" class="btn btn-default btn-sm repeat-ban-remove" data-index="'+i+'">解除（保留计数）</button><br><button type="button" class="btn btn-default btn-sm repeat-ban-reset" data-index="'+i+'">解封并清零</button></td></tr>';
+				}
+				var pages = Math.max(1,Math.ceil(res.total/50)), outside = res.page > pages;
+				$('#repeat_ban_rows').html(html || (outside ? '<tr><td colspan="6">本页已无记录，记录数量已减少，请点击上一页返回有效页。</td></tr>' : '<tr><td colspan="6">本站点暂无升级封禁记录；不代表没有基础或手动封禁。</td></tr>'));
+				$('#repeat_ban_rows_status').text('本站点 · '+(res.policy_enabled ? '策略已启用，IP 白名单优先' : '策略已停用，保留记录不执行')+'；服务器时间：'+new Date(res.now*1000).toLocaleString('zh-CN')+'；剩余时间仅为本次读取快照。');
+				$('#repeat_ban_notes').text(Array.isArray(res.notes) ? res.notes.join('；') : (res.notes || ''));
+				$('#repeat_ban_page_info').text((outside ? '第 '+res.page+' 页已超出当前范围 · 当前共 '+pages+' 页' : res.page+' / '+pages+' 页')+' · 共 '+res.total+' 条 · 每页 50 条');
+				_this.repeat_ban_controls();
+			},failed);
+		},
+		repeat_ban_page:function(delta){
+			if(!this.repeat_ban_alive() || !this._repeat_rows_ready || this._repeat_rows_loading || this._repeat_busy || this._repeat_confirmation) return;
+			var pages = Math.max(1,Math.ceil(this._repeat_total/50)), page = this._repeat_page + delta;
+			if(delta < 0) page = Math.min(page,pages);
+			if(page >= 1 && page <= pages) this.load_repeat_bans(page);
+		},
+		remove_repeat_ban_ui:function(index,resetCounts){
+			if(!this.repeat_ban_alive() || this._repeat_busy || this._repeat_confirmation || !this._repeat_rows_ready || this._repeat_rows_loading || !/^\d+$/.test(String(index))) return;
+			var row = this._repeat_rows[Number(index)];
+			if(!row || row.site !== this._repeat_site) return;
+			var reset = resetCounts === true, _this = this, data = {siteName:this._repeat_site,ip:row.ip,reset_counts:reset ? '1' : '0'};
+			var effect = reset ? '解除本站点的升级长封禁，并清零此 IP 的重复封禁滚动计数；后续独立且成功的自动封禁重新累计。' : '仅解除本站点的升级长封禁，保留当前窗口内的滚动计数；解封后再次产生独立且成功的自动封禁，在有效滚动窗口内继续累计。';
+			this.confirm_repeat_ban_action('确认'+(reset ? '解封并清零' : '解除升级封禁并保留计数')+'：站点「'+this.endpoint_text(row.site)+'」，IP「'+this.endpoint_text(row.ip)+'」？'+effect+'不清除独立的手动封禁或基础封禁，也不影响其他站点。',reset ? '解封并清零本站点计数' : '解除本站点升级封禁（保留计数）',function(){_this.write_repeat_ban('remove_repeat_ban',data);});
 		},
 		init_endpoint_policies:function(){
 			var _this = this;

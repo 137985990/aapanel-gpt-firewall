@@ -44,6 +44,339 @@ end
 
 local config = json.decode(read_file_body(cpath .. 'config.json'))
 local site_config = json.decode(read_file_body(cpath .. 'site.json'))
+local repeat_ban_cache = {}
+local other_html
+
+function repeat_ban_policy(site)
+	local current = site_config[site]
+	local policy = type(current) == 'table' and current.repeat_ban_policy
+	if type(policy) ~= 'table' or policy.enabled ~= true then return nil end
+	local policy_fields = 0
+	for key in pairs(policy) do
+		if key ~= 'enabled' and key ~= 'window_seconds' and key ~= 'tiers' then return nil end
+		policy_fields = policy_fields+1
+	end
+	if policy_fields ~= 3 then return nil end
+	local window = policy.window_seconds
+	if type(window) ~= 'number' or window ~= math.floor(window) or window < 60 or window > 604800 then return nil end
+	if type(policy.tiers) ~= 'table' or #policy.tiers < 1 or #policy.tiers > 8 then return nil end
+	local tier_count = 0
+	for key in pairs(policy.tiers) do
+		if type(key) ~= 'number' or key ~= math.floor(key) or key < 1 or key > #policy.tiers then return nil end
+		tier_count=tier_count+1
+	end
+	if tier_count ~= #policy.tiers then return nil end
+	local previous_count, previous_seconds = 1, 0
+	for _,tier in ipairs(policy.tiers) do
+		if type(tier) ~= 'table' then return nil end
+		local fields = 0
+		for key in pairs(tier) do if key ~= 'threshold' and key ~= 'ban_seconds' then return nil end; fields=fields+1 end
+		if fields ~= 2 then return nil end
+		local count,seconds = tier.threshold,tier.ban_seconds
+		if type(count) ~= 'number' or count ~= math.floor(count) or count <= previous_count or count > 1000 then return nil end
+		if type(seconds) ~= 'number' or seconds ~= math.floor(seconds) or seconds < 60 or seconds <= previous_seconds or seconds > 31536000 then return nil end
+		previous_count,previous_seconds = count,seconds
+	end
+	return policy
+end
+
+function repeat_ban_state_key(site, client_ip, policy)
+	local identity = {policy.window_seconds}
+	for _,tier in ipairs(policy.tiers) do identity[#identity+1] = {tier.threshold,tier.ban_seconds} end
+	return 'repeat:v1:history:' .. #site .. ':' .. site .. ':' .. ngx.md5(json.encode(identity)) .. ':' .. client_ip
+end
+
+function repeat_ban_state_identity(key)
+	if type(key) ~= 'string' then return nil end
+	local length,rest = string.match(key,'^repeat:v1:history:(%d+):(.*)$')
+	length = tonumber(length)
+	if not length or length < 1 or length > 253 or string.sub(rest,length+1,length+1) ~= ':' then return nil end
+	local site = string.sub(rest,1,length)
+	local revision,client_ip = string.match(string.sub(rest,length+2),'^([0-9a-f]+):(.*)$')
+	if not revision or #revision ~= 32 then return nil end
+	client_ip = endpoint_normalize_ip(client_ip)
+	if not client_ip then return nil end
+	return site,client_ip
+end
+
+function repeat_ban_valid_record(row)
+	if type(row) ~= 'table' then return false end
+	local allowed = {site=true,ip=true,started_at=true,expires_at=true,duration=true,trigger_count=true,
+		window_seconds=true,threshold=true,reason=true,path=true}
+	local keys = 0
+	for name in pairs(row) do if not allowed[name] then return false end; keys=keys+1 end
+	if keys ~= 10 then return false end
+	if type(row.site) ~= 'string' or #row.site < 1 or #row.site > 253 or not string.match(row.site,'^[%w_-][%w_.-]*$') or string.find(row.site,'..',1,true) then return false end
+	if not endpoint_normalize_ip(row.ip) or endpoint_normalize_ip(row.ip) ~= row.ip then return false end
+	for _,field in ipairs({'started_at','expires_at','duration','trigger_count','window_seconds','threshold'}) do
+		local value = row[field]
+		if type(value) ~= 'number' or value ~= value or value ~= math.floor(value) or value < 1 or value > 9007199254740991 then return false end
+	end
+	if row.duration < 60 or row.duration > 31536000 or row.expires_at-row.started_at ~= row.duration then return false end
+	if row.window_seconds < 60 or row.window_seconds > 604800 or row.threshold < 2 or row.threshold > 1000 or row.trigger_count < row.threshold or row.trigger_count > 1000 then return false end
+	local reasons = {cc=true,registration_abuse_verify=true,registration_abuse_register=true,endpoint_limit=true,['404_flood']=true}
+	if not reasons[row.reason] then return false end
+	if type(row.path) ~= 'string' or #row.path < 1 or #row.path > 512 or string.sub(row.path,1,1) ~= '/' or string.find(row.path,'[%c?#\\]') or string.find(row.path,'\194[\128-\159]') then return false end
+	return true
+end
+
+function repeat_ban_snapshot(force)
+	local shared,now = ngx.shared.free_waf,ngx.time()
+	local revision = shared:get('repeat:v1:revision')
+	if not force and repeat_ban_cache.snapshot and (revision == nil or revision == repeat_ban_cache.snapshot.revision) and now-(repeat_ban_cache.checked_at or 0) < 10 then
+		return repeat_ban_cache.snapshot
+	end
+	local fp,err,code = io.open(cpath .. 'repeat_bans.json','rb')
+	local snapshot
+	if not fp then
+		if code ~= 2 then return nil,'read_failed' end
+		snapshot = {version=1,revision=string.rep('0',32),bans={}}
+	else
+		local body = fp:read(1048577)
+		fp:close()
+		if type(body) ~= 'string' or #body > 1048576 then return nil,'size_limit' end
+		local ok,value = pcall(json.decode,body)
+		if not ok or type(value) ~= 'table' or value.version ~= 1 or type(value.revision) ~= 'string' or #value.revision ~= 32 or not string.match(value.revision,'^[0-9a-f]+$') or type(value.bans) ~= 'table' or #value.bans > 4096 then return nil,'invalid_snapshot' end
+		local fields = 0
+		for key in pairs(value) do if key ~= 'version' and key ~= 'revision' and key ~= 'bans' then return nil,'invalid_snapshot' end; fields=fields+1 end
+		if fields ~= 3 then return nil,'invalid_snapshot' end
+		local seen,count = {},0
+		for key,row in pairs(value.bans) do
+			if type(key) ~= 'number' or key < 1 or key > #value.bans or key ~= math.floor(key) or not repeat_ban_valid_record(row) then return nil,'invalid_record' end
+			local identity = row.site .. '\0' .. row.ip
+			if seen[identity] then return nil,'duplicate_record' end
+			seen[identity],count = true,count+1
+		end
+		if count ~= #value.bans then return nil,'invalid_snapshot' end
+		snapshot = value
+	end
+	local by_site = {}
+	for _,row in ipairs(snapshot.bans) do
+		by_site[row.site] = by_site[row.site] or {}
+		by_site[row.site][row.ip] = row
+	end
+	repeat_ban_cache.snapshot,repeat_ban_cache.checked_at,repeat_ban_cache.by_site = snapshot,now,by_site
+	shared:safe_add('repeat:v1:revision',snapshot.revision)
+	return snapshot
+end
+
+function repeat_ban_lock()
+	local ffi = repeat_ban_cache.lock_ffi
+	if ffi == nil then
+		local available,module = pcall(require,'ffi')
+		if available and module.os == 'Linux' and (module.arch == 'x64' or module.arch == 'arm64') then
+			local declared = pcall(module.cdef,[[
+				int open(const char *pathname, int flags, ...);
+				int flock(int fd, int operation);
+				int close(int fd);
+			]])
+			if declared then ffi = module end
+		end
+		repeat_ban_cache.lock_ffi = ffi or false
+	end
+	if not ffi then return nil,'lock_unsupported' end
+	local fd
+	local ok,locked = pcall(function()
+		-- Linux x64/arm64: O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC, mode 0600.
+		-- Open after worker fork on every acquisition; never unlink this inode.
+		fd = ffi.C.open(cpath .. '.repeat-bans.lock',655426,ffi.new('unsigned int',384))
+		if fd < 0 then fd=nil; return false end
+		return ffi.C.flock(fd,6) == 0 -- LOCK_EX|LOCK_NB
+	end)
+	if not ok or not locked then
+		if fd then pcall(function() ffi.C.close(fd) end) end
+		return nil,'lock_failed'
+	end
+	return {fd=fd,ffi=ffi}
+end
+
+function repeat_ban_unlock(owner)
+	if owner and owner.fd then
+		pcall(function() owner.ffi.C.close(owner.fd) end)
+		owner.fd=nil
+	end
+end
+
+function repeat_ban_write(bans, owner)
+	if type(owner) ~= 'table' or not owner.fd then return false,'lock_required' end
+	if #bans > 4096 then return false,'row_limit' end
+	local snapshot = {version=1,revision=ngx.md5(json.encode(bans) .. tostring(ngx.now()) .. tostring(ngx.worker.pid())),bans=bans}
+	local array = #bans == 0 and '[]' or json.encode(bans)
+	local body = '{"version":1,"revision":"' .. snapshot.revision .. '","bans":' .. array .. '}'
+	if #body > 1048576 then return false,'size_limit' end
+	local path = cpath .. '.repeat_bans.' .. snapshot.revision .. '.tmp'
+	local fp = io.open(path,'wb')
+	if not fp then return false,'write_failed' end
+	local written = fp:write(body)
+	local flushed = fp:flush()
+	local closed = fp:close()
+	if not written or not flushed or not closed then
+		os.remove(path)
+		return false,'write_failed'
+	end
+	if not os.rename(path,cpath .. 'repeat_bans.json') then os.remove(path); return false,'rename_failed' end
+	-- The durable file is authoritative; eviction of this hint cannot revoke a ban.
+	ngx.shared.free_waf:delete('repeat:v1:revision')
+	ngx.shared.free_waf:safe_set('repeat:v1:revision',snapshot.revision)
+	local by_site = {}
+	for _,row in ipairs(bans) do
+		by_site[row.site] = by_site[row.site] or {}
+		by_site[row.site][row.ip] = row
+	end
+	repeat_ban_cache.snapshot,repeat_ban_cache.checked_at,repeat_ban_cache.by_site = snapshot,ngx.time(),by_site
+	return true
+end
+
+function repeat_ban_warning(code)
+	if ngx.shared.free_waf:safe_add('repeat:v1:warning',true,60) then
+		ngx.log(ngx.WARN,'GPT Firewall repeat-ban escalation skipped: ' .. tostring(code))
+	end
+end
+
+function repeat_ban_event(site, client_ip, seconds, reason, path)
+	local policy = repeat_ban_policy(site)
+	local reasons = {cc=true,registration_abuse_verify=true,registration_abuse_register=true,endpoint_limit=true,['404_flood']=true}
+	if not policy or not reasons[reason] then return false end
+	client_ip = endpoint_normalize_ip(client_ip)
+	if not client_ip or type(site) ~= 'string' or #site > 253 or type(seconds) ~= 'number' or seconds < 1 or seconds > 28800 then return false end
+	local owner,lock_error = repeat_ban_lock()
+	if not owner then repeat_ban_warning(lock_error); return false end
+	local ok,result = pcall(function()
+		local shared,now = ngx.shared.free_waf,ngx.time()
+		local snapshot,err = repeat_ban_snapshot(true)
+		if not snapshot then repeat_ban_warning(err); return false end
+		for _,row in ipairs(snapshot.bans) do
+			if row.site == site and row.ip == client_ip and row.expires_at > now then return false end
+		end
+		local key = repeat_ban_state_key(site,client_ip,policy)
+		local raw = shared:get(key)
+		local history = {events={},until_time=0}
+		if raw then
+			local valid,value = pcall(json.decode,raw)
+			if not valid or type(value) ~= 'table' or type(value.events) ~= 'table' or #value.events > 1000 or type(value.until_time) ~= 'number' then return false end
+			history = value
+		end
+		if history.until_time > now then
+			-- Overlapping scopes are not distinct bans, even if the second lasts longer.
+			history.until_time = math.max(history.until_time,now+seconds)
+			shared:safe_set(key,json.encode(history),math.max(policy.window_seconds,history.until_time-now))
+			return false
+		end
+		local events = {}
+		for _,stamp in ipairs(history.events) do
+			if type(stamp) ~= 'number' or stamp ~= math.floor(stamp) then return false end
+			if stamp > now-policy.window_seconds and stamp <= now then events[#events+1] = stamp end
+		end
+		events[#events+1] = now
+		while #events > 1000 do table.remove(events,1) end
+		if not shared:safe_set(key,json.encode({events=events,until_time=now+seconds}),math.max(policy.window_seconds,seconds)) then return false end
+		local selected
+		for _,tier in ipairs(policy.tiers) do if #events >= tier.threshold then selected=tier end end
+		if not selected then return false end
+		local bans = {}
+		for _,row in ipairs(snapshot.bans) do if row.expires_at > now then bans[#bans+1] = row end end
+		if type(path) ~= 'string' or #path < 1 or #path > 512 or string.sub(path,1,1) ~= '/' or string.find(path,'[%c?#\\]') then path='/' end
+		-- URI bytes need not be valid UTF-8; keep durable evidence valid JSON text.
+		path = string.gsub(path,'[\127-\255]',function(byte) return string.format('%%%02X',string.byte(byte)) end)
+		if #path > 512 then path='/' end
+		local record = {site=site,ip=client_ip,started_at=now,expires_at=now+selected.ban_seconds,duration=selected.ban_seconds,
+			trigger_count=#events,window_seconds=policy.window_seconds,threshold=selected.threshold,reason=reason,path=path}
+		if not repeat_ban_valid_record(record) then return false end
+		bans[#bans+1] = record
+		local saved,error_code = repeat_ban_write(bans,owner)
+		if not saved then repeat_ban_warning(error_code); return false end
+		write_drop_ip_entry(client_ip,site,path,selected.ban_seconds,'repeat_ban')
+		return true
+	end)
+	repeat_ban_unlock(owner)
+	if not ok then repeat_ban_warning('state_error'); return false end
+	return result
+end
+
+function repeat_ban_rows(site)
+	local snapshot,err = repeat_ban_snapshot(false)
+	if not snapshot then return nil,err end
+	local rows,now = {},ngx.time()
+	for _,row in ipairs(snapshot.bans) do
+		if row.expires_at > now and (not site or row.site == site) then rows[#rows+1] = row end
+	end
+	return rows
+end
+
+function repeat_ban_guard()
+	if not repeat_ban_policy(server_name) then return false end
+	local client_ip = endpoint_normalize_ip(ip)
+	if not client_ip then return false end
+	local snapshot,err = repeat_ban_snapshot(false)
+	if not snapshot then repeat_ban_warning(err); return false end
+	local entries = repeat_ban_cache.by_site[server_name]
+	local row = entries and entries[client_ip]
+	if row and row.expires_at > ngx.time() then
+		ngx.header['Retry-After'] = tostring(row.expires_at-ngx.time())
+		return_html(config['cc']['status'],other_html)
+		return true
+	end
+	return false
+end
+
+function repeat_ban_clear(target_ips, site, reset_counts)
+	local normalized = {}
+	for value in pairs(target_ips) do local address=endpoint_normalize_ip(value); if address then normalized[address]=true end end
+	local enabled = false
+	for name in pairs(site_config) do if repeat_ban_policy(name) then enabled=true; break end end
+	if not enabled then
+		local snapshot = repeat_ban_snapshot(true)
+		if not snapshot then return false end
+		local has_state = #snapshot.bans > 0
+		if not has_state then
+			for _,key in ipairs(ngx.shared.free_waf:get_keys(0)) do
+				if repeat_ban_state_identity(key) then has_state=true; break end
+			end
+		end
+		-- An unused optional feature must not make legacy unban depend on FFI.
+		if not has_state then return true end
+	end
+	local owner,lock_error = repeat_ban_lock()
+	if not owner then repeat_ban_warning(lock_error); return false end
+	local ok,result = pcall(function()
+		local snapshot = repeat_ban_snapshot(true)
+		if not snapshot then return false end
+		local bans,changed,now = {},false,ngx.time()
+		for _,row in ipairs(snapshot.bans) do
+			if normalized[row.ip] and (not site or row.site==site) then changed=true
+			elseif row.expires_at>now then bans[#bans+1]=row
+			else changed=true end
+		end
+		if changed and not repeat_ban_write(bans,owner) then return false end
+		for _,key in ipairs(ngx.shared.free_waf:get_keys(0)) do
+			local state_site,address = repeat_ban_state_identity(key)
+			if address and normalized[address] and (not site or state_site==site) then
+				if reset_counts then ngx.shared.free_waf:delete(key)
+				else
+					local valid,history = pcall(json.decode,ngx.shared.free_waf:get(key) or '')
+					if valid and type(history)=='table' and type(history.events)=='table' then
+						history.until_time=0
+						local policy=repeat_ban_policy(state_site)
+						if not ngx.shared.free_waf:safe_set(key,json.encode(history),policy and policy.window_seconds or 604800) then return false end
+					else ngx.shared.free_waf:delete(key) end
+				end
+			end
+		end
+		return true
+	end)
+	repeat_ban_unlock(owner)
+	return ok and result == true
+end
+
+function remove_repeat_ban()
+	local site = uri_request_args.site
+	local address = endpoint_normalize_ip(uri_request_args.ip)
+	if type(site) ~= 'string' or type(site_config[site]) ~= 'table' or not address then return get_return_state(false,'站点或IP不正确') end
+	local reset = uri_request_args.reset_counts
+	if reset ~= nil and reset ~= '0' and reset ~= '1' then return get_return_state(false,'清零选项不正确，未解封') end
+	if not repeat_ban_clear({[address]=true},site,reset=='1') then return get_return_state(false,'升级封禁清理未完成，可能已部分处理，请检查后重试') end
+	return get_return_state(true,reset=='1' and '该站点的升级封禁及其计数已清除；其他独立封禁不受影响' or '该站点的升级封禁已解除，窗口内计数保留；其他独立封禁不受影响')
+end
 
 function is_ipaddr(client_ip)
 	local cipn = split(client_ip,'.')
@@ -264,7 +597,7 @@ local get_html = read_file_body(config["reqfile_path"] .. '/' .. config["get"]["
 local post_html = read_file_body(config["reqfile_path"] .. '/' .. config["post"]["reqfile"])
 local cookie_html = read_file_body(config["reqfile_path"] .. '/' .. config["cookie"]["reqfile"])
 local user_agent_html = read_file_body(config["reqfile_path"] .. '/' .. config["user-agent"]["reqfile"])
-local other_html = read_file_body(config["reqfile_path"] .. '/' .. config["other"]["reqfile"])
+other_html = read_file_body(config["reqfile_path"] .. '/' .. config["other"]["reqfile"])
 local cnlist = json.decode(read_file_body(cpath .. '/rule/cn.json'))
 local scan_black_rules = read_file('scan_black')
 local ip_black_rules = read_file('ip_black')
@@ -439,10 +772,13 @@ function registration_guard(current_server_name, client_ip, current_method, curr
 	local ban_seconds = tonumber(guard['ban_seconds']) or 28800
 	if ban_seconds <= 0 then ban_seconds = 28800 end
 	if ban_seconds > 28800 then ban_seconds = 28800 end
-	ngx.shared.free_waf:set(ban_key, 1, ban_seconds)
+	local created = ngx.shared.free_waf:safe_add(ban_key, 1, ban_seconds)
 	ngx.shared.free_waf:delete(counter_key)
-	write_log('registration_abuse', counter_type .. ' exceeds ' .. limit .. ' in ' .. window_seconds .. ' seconds; blocked for ' .. ban_seconds .. ' seconds')
-	write_drop_ip_entry(client_ip, scope, current_request_uri, ban_seconds, 'registration_abuse_' .. counter_type)
+	if created then
+		write_log('registration_abuse', counter_type .. ' exceeds ' .. limit .. ' in ' .. window_seconds .. ' seconds; blocked for ' .. ban_seconds .. ' seconds')
+		write_drop_ip_entry(client_ip, scope, current_request_uri, ban_seconds, 'registration_abuse_' .. counter_type)
+		repeat_ban_event(current_server_name,client_ip,ban_seconds,'registration_abuse_' .. counter_type,current_uri)
+	end
 	return_html(config['other']['status'], other_html)
 	return true
 end
@@ -629,8 +965,12 @@ function endpoint_policy_guard()
 				local wait=rule.window_seconds
 				if rule.action=='ban' then
 					wait=rule.ban_seconds
-					if not shared:safe_set(ban_key,now+wait,wait) then return false end
-					write_drop_ip_entry(client_ip,server_name,path,wait,'endpoint_limit')
+					local created,err = shared:safe_add(ban_key,now+wait,wait)
+					if not created and err ~= 'exists' then return false end
+					if created then
+						write_drop_ip_entry(client_ip,server_name,path,wait,'endpoint_limit')
+						repeat_ban_event(server_name,client_ip,wait,'endpoint_limit',path)
+					end
 				end
 				endpoint_record_event(rule,server_name,client_ip,path,count,wait)
 				if rule.action~='observe' then return endpoint_limit_response(wait) end
@@ -673,9 +1013,11 @@ function cc()
 			local lock_time = tonumber(endtime) or 60
 			if lock_time <= 0 then lock_time = 60 end
 			if lock_time > 60 then lock_time = 60 end
-			ngx.shared.free_waf_drop_ip:set(ip,retry+1,lock_time)
-			write_log('cc',cycle..'秒内累计超过'..limit..'次请求,封锁' .. lock_time .. '秒')
-			write_drop_ip('cc',lock_time)
+			if ngx.shared.free_waf_drop_ip:safe_add(ip,retry+1,lock_time) then
+				write_log('cc',cycle..'秒内累计超过'..limit..'次请求,封锁' .. lock_time .. '秒')
+				write_drop_ip('cc',lock_time)
+				repeat_ban_event(server_name,ip,lock_time,'cc',ngx.var.uri or uri)
+			end
 			ngx.exit(config['cc']['status'])
 			return true
 		end
@@ -708,9 +1050,11 @@ function cc2()
 				local lock_time = tonumber(endtime) or 60
 				if lock_time <= 0 then lock_time = 60 end
 				if lock_time > 60 then lock_time = 60 end
-				ngx.shared.free_waf_drop_ip:set(ip,retry+1,lock_time)
-				write_log('cc',cycle..'秒内累计超过'..limit..'次请求,封锁' .. lock_time .. '秒')
-				write_drop_ip('cc',lock_time)
+				if ngx.shared.free_waf_drop_ip:safe_add(ip,retry+1,lock_time) then
+					write_log('cc',cycle..'秒内累计超过'..limit..'次请求,封锁' .. lock_time .. '秒')
+					write_drop_ip('cc',lock_time)
+					repeat_ban_event(server_name,ip,lock_time,'cc',ngx.var.uri or uri)
+				end
 				ngx.exit(config['cc']['status'])
 				return true
 			end
@@ -1326,6 +1670,13 @@ function get_btwaf_drop_ip()
 			end
 		end
 	end
+	local has_repeat_policy = false
+	for site in pairs(site_config) do if repeat_ban_policy(site) then has_repeat_policy=true; break end end
+	if has_repeat_policy then
+		for _,row in ipairs(repeat_ban_rows() or {}) do
+			if repeat_ban_policy(row.site) and not seen[row.ip] then seen[row.ip]=true; data[#data+1]=row.ip end
+		end
+	end
 	return data
 end
 
@@ -1333,6 +1684,7 @@ function remove_btwaf_drop_ip()
 	local target_ip = uri_request_args['ip']
 	if not is_runtime_ban_ip(target_ip) then return get_return_state(false,'IP格式错误') end
 	if registration_state_ambiguous(target_ip) then return get_return_state(false,'旧版注册封禁归属不明确，未解封；请等待到期或按作用域排查') end
+	if not repeat_ban_clear({[target_ip]=true}) then return get_return_state(false,'升级封禁清理失败，未确认解封') end
 	ngx.shared.free_waf_drop_ip:delete(target_ip)
 	-- The legacy IP-only interface revokes this IP across every guard scope.
 	clear_registration_state({[target_ip] = true})
@@ -1347,6 +1699,13 @@ function clean_btwaf_drop_ip()
 	for _,value in ipairs(data)
 	do
 		drop_map[value] = true
+	end
+	local repeat_rows = repeat_ban_rows()
+	if not repeat_rows then return get_return_state(false,'无法读取升级封禁，未确认清理') end
+	for _,row in ipairs(repeat_rows) do drop_map[row.ip]=true end
+	for _,key in ipairs(ngx.shared.free_waf:get_keys(0)) do
+		local _,address=repeat_ban_state_identity(key)
+		if address then drop_map[address]=true end
 	end
 	local endpoint_map = {}
 	for value in pairs(drop_map) do endpoint_map[value]=true end
@@ -1377,6 +1736,7 @@ function clean_btwaf_drop_ip()
 	if changed and not write_file(jpath .. 'ip_black.json', encode_json_array(new_rules)) then
 		return get_return_state(false,'写入IP黑名单失败，未清理运行时封禁')
 	end
+	if not repeat_ban_clear(drop_map,nil,true) then return get_return_state(false,'升级封禁清理失败，未确认清理运行时封禁') end
 	ip_black_rules = new_rules
 	for _,value in ipairs(data)
 	do
@@ -1430,6 +1790,7 @@ function remove_permanent_ban_ip()
 	if not found then
 		return get_return_state(false, target_ip .. ' 不在封禁列表中')
 	end
+	if not repeat_ban_clear({[target_ip]=true}) then return get_return_state(false,'升级封禁清理失败，未确认解封') end
 	write_file(jpath .. 'ip_black.json', encode_json_array(new_rules))
 	ip_black_rules = new_rules
 	ngx.shared.free_waf_drop_ip:delete(target_ip)
@@ -1441,7 +1802,7 @@ function min_route()
 	if ngx.var.server_name == 'gpt-firewall-health.invalid' then
 		local nonce = string.match(uri or '', '^/_gpt_firewall_health/([0-9a-f]+)$')
 		if nonce and #nonce == 32 then
-			return_message(200, {product='aapanel GPT Firewall', version='0.1.6',
+			return_message(200, {product='aapanel GPT Firewall', version='0.1.7',
 				nonce=nonce, worker_pid=ngx.worker.pid()})
 		else
 			ngx.exit(404)
@@ -1457,6 +1818,8 @@ function min_route()
 		return_message(200,get_permanent_ban_ips())
 	elseif uri == '/remove_permanent_ban_ip' then
 		return_message(200,remove_permanent_ban_ip())
+	elseif uri == '/remove_repeat_ban' then
+		return_message(200,remove_repeat_ban())
 	end
 end
 
@@ -1507,8 +1870,10 @@ function ban_404_accumulate()
 	if cnt then
 		if cnt >= 80 then
 			add_ip_black_exact(client_ip, AUTO_BAN_SECONDS)
-			ngx.shared.free_waf_drop_ip:set(client_ip, (config['retry'] or 6)+1, AUTO_BAN_SECONDS)
-			write_drop_ip_entry(client_ip, site_name, ngx.var.request_uri or current_uri, AUTO_BAN_SECONDS, "404_flood")
+			if ngx.shared.free_waf_drop_ip:safe_add(client_ip, (config['retry'] or 6)+1, AUTO_BAN_SECONDS) then
+				write_drop_ip_entry(client_ip, site_name, ngx.var.request_uri or current_uri, AUTO_BAN_SECONDS, "404_flood")
+				repeat_ban_event(site_name,client_ip,AUTO_BAN_SECONDS,'404_flood',current_uri)
+			end
 			ngx.shared.free_waf:delete(key_404)
 			return true
 		end
@@ -1552,6 +1917,7 @@ function run_btwaf()
 	end
 	
 	if ip_white() then return true end
+	repeat_ban_guard()
 	registration_guard(server_name, ip, method, uri, request_uri)
 	drop()
 	ip_black()

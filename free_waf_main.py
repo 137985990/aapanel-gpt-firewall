@@ -118,13 +118,13 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         module = sys.modules.get(key)
         if (module is None or getattr(module, '__file__', None) != path
                 or getattr(module, '_source_signature', None) != signature
-                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.6'):
+                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.7'):
             spec = importlib.util.spec_from_file_location(key, path)
             module = importlib.util.module_from_spec(spec)
             # Read source explicitly: same-second upgrades must not reuse stale bytecode.
             source = spec.loader.get_source(key)
             exec(compile(source, path, 'exec', dont_inherit=True), module.__dict__)
-            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.6':
+            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.7':
                 raise ValueError('服务版本不匹配，请重新打开插件')
             module._source_signature = signature
             sys.modules[key] = module
@@ -865,13 +865,376 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
     def __checked_nginx_reload(self):
         self.__reload_panel_nginx()
 
+    def __repeat_defaults(self):
+        return dict(enabled=False, window_seconds=86400,
+                    tiers=[dict(threshold=5, ban_seconds=604800), dict(threshold=10, ban_seconds=2592000)])
+
+    def __repeat_limits(self):
+        return dict(window_seconds=dict(min=60, max=604800), threshold=dict(min=2, max=1000),
+                    ban_seconds=dict(min=60, max=31536000), tiers=dict(min=1, max=8))
+
+    def __repeat_json(self, raw):
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError('配置字段重复')
+                result[key] = value
+            return result
+        return json.loads(raw, object_pairs_hook=unique)
+
+    def __repeat_policy(self, policy):
+        if type(policy) is not dict or set(policy) != {'enabled', 'window_seconds', 'tiers'}:
+            raise ValueError('累计封禁策略字段不完整或包含未知字段')
+        if type(policy['enabled']) is not bool:
+            raise ValueError('启用状态必须是布尔值')
+        window = policy['window_seconds']
+        if type(window) is not int or not 60 <= window <= 604800:
+            raise ValueError('统计窗口必须为 60 至 604800 秒的整数')
+        tiers = policy['tiers']
+        if type(tiers) is not list or not 1 <= len(tiers) <= 8:
+            raise ValueError('累计封禁档位必须为 1 至 8 条')
+        previous_threshold, previous_duration = 0, 0
+        result = []
+        for tier in tiers:
+            if type(tier) is not dict or set(tier) != {'threshold', 'ban_seconds'}:
+                raise ValueError('档位字段不完整或包含未知字段')
+            threshold, duration = tier['threshold'], tier['ban_seconds']
+            if type(threshold) is not int or not 2 <= threshold <= 1000:
+                raise ValueError('档位次数必须为 2 至 1000 的整数')
+            if type(duration) is not int or not 60 <= duration <= 31536000:
+                raise ValueError('档位封禁时长必须为 60 至 31536000 秒的整数')
+            if threshold <= previous_threshold or duration <= previous_duration:
+                raise ValueError('各档位次数和封禁时长必须严格递增')
+            result.append(dict(threshold=threshold, ban_seconds=duration))
+            previous_threshold, previous_duration = threshold, duration
+        return dict(enabled=policy['enabled'], window_seconds=window, tiers=result)
+
+    def __repeat_config_bytes(self):
+        with self.__open_regular_file(self.__path + 'site.json') as stream:
+            return stream.read()
+
+    def __repeat_site(self, get):
+        site = self.__endpoint_site_name(getattr(get, 'siteName', None))
+        raw = self.__repeat_config_bytes()
+        config = self.__repeat_json(raw.decode('utf-8'))
+        if type(config) is not dict or type(config.get(site)) is not dict:
+            raise ValueError('站点不存在或站点配置不正确')
+        return site, config, raw
+
+    def __repeat_result(self, site, policy, raw):
+        import hashlib
+        return dict(status=True, siteName=site, policy=policy, revision=hashlib.sha256(raw).hexdigest())
+
+    def get_repeat_ban_sites(self, get):
+        try:
+            config = self.__repeat_json(self.__repeat_config_bytes().decode('utf-8'))
+            if type(config) is not dict or any(type(value) is not dict for value in config.values()):
+                raise ValueError('站点配置不正确')
+            sites = [dict(siteName=self.__endpoint_site_name(site)) for site in sorted(config)]
+            return dict(status=True, sites=sites, defaults=self.__repeat_defaults(), limits=self.__repeat_limits())
+        except Exception:
+            return public.returnMsg(False, '无法读取站点列表，请检查现有站点配置；未迁移或修改配置。')
+
+    def get_repeat_ban_policy(self, get):
+        try:
+            site, config, raw = self.__repeat_site(get)
+            policy = self.__repeat_policy(config[site].get('repeat_ban_policy', self.__repeat_defaults()))
+            return self.__repeat_result(site, policy, raw)
+        except Exception:
+            return public.returnMsg(False, '无法读取累计封禁策略，请检查站点名称和策略格式；未修改配置。')
+
+    def __repeat_directory(self):
+        from contextlib import contextmanager
+        import stat
+
+        @contextmanager
+        def pinned():
+            directory = os.path.abspath(self.__path)
+            before = self.__no_link_path(directory)
+            if not stat.S_ISDIR(before.st_mode):
+                raise ValueError('配置目录不正确')
+            descriptor = None
+            try:
+                if os.name == 'posix':
+                    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                    descriptor = os.open(os.sep, flags)
+                    for part in directory.split(os.sep)[1:]:
+                        child = os.open(part, flags, dir_fd=descriptor)
+                        os.close(descriptor)
+                        descriptor = child
+                    info = os.fstat(descriptor)
+                    if (info.st_dev, info.st_ino) != (before.st_dev, before.st_ino):
+                        raise ValueError('配置目录已变更')
+                yield descriptor
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+        return pinned()
+
+    def __repeat_stage(self, body, suffix):
+        import tempfile
+        directory = os.path.abspath(self.__path)
+        with self.__repeat_directory() as directory_fd:
+            descriptor, path = tempfile.mkstemp(prefix='.repeat-ban-policy-', suffix=suffix, dir=directory)
+            try:
+                current = self.__no_link_path(path)
+                info = os.fstat(descriptor)
+                if directory_fd is not None:
+                    current = os.stat(os.path.basename(path), dir_fd=directory_fd, follow_symlinks=False)
+                if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+                    raise ValueError('临时配置路径已变更')
+                with os.fdopen(descriptor, 'wb', closefd=False) as stream:
+                    stream.write(body)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                if directory_fd is not None:
+                    os.fsync(directory_fd)
+            finally:
+                os.close(descriptor)
+        return path
+
+    def __write_repeat_site_config(self, body, expected=None):
+        import stat
+        path = os.path.abspath(self.__path + 'site.json')
+        info = self.__no_link_path(path)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError('站点配置不是普通文件')
+        with self.__repeat_directory() as directory_fd:
+            staged = self.__repeat_stage(body, '.tmp')
+            try:
+                with self.__open_regular_file(staged) as stream:
+                    if hasattr(os, 'fchown'):
+                        os.fchown(stream.fileno(), info.st_uid, info.st_gid)
+                    if hasattr(os, 'fchmod'):
+                        os.fchmod(stream.fileno(), stat.S_IMODE(info.st_mode))
+                    else:
+                        os.chmod(staged, stat.S_IMODE(info.st_mode))
+                    if directory_fd is not None:
+                        current = os.stat(os.path.basename(staged), dir_fd=directory_fd, follow_symlinks=False)
+                        opened = os.fstat(stream.fileno())
+                        if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+                            raise ValueError('临时配置文件已变更')
+                self.__no_link_path(path)
+                if expected is not None and self.__repeat_config_bytes() != expected:
+                    raise ValueError('写入前站点配置已变更')
+                if directory_fd is not None:
+                    current = self.__no_link_path(os.path.abspath(self.__path))
+                    pinned = os.fstat(directory_fd)
+                    if (current.st_dev, current.st_ino) != (pinned.st_dev, pinned.st_ino):
+                        raise ValueError('写入前配置目录已变更')
+                    os.replace(os.path.basename(staged), 'site.json', src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+                    os.fsync(directory_fd)
+                else:
+                    os.replace(staged, path)
+            finally:
+                if directory_fd is not None:
+                    try:
+                        os.unlink(os.path.basename(staged), dir_fd=directory_fd)
+                    except FileNotFoundError:
+                        pass
+                elif os.path.lexists(staged):
+                    os.unlink(staged)
+
+    def __restore_repeat_policy(self, site, policy, original, candidate):
+        current_raw = self.__repeat_config_bytes()
+        previous = self.__repeat_json(original.decode('utf-8'))
+        old_site = previous[site]
+        if current_raw != original:
+            current = self.__repeat_json(current_raw.decode('utf-8'))
+            if type(current) is not dict or type(current.get(site)) is not dict:
+                raise ValueError('站点已被其他操作修改')
+            current_site = current[site]
+            already_restored = (('repeat_ban_policy' in current_site) == ('repeat_ban_policy' in old_site)
+                                and current_site.get('repeat_ban_policy') == old_site.get('repeat_ban_policy'))
+            restore = original if current_raw == candidate else None
+            if restore is None and not already_restored:
+                if current_site.get('repeat_ban_policy') != policy:
+                    raise ValueError('累计封禁策略已被其他操作修改')
+                if 'repeat_ban_policy' in old_site:
+                    current_site['repeat_ban_policy'] = old_site['repeat_ban_policy']
+                else:
+                    current_site.pop('repeat_ban_policy', None)
+                restore = json.dumps(current).encode('utf-8')
+            if restore is not None:
+                if self.__write_repeat_site_config(restore, expected=current_raw) is False or self.__repeat_config_bytes() != restore:
+                    raise OSError('配置恢复未核实')
+        if self.__checked_nginx_reload() is False:
+            raise RuntimeError('恢复生效未核实')
+        restored = self.__repeat_json(self.__repeat_config_bytes().decode('utf-8'))
+        if (type(restored) is not dict or type(restored.get(site)) is not dict
+                or ('repeat_ban_policy' in restored[site]) != ('repeat_ban_policy' in old_site)
+                or restored[site].get('repeat_ban_policy') != old_site.get('repeat_ban_policy')):
+            raise RuntimeError('恢复后配置已变更')
+
+    def save_repeat_ban_policy(self, get):
+        if not self.__update_request_is_post():
+            return public.returnMsg(False, '累计封禁策略保存仅接受面板 POST 请求。')
+        try:
+            with self.__endpoint_transaction():
+                return self.__save_repeat_policy_locked(get)
+        except Exception:
+            return public.returnMsg(False, '配置正在修改或配置锁不可用，未保存；请稍后重试。')
+
+    def __save_repeat_policy_locked(self, get):
+        import hashlib
+        try:
+            text = getattr(get, 'policy', None)
+            if type(text) is not str or len(text.encode('utf-8')) > 16384:
+                raise ValueError('策略须为 JSON 对象字符串')
+            policy = self.__repeat_policy(self.__repeat_json(text))
+            site, config, original = self.__repeat_site(get)
+            self.__repeat_policy(config[site].get('repeat_ban_policy', self.__repeat_defaults()))
+            revision = getattr(get, 'revision', None)
+            if (type(revision) is not str or not re.fullmatch(r'[0-9a-f]{64}', revision)
+                    or revision != hashlib.sha256(original).hexdigest()):
+                return public.returnMsg(False, '站点配置版本已变更或缺失，请刷新后重试；未保存。')
+            backup = self.__repeat_stage(original, '.bak')
+            with self.__open_regular_file(backup) as stream:
+                if stream.read(len(original) + 1) != original:
+                    raise OSError('独立备份核实失败')
+            # External editors may ignore the panel lock; recheck before editing.
+            if self.__repeat_config_bytes() != original:
+                return public.returnMsg(False, '站点配置已变更，请刷新后重试；未保存，独立备份已保留。')
+            config[site]['repeat_ban_policy'] = policy
+            candidate = json.dumps(config).encode('utf-8')
+        except Exception:
+            return public.returnMsg(False, '策略校验或独立备份失败，未修改配置；请检查站点、档位、字段和存储权限。')
+        try:
+            if self.__write_repeat_site_config(candidate, expected=original) is False or self.__repeat_config_bytes() != candidate:
+                raise OSError('配置写入未核实')
+            if self.__checked_nginx_reload() is False:
+                raise RuntimeError('配置生效未核实')
+            actual = self.__repeat_config_bytes()
+            current = self.__repeat_json(actual.decode('utf-8'))
+            if type(current) is not dict or type(current.get(site)) is not dict or current[site].get('repeat_ban_policy') != policy:
+                raise RuntimeError('重载后策略已变更')
+            return self.__repeat_result(site, policy, actual)
+        except Exception:
+            try:
+                self.__restore_repeat_policy(site, policy, original, candidate)
+            except Exception:
+                return public.returnMsg(False, '累计封禁策略保存或生效失败，自动恢复未确认，可能已部分处理；独立备份已保留，请检查配置和 Nginx 状态。')
+            return public.returnMsg(False, '累计封禁策略保存或生效失败，已恢复原策略并核实重载；独立备份已保留。')
+
+    def __repeat_ban_store(self):
+        import hashlib
+        import importlib.util
+        import sys
+        path = os.path.abspath(os.path.join(self.__PATH, 'ban_store.py'))
+        with self.__open_regular_file(path) as stream:
+            source = stream.read(1024 * 1024 + 1)
+        if len(source) > 1024 * 1024:
+            raise ValueError('存储模块过大')
+        digest = hashlib.sha256(source).hexdigest()
+        key = '_gpt_firewall_repeat_store_' + hashlib.sha256(path.encode('utf-8')).hexdigest()
+        module = sys.modules.get(key)
+        if module is None or getattr(module, '_source_digest', None) != digest:
+            spec = importlib.util.spec_from_file_location(key, path)
+            module = importlib.util.module_from_spec(spec)
+            # Compile source bytes: panel hot reload and same-stamp upgrades must bypass pyc.
+            exec(compile(source, path, 'exec', dont_inherit=True), module.__dict__)
+            module._source_digest = digest
+            sys.modules[key] = module
+        return module.BanEscalationStore(self.__path + 'repeat_bans.json')
+
+    def __repeat_page(self, value, maximum):
+        if type(value) is str and re.fullmatch(r'[1-9][0-9]{0,8}', value):
+            value = int(value)
+        if type(value) is not int or not 1 <= value <= maximum:
+            raise ValueError('分页参数不正确')
+        return value
+
+    def get_repeat_bans(self, get):
+        try:
+            page = self.__repeat_page(getattr(get, 'page', 1), 1000000)
+            per_page = self.__repeat_page(getattr(get, 'per_page', 20), 200)
+            site, config, raw = self.__repeat_site(get)
+            policy = self.__repeat_policy(config[site].get('repeat_ban_policy', self.__repeat_defaults()))
+            now = int(time.time())
+            rows = self.__repeat_ban_store().active_bans(site, now=now)
+            offset = (page - 1) * per_page
+            notes = [
+                '仅统计本策略启用后本站点的独立自动封禁事件，不追溯历史，不跨站累计；已封禁期间的重复访问不重复计数。',
+                '计数使用有容量上限的共享内存，平滑重载可保留；完整重启或内存淘汰可能减少计数。',
+                '长期封禁以持久快照为准；关闭策略后仍展示未到期记录，但本策略不再执行这些封禁。',
+                '默认解封保留累计次数，提前人工解封后再犯可继续累计；仅选择“解封并清零”才清除本策略历史，不影响手动或基础封禁。',
+                '默认档位为滚动 24 小时内 5 次封禁 7 天、10 次封禁 30 天。没有提前人工解封时，7 天封禁会阻止同一 24 小时内达到 10 次；自然到期后原 24 小时窗口已过，后续独立封禁重新累计。',
+                '本功能不会自动开启或调整现有规则。']
+            return dict(status=True, siteName=site, rows=rows[offset:offset + per_page], total=len(rows),
+                        page=page, per_page=per_page, now=now, policy_enabled=policy['enabled'], notes=notes)
+        except Exception:
+            return public.returnMsg(False, '无法读取累计封禁记录，请检查站点、分页参数及持久快照；损坏快照不会按空列表处理，未修改存储。')
+
+    def remove_repeat_ban(self, get):
+        if not self.__update_request_is_post():
+            return public.returnMsg(False, '解除累计封禁仅接受面板 POST 请求。')
+        import ipaddress
+        from urllib.parse import quote
+        try:
+            reset = getattr(get, 'reset_counts', '0')
+            if type(reset) is bool:
+                reset = '1' if reset else '0'
+            if type(reset) is not str or reset not in ('0', '1'):
+                raise ValueError('清零选项不正确')
+        except Exception:
+            return public.returnMsg(False, '清零选项必须为布尔值或字符串 0/1，未执行解除。')
+        try:
+            site, config, raw = self.__repeat_site(get)
+            value = getattr(get, 'ip', None)
+            if type(value) is not str or len(value) > 45 or '%' in value:
+                raise ValueError('IP 不正确')
+            ip = str(ipaddress.ip_address(value))
+        except Exception:
+            return public.returnMsg(False, '站点不存在或 IP 格式不正确，未执行解除。')
+        try:
+            url = ('http://127.0.0.1/remove_repeat_ban?site=' + quote(site, safe='')
+                   + '&ip=' + quote(ip, safe='') + '&reset_counts=' + reset)
+            result = self.__repeat_json(public.httpGet(url))
+            if type(result) is not dict or result.get('status') is not True:
+                raise RuntimeError('执行端未确认解除')
+            rows = self.__repeat_ban_store().read_snapshot()['bans']
+            if any(row['site'] == site and row['ip'] == ip for row in rows):
+                raise RuntimeError('持久快照仍存在记录')
+        except Exception:
+            return public.returnMsg(False, '累计封禁解除未确认，可能已部分处理；请检查执行端连接和持久快照后重试。')
+        detail = '并清零本策略累计历史' if reset == '1' else '，保留累计次数，窗口内再犯继续累计'
+        return public.returnMsg(True, '已解除本站点该 IP 的长期封禁' + detail + '；手动及基础封禁不受影响。')
+
+    from threading import local as __thread_local
+    __site_config_locks = __thread_local()
+
+    def __site_config_locked(operation):
+        from functools import wraps
+
+        @wraps(operation)
+        def call(self, *args, **kwargs):
+            from contextlib import ExitStack
+            with ExitStack() as held:
+                try:
+                    held.enter_context(self.__endpoint_transaction())
+                except (OSError, ValueError):
+                    if operation.__name__.startswith('__'):
+                        raise
+                    return public.returnMsg(False, '站点配置正在修改或配置锁不可用，未执行；请稍后重试。')
+                return operation(self, *args, **kwargs)
+        return call
+
     def __endpoint_transaction(self):
         from contextlib import contextmanager
         import stat
 
         @contextmanager
         def locked():
-            path = self.__path + '.endpoint-policy.lock'
+            path = os.path.normcase(os.path.abspath(self.__path + '.endpoint-policy.lock'))
+            key = (os.getpid(), path)
+            state = self.__site_config_locks
+            if not hasattr(state, 'paths'):
+                state.paths = {}
+            # Forked processes and other threads must acquire their own descriptor.
+            if key in state.paths:
+                yield
+                return
             self.__no_link_path(os.path.dirname(path))
             flags = os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
             descriptor = os.open(path, flags, 0o600)
@@ -888,7 +1251,11 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                 else:
                     import msvcrt
                     msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
-                yield
+                state.paths[key] = descriptor
+                try:
+                    yield
+                finally:
+                    del state.paths[key]
             finally:
                 os.close(descriptor)
         return locked()
@@ -1102,6 +1469,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             summary[{'observe': 'observed', 'reject': 'rejected', 'ban': 'banned'}[event['action']]] += 1
         return dict(status=True, events=events, coverage=coverage, summary=summary)
     
+    @__site_config_locked
     def get_site_config(self,get):
         if not os.path.exists('/www/wwwlogs/free_waf_log'):os.mkdir('/www/wwwlogs/free_waf_log')
         site_config = public.readFile(self.__path + 'site.json')
@@ -1118,6 +1486,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             data = sorted(site_list,key=lambda x : x['log_size'], reverse=True)
         return data
     
+    @__site_config_locked
     def get_site_config_byname(self,get):
         site_config = self.get_site_config(None);
         config = site_config[get.siteName]
@@ -1155,6 +1524,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         self.__write_config(config)
         return public.returnMsg(True,'设置成功!');
     
+    @__site_config_locked
     def set_site_obj_open(self,get):
         site_config = self.get_site_config(None)
         if type(site_config[get.siteName][get.obj]) != bool:
@@ -1190,6 +1560,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         self.__write_log('设置全局 CC 配置：' + get.cycle + ' 秒内累计请求超过 ' + get.limit + ' 次，封禁 ' + get.endtime + ' 秒，增强：' + get.increase);
         return public.returnMsg(True,'设置成功!');
     
+    @__site_config_locked
     def set_site_cc_conf(self,get):
         site_config = self.get_site_config(None)
         site_config[get.siteName]['cc']['cycle'] = int(get.cycle)
@@ -1900,6 +2271,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         self.__write_log('设置非法请求容忍阈值：' + get.retry_cycle + ' 秒内累计请求超过 ' + get.retry + ' 次，封禁 ' + get.retry_time + ' 秒');
         return public.returnMsg(True,'设置成功!');
     
+    @__site_config_locked
     def set_site_retry(self,get):
         site_config = self.get_site_config(None)
         site_config[get.siteName]['retry'] = int(get.retry)
@@ -1909,6 +2281,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         self.__write_log('设置站点 ['+get.siteName+'] 非法请求容忍阈值：' + get.retry_cycle + ' 秒内累计请求超过 ' + get.retry + ' 次，封禁 ' + get.retry_time + ' 秒');
         return public.returnMsg(True,'设置成功!');
     
+    @__site_config_locked
     def set_site_cdn_state(self,get):
         site_config = self.get_site_config(None)
         if site_config[get.siteName]['cdn']:
@@ -1919,10 +2292,12 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         self.__write_log(self.__state[site_config[get.siteName]['cdn']] + '站点 [ '+get.siteName+' ] CDN 模式');
         return public.returnMsg(True,'设置成功!');
     
+    @__site_config_locked
     def get_site_cdn_header(self,get):
         site_config = self.get_site_config(None)
         return site_config[get.siteName]['cdn_header']
     
+    @__site_config_locked
     def add_site_cdn_header(self,get):
         site_config = self.get_site_config(None)
         get.cdn_header = get.cdn_header.strip().lower();
@@ -1932,6 +2307,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         self.__write_log('添加站点 [ '+get.siteName+'] CDN 请求头 [ '+get.cdn_header+' ]');
         return public.returnMsg(True,'添加成功!');
     
+    @__site_config_locked
     def remove_site_cdn_header(self,get):
         site_config = self.get_site_config(None)
         get.cdn_header = get.cdn_header.strip().lower();
@@ -1944,12 +2320,14 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         self.__write_site_config(site_config)
         return public.returnMsg(True,'删除成功!');
 
+    @__site_config_locked
     def get_site_cdn_trusted_proxy(self,get):
         site_config = self.get_site_config(None)
         if not 'cdn_trusted_proxy' in site_config[get.siteName]:
             site_config[get.siteName]['cdn_trusted_proxy'] = []
         return site_config[get.siteName]['cdn_trusted_proxy']
 
+    @__site_config_locked
     def add_site_cdn_trusted_proxy(self,get):
         site_config = self.get_site_config(None)
         start_ip = get.start_ip.strip()
@@ -1979,6 +2357,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         self.__write_log('添加站点 [ '+get.siteName+' ] CDN 可信代理来源 [ '+start_ip+'-'+end_ip+' ]')
         return public.returnMsg(True,'添加成功!')
 
+    @__site_config_locked
     def remove_site_cdn_trusted_proxy(self,get):
         site_config = self.get_site_config(None)
         start_ip = get.start_ip.strip()
@@ -1999,10 +2378,12 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                 return public.returnMsg(True,'删除成功!')
         return public.returnMsg(False,'可信代理来源不存在!')
     
+    @__site_config_locked
     def get_site_rule(self,get):
         site_config = self.get_site_config(None)
         return site_config[get.siteName][get.ruleName]
     
+    @__site_config_locked
     def add_site_rule(self,get):
         site_config = self.get_site_config(None)
         if not get.ruleName in site_config[get.siteName]: return public.returnMsg(False,'指定规则不存在!');
@@ -2030,6 +2411,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         return public.returnMsg(True,'添加成功!');
     
     
+    @__site_config_locked
     def remove_site_rule(self,get):
         site_config = self.get_site_config(None)
         index = int(get.index)
@@ -2085,6 +2467,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         self.__write_log(self.__state[rule[index][0]] + '全局规则 [ '+get.ruleName+' ] [ '+rule[index][2]+' ]');
         return public.returnMsg(True,'设置成功!');
     
+    @__site_config_locked
     def get_site_disable_rule(self,get):
         rule = self.__get_rule(get.ruleName)
         site_config = self.get_site_config(None)
@@ -2094,6 +2477,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             if i in site_rule: rule[i][0] = 0;
         return rule;
     
+    @__site_config_locked
     def set_site_disable_rule(self,get):
         site_config = self.get_site_config(None)
         index = int(get.index)
@@ -3757,6 +4141,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         public.writeFile(path,json.dumps(rule))
         public.serviceReload();
     
+    @__site_config_locked
     def __check_site(self,site_config):
         sites = public.M('sites').field('name').select();
         siteNames = []
@@ -3911,8 +4296,13 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         public.writeFile(self.__path + 'config.json',json.dumps(config))
         public.serviceReload();
     
+    @__site_config_locked
     def __write_site_config(self,site_config):
-        public.writeFile(self.__path + 'site.json',json.dumps(site_config))
+        original = self.__repeat_config_bytes()
+        candidate = json.dumps(site_config).encode('utf-8')
+        if (self.__write_repeat_site_config(candidate, expected=original) is False
+                or self.__repeat_config_bytes() != candidate):
+            raise OSError('站点配置写入未核实，未刷新域名或重载服务')
         self.__write_site_domains()
         public.serviceReload();
     

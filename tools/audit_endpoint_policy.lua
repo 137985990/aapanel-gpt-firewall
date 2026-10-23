@@ -60,6 +60,11 @@ local function fixture(overrides)
     env.jpath='fixture/'
     env.write_drop_ip = function() f.drops[#f.drops + 1] = true end
     env.write_drop_ip_entry = function(...) f.drops[#f.drops + 1] = {...}; return true end
+    -- Keep optional escalation absent in this endpoint-only fixture.
+    env.repeat_ban_policy = function() return nil end
+    env.repeat_ban_event = function() return false end
+    env.repeat_ban_rows = function() return {} end
+    env.repeat_ban_clear = function() return true end
     env.io = {open = function(path, mode)
         assert(path == 'fixture/endpoint_2026-10-23.jsonl' and mode == 'ab')
         return {write = function(_, data) f.writes = f.writes + 1; f.events[#f.events + 1] = json.decode(data); return true end,
@@ -68,7 +73,7 @@ local function fixture(overrides)
     local helpers = {'is_runtime_ban_ipv4', 'is_runtime_ban_ip', 'endpoint_normalize_ip',
         'endpoint_state_key', 'endpoint_state_ip', 'endpoint_valid_rule', 'endpoint_path_matches',
         'endpoint_record_event', 'endpoint_limit_response', 'endpoint_policy_guard',
-        'clear_endpoint_state', 'cc_counter_key', 'cc', 'cc2', 'security_verification', 'registration_guard_scopes',
+        'clear_endpoint_state', 'repeat_ban_state_identity', 'cc_counter_key', 'cc', 'cc2', 'security_verification', 'registration_guard_scopes',
         'registration_state_ip', 'registration_state_ambiguous', 'clear_registration_state',
         'get_return_state', 'encode_json_array', 'get_btwaf_drop_ip', 'clean_btwaf_drop_ip'}
     for _,name in ipairs(helpers) do

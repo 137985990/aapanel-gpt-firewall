@@ -72,6 +72,9 @@ class LuaStateRegressionsTest(unittest.TestCase):
     def test_endpoint_policy(self):
         self.run_fixture("audit_endpoint_policy.lua")
 
+    def test_repeat_ban(self):
+        self.run_fixture("audit_repeat_ban.lua")
+
 
 if __name__ == "__main__":
     unittest.main()

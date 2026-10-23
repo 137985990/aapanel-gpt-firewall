@@ -35,6 +35,7 @@ local function dictionary(values)
         values[key] = values[key] + delta
         return values[key]
     end
+    dict.safe_add,dict.safe_set = dict.add,dict.set
     return dict
 end
 
@@ -95,6 +96,7 @@ local function fixture(rules, extra_scopes)
         ngx = ngx, os = {time = function() return now end},
         require = function(name) assert(name == 'cjson'); return json end,
         io = {open = function(path, mode)
+            if mode == 'rb' and path == root .. 'repeat_bans.json' then return nil,'missing',2 end
             if mode == 'r' then
                 if f.files[path] == nil then return nil end
                 return {read = function() return f.files[path] end, close = function() end}
@@ -121,6 +123,8 @@ local function fixture(rules, extra_scopes)
             }
         end},
     }, {__index = _G})
+    ngx.time,ngx.now = function() return now end,function() return now+0.01 end
+    ngx.worker = {pid=function() return 123 end}
     env._G = env
     local chunk = assert(loadstring(source, '@init.lua'))
     setfenv(chunk, env)
@@ -362,7 +366,8 @@ function tests.clean_all_includes_both_ipv6_key_protocols()
     f.shared[state_key('scope:removed', '::ffff:192.0.2.10', 'verify')] = 9
     f.generic['2001:db8::2'] = 7
     assert(f:request('/clean_btwaf_drop_ip').status == true)
-    assert(next(f.shared) == nil and next(f.generic) == nil)
+    for key in pairs(f.shared) do assert(key == 'repeat:v1:revision', 'security state survived cleanup: '..key) end
+    assert(next(f.generic) == nil)
     local _, body = f:request('/get_btwaf_drop_ip')
     assert(body == '[]')
 end
