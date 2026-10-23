@@ -159,7 +159,7 @@ class UpdateServiceTest(unittest.TestCase):
     def test_version_and_bridge_contract_includes_published_prereleases(self):
         result = self.service.check()
         self.assertTrue(result['status'], result)
-        self.assertEqual(updater.PLUGIN_VERSION, '0.1.3')
+        self.assertEqual(updater.PLUGIN_VERSION, '0.1.4')
         self.assertEqual(result['current_version'], '0.1')
         self.assertEqual(result['latest_version'], '0.1.1')
         self.assertEqual(result['tag'], 'v0.1.1')

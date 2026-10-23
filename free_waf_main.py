@@ -118,13 +118,13 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         module = sys.modules.get(key)
         if (module is None or getattr(module, '__file__', None) != path
                 or getattr(module, '_source_signature', None) != signature
-                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.3'):
+                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.4'):
             spec = importlib.util.spec_from_file_location(key, path)
             module = importlib.util.module_from_spec(spec)
             # Read source explicitly: same-second upgrades must not reuse stale bytecode.
             source = spec.loader.get_source(key)
             exec(compile(source, path, 'exec', dont_inherit=True), module.__dict__)
-            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.3':
+            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.4':
                 raise ValueError('服务版本不匹配，请重新打开插件')
             module._source_signature = signature
             sys.modules[key] = module
@@ -3487,19 +3487,187 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         return data
     
     def get_total_all(self,get):
-        nginxconf = '/www/server/nginx/conf/nginx.conf';
-        if not os.path.exists(nginxconf): return public.returnMsg(False,'仅支持 Nginx 服务器');
-        if public.readFile(nginxconf).find('luawaf.conf') == -1: return public.returnMsg(False,'当前 Nginx 不支持防火墙，请重新安装 Nginx');
         data = {}
         data['total'] = self.get_total(None)
         del(data['total']['sites'])
         data['drop_ip'] = []
         conf = self.get_config(None)
         data['open'] = conf['open']
+        data['runtime_status'] = {'integration': 'unverified', 'execution_verified': False}
         data['safe_day'] = 0
         if 'start_time' in conf:
             if conf['start_time'] != 0: data['safe_day'] = int((time.time() - conf['start_time']) / 86400)
         return data
+
+    def __read_nginx_configuration(self):
+        """Bound a manual config inspection; never reload or expose its output."""
+        import selectors
+        import subprocess
+        process = subprocess.Popen(
+            ['/www/server/nginx/sbin/nginx', '-T', '-p', '/www/server/nginx/',
+             '-c', '/www/server/nginx/conf/nginx.conf'],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+            shell=False, close_fds=True)
+        deadline = time.monotonic() + 5
+        chunks, size = [], 0
+        try:
+            with selectors.DefaultSelector() as poller:
+                poller.register(process.stdout, selectors.EVENT_READ)
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise RuntimeError('nginx_timeout')
+                    if not poller.select(remaining):
+                        raise RuntimeError('nginx_timeout')
+                    chunk = os.read(process.stdout.fileno(), 65536)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > 2 * 1024 * 1024:
+                        raise RuntimeError('nginx_output_limit')
+                    chunks.append(chunk)
+            try:
+                code = process.wait(timeout=max(0.001, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                raise RuntimeError('nginx_timeout') from None
+            if code != 0:
+                raise RuntimeError('nginx_check_failed')
+            return b''.join(chunks).decode('utf-8')
+        finally:
+            if process.poll() is None:
+                process.kill()
+            try:
+                process.wait(timeout=1)
+            finally:
+                process.stdout.close()
+
+    def __nginx_integration(self, body):
+        # Preserve quoted delimiters and skip Lua bodies rather than lexing Lua as shell.
+        long_lua = re.compile(r'\[(=*)\[')
+
+        def skip_lua(position):
+            depth = 1
+            while position < len(body):
+                char = body[position]
+                comment = body.startswith('--', position)
+                start = position + 2 if comment else position
+                long_string = long_lua.match(body, start)
+                if long_string:
+                    closing = ']' + long_string.group(1) + ']'
+                    end = body.find(closing, start + len(long_string.group(0)))
+                    if end < 0:
+                        raise ValueError('unfinished_lua_string')
+                    position = end + len(closing)
+                    continue
+                if comment:
+                    end = body.find('\n', start)
+                    position = len(body) if end < 0 else end + 1
+                    continue
+                if char in ('"', "'"):
+                    quote = char
+                    position += 1
+                    while position < len(body) and body[position] != quote:
+                        position += 2 if body[position] == '\\' else 1
+                    if position >= len(body):
+                        raise ValueError('unfinished_lua_quote')
+                elif char == '{':
+                    depth += 1
+                elif char == '}':
+                    depth -= 1
+                    if depth == 0:
+                        return position + 1
+                position += 1
+            raise ValueError('unfinished_lua_block')
+
+        statements, current = [], []
+        token, quote, started, position = [], None, False, 0
+        while position < len(body):
+            char = body[position]
+            if char == '\\':
+                if position + 1 >= len(body):
+                    raise ValueError('unfinished_nginx_escape')
+                escaped = body[position + 1]
+                token.append({'t': '\t', 'r': '\r', 'n': '\n'}.get(
+                    escaped, escaped if escaped in ('"', "'", '\\') else '\\' + escaped))
+                started = True
+                position += 2
+                continue
+            if quote:
+                if char == quote:
+                    quote = None
+                else:
+                    token.append(char)
+                position += 1
+                continue
+            if char in ('"', "'") and not started:
+                quote, started = char, True
+                position += 1
+                continue
+            if char not in ' \t\r\n;{}#' or char == '#' and started:
+                token.append(char)
+                started = True
+                position += 1
+                continue
+            if char == '{' and token and token[-1] == '$':
+                end = body.find('}', position + 1)
+                if end < 0:
+                    raise ValueError('unfinished_nginx_variable')
+                token.append(body[position:end + 1])
+                position = end + 1
+                continue
+            if started:
+                current.append(''.join(token))
+                token, started = [], False
+            if char == '#':
+                end = body.find('\n', position)
+                position = len(body) if end < 0 else end + 1
+                continue
+            if char in ';{}':
+                if char == ';' and current:
+                    statements.append(current)
+                if char == '{' and current and current[0].endswith('_by_lua_block'):
+                    position = skip_lua(position + 1)
+                    current = []
+                    continue
+                current = []
+            position += 1
+        if quote or started or current:
+            raise ValueError('unfinished_nginx_directive')
+        keys = ('init_by_lua_file', 'access_by_lua_file', 'lua_shared_dict')
+        entries = [row for row in statements if row[0] in keys]
+        dictionaries = ('free_waf', 'free_waf_drop_ip', 'free_waf_drop_sum')
+        relevant = any(any('/www/server/free_waf/' in value for value in row[1:])
+                       or row[0] == 'lua_shared_dict' and len(row) > 1 and row[1] in dictionaries
+                       for row in entries)
+        if not relevant:
+            return 'missing'
+        for key, path in (('init_by_lua_file', '/www/server/free_waf/init.lua'),
+                          ('access_by_lua_file', '/www/server/free_waf/waf.lua')):
+            if [row[1:] for row in entries if row[0] == key] != [[path]]:
+                return 'incomplete'
+        for name in dictionaries:
+            rows = [row for row in entries if row[0] == 'lua_shared_dict' and len(row) > 1 and row[1] == name]
+            if len(rows) != 1 or len(rows[0]) != 3:
+                return 'incomplete'
+        return 'configured'
+
+    def get_runtime_status(self, get):
+        """Manual, local configuration evidence, not running-worker attestation."""
+        result = dict(status=False, integration='unknown', execution_verified=False,
+                      checked_at=time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()))
+        messages = {
+            'nginx_timeout': '接入核验超时，请稍后重试。',
+            'nginx_output_limit': '配置超过只读核验上限，请人工核对接入。',
+            'nginx_check_failed': '宝塔 Nginx 配置检查未通过，请在服务器本地查看原因。',
+        }
+        try:
+            result['configured_open'] = bool(self.get_config(None).get('open'))
+            result['integration'] = self.__nginx_integration(self.__read_nginx_configuration())
+            result['status'] = True
+        except Exception as error:
+            code = str(error) if str(error) in messages else 'inspection_failed'
+            result.update(diagnostic_code=code, message=messages.get(code, '无法核验接入状态，请在服务器本地检查。'))
+        return result
     
     def __write_site_domains(self):
         sites = public.M('sites').field('name,id').select();

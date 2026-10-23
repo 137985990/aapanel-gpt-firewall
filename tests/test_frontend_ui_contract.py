@@ -345,15 +345,15 @@ class FrontendUiContractTest(unittest.TestCase):
 
     def test_core_ui_is_chinese_and_has_no_business_hardcode(self):
         required_tokens = [
-            ">概览<",
+            ">防护概览<",
             ">站点<",
-            ">全局<",
+            ">全局配置<",
             ">封禁<",
             ">黑名单<",
             ">白名单<",
             ">报表<",
-            ">通知<",
-            ">日志<",
+            ">防御通知<",
+            ">操作日志<",
             ">工具<",
             "空 User-Agent",
             "以当前配置和巡检结果为准",
@@ -419,7 +419,7 @@ class FrontendUiContractTest(unittest.TestCase):
         self.assertIn("window.innerHeight", self.frontend)
         self.assertIn("resize.free_waf_panel", self.frontend)
         self.assertIn(".layui-layer-content", self.frontend)
-        self.assertIn("calc(100vh - 64px)", self.frontend)
+        self.assertIn("calc(100vh - 84px)", self.frontend)
         self.assertNotIn("min-height:680px", self.frontend)
         self.assertNotIn("Math.max(960", self.frontend)
         self.assertNotIn("Math.max(680", self.frontend)

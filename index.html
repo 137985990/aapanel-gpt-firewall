@@ -123,17 +123,34 @@
 
     }	
 
-	/* official-style baseline shell */
-	.waf_conter{position:relative;box-sizing:border-box;height:calc(100vh - 64px);min-height:0;width:100%;background:#f5f8f6;color:#263b32;border:1px solid #e1e9e4;border-radius:8px;overflow:hidden;font-family:"Microsoft YaHei UI","PingFang SC",sans-serif}
-	.waf_left_menu{width:148px;height:100%;background:#fff;color:#52635b;overflow-y:auto;border-right:1px solid #e1e9e4;padding-top:12px}
-	.waf_left_menu li{height:42px;line-height:42px;padding:0 16px;color:#52635b;margin:2px 8px;border-radius:4px}
-	.waf_left_menu li:hover{background:#f4f8f5}
-	.waf_left_menu li.active{background:#eaf6ee;border-left:3px solid #289463;padding-left:13px}
-	.waf_left_menu .icon i{color:#82958a;font-size:15px}
-	.waf_left_menu li.active .icon i,.waf_left_menu li.active span{color:#20774f}
-	.waf_left_menu span{color:inherit;font-size:13px}
-	.waf_rigth_body{left:148px;height:100%;background:linear-gradient(135deg,#f1f7f3 0%,#f7f9f8 45%);padding:16px;overflow:auto}
-	.waf_rigth_body .item_con{min-height:100%}
+	/* The workspace owns its scroll area; navigation has no fixed height or sidebar offset. */
+	.waf_conter{position:relative;display:flex;flex-direction:column;box-sizing:border-box;height:calc(100vh - 84px);min-height:0;width:100%;background:#f5f8f6;color:#263b32;border:1px solid #dde7e0;border-radius:10px;overflow:hidden;font-family:"Source Han Sans SC","Microsoft YaHei UI","PingFang SC",sans-serif;--waf-ink:#233b30;--waf-muted:#7c8d83;--waf-line:#e3ebe6;--waf-blue:#2064a4;--waf-green:#24865f}
+	.waf-shell-header{display:flex;flex:none;align-items:center;justify-content:space-between;gap:20px;padding:14px 28px;background:radial-gradient(ellipse at 0 0,#e5f4e9,transparent 65%),#fff;border-bottom:1px solid var(--waf-line)}
+	.waf-brand{display:flex;align-items:center;gap:12px;min-width:0}
+	.waf-brand-mark{display:grid;place-items:center;flex:none;width:42px;height:46px;border-radius:12px 12px 16px 16px;background:#216a48;color:#fff;box-shadow:0 5px 12px #216a4814}
+	.waf-brand-mark svg{width:25px;height:28px}
+	.waf-brand strong{display:block;font-family:Georgia,"Source Han Sans SC",serif;font-size:23px;font-weight:600;letter-spacing:-.4px;color:#1e4b34;line-height:1.2}
+	.waf-brand small{display:block;margin-top:6px;color:#7b8f81;font-size:11px;letter-spacing:1px}
+	.waf-shell-state{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:9px;color:#718579;font-size:12px}
+	.waf-shell-state .btn{background:#fff;border-color:#d4e1d7;color:#376b4d;border-radius:5px}
+	.waf-runtime-pill{display:inline-flex;align-items:center;gap:7px;padding:6px 10px;background:#f1f4f2;border:1px solid #e0e7e2;border-radius:20px;color:#64776b;white-space:nowrap}
+	.waf-runtime-pill:before{content:'';width:6px;height:6px;background:currentColor;border-radius:50%}
+	.waf-runtime-pill[data-state="missing"],.waf-runtime-pill[data-state="incomplete"]{background:#fff7e8;border-color:#f0ddba;color:#956b28}
+	.waf-runtime-pill[data-state="configured"]{background:#ecf5ef;border-color:#cfe2d5;color:#337252}
+	.waf-navigation{flex:none;padding:0 28px;background:#fff;border-bottom:1px solid var(--waf-line);min-width:0}
+	.waf-section-tabs{display:flex;gap:8px;overflow-x:auto;scrollbar-width:thin}
+	.waf-section-tabs button{position:relative;flex:1;min-width:96px;text-align:center;padding:12px 2px 10px;border:0;background:transparent;color:#76867d;font-size:14px;line-height:22px;cursor:pointer;white-space:nowrap}
+	.waf-section-tabs button[aria-pressed="true"]{color:#216a48;font-weight:600}
+	.waf-section-tabs button[aria-pressed="true"]:after{content:'';position:absolute;bottom:0;left:18px;right:18px;height:3px;background:#2e8558;border-radius:3px 3px 0 0}
+	.waf_left_menu{display:flex;align-items:center;flex-wrap:wrap;gap:6px;box-sizing:border-box;width:100%;height:auto;margin:0;padding:10px 0 12px;background:none;border:0;list-style:none;overflow:visible}
+	.waf_left_menu li{height:auto;line-height:1.5;margin:0;padding:0;border:0;border-radius:5px;background:none}
+	.waf_left_menu li[hidden]{display:none}
+	.waf_left_menu li button{display:block;border:0;background:transparent;border-radius:5px;padding:6px 13px;color:#718277;font-size:12px;line-height:20px;cursor:pointer;white-space:nowrap}
+	.waf_left_menu li:hover{background:#f3f7f4}
+	.waf_left_menu li.active{padding:0;border:0;background:#eaf4ed}
+	.waf_left_menu li.active button{color:#266a45;font-weight:600}
+	.waf_rigth_body{position:relative;inset:auto;flex:1;min-height:0;min-width:0;height:auto;width:100%;box-sizing:border-box;background:radial-gradient(ellipse at 80% 0,#edf5ef,transparent 60%),#f6f8f6;padding:24px 28px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+	.waf_rigth_body>.item_con{min-height:0;width:100%;max-width:1680px;margin:0 auto}
 	.waf-page-title{margin-bottom:14px;padding:16px 18px;background:#fff;border:1px solid #e6eaf0;border-radius:8px}
 	.waf-page-title h3{margin:0 0 6px;font-size:18px;font-weight:600;color:#101828}
 	.waf-page-title p{margin:0;color:#667085;font-size:12px;line-height:1.6}
@@ -189,8 +206,7 @@
 	.waf_conter .iconguanbi:before{content:'\00D7'}
 	.waf_conter .waf-card,.waf_conter .waf-dashboard-card{min-width:0;overflow-x:auto}
 	.waf_conter .waf-dashboard-head{flex-wrap:wrap}
-	@media (max-width:720px){.waf_left_menu{width:88px}.waf_left_menu li{padding:0 8px}.waf_left_menu li.active{padding-left:5px}.waf_left_menu span{margin-left:4px}.waf_rigth_body{left:88px;padding:10px}.waf_conter .waf-form-input{display:flex;flex-wrap:wrap;gap:8px}.waf_conter input,.waf_conter select,.waf_conter textarea{max-width:100%;box-sizing:border-box}.waf_conter .waf_totall_data{padding:0}.waf_conter .waf_totall_data .item_center{min-width:0}.waf_conter .waf_totall_data .icon{display:none}.waf_conter .waf_totall_data .tips{margin-left:0}.waf_conter .waf_nav_group{height:auto;overflow-x:auto;white-space:nowrap}.waf-summary-grid,.waf-summary-grid.waf-website-summary-grid{grid-template-columns:1fr}}
-	.waf_conter{--waf-ink:#233346;--waf-muted:#7c8b9d;--waf-line:#e6ebf1;--waf-blue:#2064a4;--waf-green:#24865f}
+	@media (max-width:720px){.waf_conter .waf-form-input{display:flex;flex-wrap:wrap;gap:8px}.waf_conter input,.waf_conter select,.waf_conter textarea{max-width:100%;box-sizing:border-box}.waf_conter .waf_totall_data{padding:0}.waf_conter .waf_totall_data .item_center{min-width:0}.waf_conter .waf_totall_data .icon{display:none}.waf_conter .waf_totall_data .tips{margin-left:0}.waf_conter .waf_nav_group{height:auto;overflow-x:auto;white-space:nowrap}.waf-summary-grid,.waf-summary-grid.waf-website-summary-grid{grid-template-columns:1fr}}
 	.waf-overview-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:2px 0 18px}
 	.waf-overview-heading h3{font-size:22px;font-weight:600;color:var(--waf-ink);margin:0 0 6px;letter-spacing:.5px}
 	.waf-overview-heading p{font-size:12px;color:var(--waf-muted);margin:0;line-height:1.6}
@@ -204,7 +220,7 @@
 	.waf-status-mini{display:flex;align-items:center;gap:13px;padding:18px 20px;background:linear-gradient(120deg,#f1faf5,#fff)}
 	.waf-status-mini .waf-shield-icon{flex:none;width:42px;height:50px;margin:0;box-shadow:none;background:linear-gradient(140deg,#55b887,#288a60)}
 	.waf-status-mini .waf-shield-icon span{font-size:22px}
-	.waf-status-mini .waf-shield-title{font-size:13px;font-weight:600;color:#267b57;margin:0 0 6px;white-space:nowrap}
+	.waf-status-mini .waf-shield-title{font-size:13px;font-weight:600;color:#267b57;margin:0 0 6px;line-height:1.7}
 	.waf-status-mini .waf-shield-sub{font-size:11px;line-height:1.6;color:#80918a;margin:0}
 	.waf-status-mini.is-off{background:#f7f8fa}.waf-status-mini.is-off .waf-shield-icon{background:#98a2b3}.waf-status-mini.is-off .waf-shield-title{color:#667085}
 	.waf-dashboard-main{grid-template-columns:minmax(0,1.7fr) minmax(320px,1fr);gap:16px;margin-bottom:16px;align-items:stretch}
@@ -281,9 +297,6 @@
 	.waf_conter .website_stats_meta{font-size:12px;color:#667085;line-height:1.8;margin:8px 0;overflow-wrap:anywhere}
 	.waf_conter .plugin_update_notes{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;background:#f8fafb;border:1px solid #e4e7ec;border-radius:4px;padding:14px;font:13px/1.8 inherit}
 	.waf_conter #plugin_update_job{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.8}
-	.waf-shell-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 0 12px;margin-bottom:14px;border-bottom:1px solid #dfe8e2;font-size:12px;color:#75877c}
-	.waf-shell-heading strong{color:#29553d;font-size:14px;font-weight:600;letter-spacing:.2px}
-	.waf-shell-heading span{border-left:1px solid #d5e2d9;padding-left:12px}
 	.waf_conter .waf-page-title{padding:14px 16px;border-color:#e1e9e4}
 	.waf_conter .waf-page-title h3{font-size:18px;color:#263b32}
 	.waf_conter .waf-card{border-color:#e1e9e4}
@@ -314,31 +327,44 @@
 	.waf-feature-guide{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:12px}
 	.waf-feature-guide h5{font-size:13px;font-weight:600;margin:0 0 6px;color:#335640}
 	@media (max-width:1100px){.waf-policy-layout{grid-template-columns:1fr}.waf-feature-guide{grid-template-columns:1fr}}
-	@media (max-width:720px){.waf_left_menu{width:88px}.waf_left_menu li{padding:0 6px;margin:2px 3px}.waf_left_menu li.active{padding-left:3px}.waf_left_menu span{font-size:12px;margin-left:3px}.waf_rigth_body{left:88px;padding:10px}.waf-shell-heading{align-items:flex-start;gap:6px;flex-direction:column}.waf-shell-heading span{padding:0;border:0}.waf-policy-form{grid-template-columns:1fr}.waf-policy-form .wide{grid-column:auto}.waf-policy-layout{gap:0}.waf_conter .waf-card{padding:12px}.waf_conter .waf-page-title{padding:12px}.waf_conter .waf-toolbar{gap:8px}}
+	@media (max-width:720px){.waf-shell-header{padding:14px 16px;align-items:flex-start;flex-direction:column;gap:12px}.waf-brand strong{font-size:21px}.waf-brand-mark{width:35px;height:39px}.waf-shell-state{justify-content:flex-start;font-size:11px}.waf-navigation{padding:0 14px}.waf-section-tabs{gap:4px}.waf-section-tabs button{min-width:0;font-size:12px;white-space:normal;padding:11px 0}.waf_left_menu{gap:4px;padding:8px 0}.waf_left_menu li button{padding:5px 9px}.waf_rigth_body{padding:16px 12px}.waf-policy-form{grid-template-columns:1fr}.waf-policy-form .wide{grid-column:auto}.waf-policy-layout{gap:0}.waf_conter .waf-card{padding:12px}.waf_conter .waf-page-title{padding:12px}.waf_conter .waf-toolbar{gap:8px}}
+	@media (prefers-reduced-motion:no-preference){.waf_rigth_body>.item_con.active{animation:waf-page-enter .16s ease-out}@keyframes waf-page-enter{from{opacity:.5;transform:translateY(3px)}to{opacity:1;transform:none}}}
 </style>
 <div class="waf_conter">
-	<ul class="waf_left_menu">
-		<li class="active" data-target="home"><div class="icon"><i class="iconfont iconshouye"></i></div><span>概览</span></li>
-		<li data-target="site"><div class="icon"><i class="iconfont iconwangzhan"></i></div><span>站点</span></li>
-		<li data-target="policies"><div class="icon"><i class="iconfont iconpeizhi"></i></div><span>接口策略</span></li>
-		<li data-target="overall"><div class="icon"><i class="iconfont iconpeizhi"></i></div><span>全局</span></li>
-		<li data-target="history"><div class="icon"><i class="iconfont iconsuo"></i></div><span>封禁</span></li>
-		<li data-target="blacklist"><div class="icon"><i class="iconfont iconsuo"></i></div><span>黑名单</span></li>
-		<li data-target="whitelist"><div class="icon"><i class="iconfont iconquanxian"></i></div><span>白名单</span></li>
-		<li data-target="ipstats"><div class="icon"><i class="iconfont iconlanjie"></i></div><span>报表</span></li>
-		<li data-target="statistics"><div class="icon"><i class="iconfont iconlanjie"></i></div><span>统计</span></li>
-		<li data-target="updates"><div class="icon"><i class="iconfont iconpeizhi"></i></div><span>更新</span></li>
-		<li data-target="notification"><div class="icon"><i class="iconfont iconxiaoxi"></i></div><span>通知</span></li>
-		<li data-target="logs"><div class="icon"><i class="iconfont iconcaozuorizhi"></i></div><span>日志</span></li>
-		<li data-target="webshell"><div class="icon"><i class="iconfont iconsaomiao"></i></div><span>工具</span></li>
-	</ul>
-	<div class="waf_rigth_body pd20">
-		<div class="waf-shell-heading"><strong>GPT Firewall</strong><span>网站安全控制台 · 配置按需启用，变更手动确认</span></div>
+	<header class="waf-shell-header">
+		<div class="waf-brand"><div class="waf-brand-mark" aria-hidden="true"><svg viewBox="0 0 32 36" fill="none"><path d="M16 2 29 7v10c0 8-6 13-13 17C9 30 3 25 3 17V7L16 2Z" stroke="currentColor" stroke-width="2"/><path d="m10 17 4 4 8-9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div><strong>aapanel GPT Firewall</strong><small>网站安全控制台 · 社区维护版</small></div></div>
+		<div class="waf-shell-state"><span id="waf_config_status">读取配置中</span><span class="waf-runtime-pill" id="waf_shell_status" data-state="unverified" role="status">接入待核验</span><button type="button" class="btn btn-default btn-sm" id="runtime_status_refresh">核验接入</button></div>
+	</header>
+	<nav class="waf-navigation" aria-label="防火墙导航">
+		<div class="waf-section-tabs" aria-label="功能分组">
+			<button type="button" data-section="overview" aria-pressed="true">安全总览</button>
+			<button type="button" data-section="protection" aria-pressed="false">防护配置</button>
+			<button type="button" data-section="access" aria-pressed="false">访问控制</button>
+			<button type="button" data-section="observation" aria-pressed="false">观测分析</button>
+			<button type="button" data-section="maintenance" aria-pressed="false">维护工具</button>
+		</div>
+		<ul class="waf_left_menu" aria-label="分组内页面">
+			<li class="active" data-target="home" data-section="overview"><button type="button" aria-current="page">防护概览</button></li>
+			<li data-target="site" data-section="protection" hidden><button type="button">站点防护</button></li>
+			<li data-target="policies" data-section="protection" hidden><button type="button">接口策略</button></li>
+			<li data-target="overall" data-section="protection" hidden><button type="button">全局配置</button></li>
+			<li data-target="history" data-section="access" hidden><button type="button">当前封禁</button></li>
+			<li data-target="blacklist" data-section="access" hidden><button type="button">黑名单</button></li>
+			<li data-target="whitelist" data-section="access" hidden><button type="button">白名单</button></li>
+			<li data-target="ipstats" data-section="observation" hidden><button type="button">安全报表</button></li>
+			<li data-target="statistics" data-section="observation" hidden><button type="button">网站统计</button></li>
+			<li data-target="notification" data-section="observation" hidden><button type="button">防御通知</button></li>
+			<li data-target="logs" data-section="observation" hidden><button type="button">操作日志</button></li>
+			<li data-target="updates" data-section="maintenance" hidden><button type="button">插件更新</button></li>
+			<li data-target="webshell" data-section="maintenance" hidden><button type="button">诊断工具</button></li>
+		</ul>
+	</nav>
+	<div class="waf_rigth_body">
 		<div class="item_con active" data-type="home">
 			<div class="waf-dashboard">
 				<div class="waf-overview-heading">
 					<div>
-						<h3>aapanel GPT Firewall</h3>
+						<h3>安全总览</h3>
 						<p>防护概览 · 看清攻击来源，掌握网站防护状态。</p>
 					</div>
 					<div class="waf-overview-actions">
@@ -349,7 +375,7 @@
 				<div class="waf-overview-summary">
 					<div class="waf-status-mini" id="overview_dashboard_shield">
 						<div class="waf-shield-icon" aria-hidden="true"><span>✓</span></div>
-						<div><div class="waf-shield-title">正在读取防火墙状态</div><div class="waf-shield-sub">以实际防护开关为准</div></div>
+						<div><div class="waf-shield-title">接入待核验</div><div class="waf-shield-sub">配置开关不等于防护生效</div></div>
 					</div>
 					<div class="waf-summary-card">
 						<span class="label">近7日防护次数</span>
@@ -415,10 +441,11 @@
 			</div>
 			<div class="waf-overview-note">地图依据 IP 库展示网络出口的大致归属地，不代表攻击者实际位置。防护行为以当前配置和巡检结果为准；处理误报请优先核对站点和规则范围。</div>
 			<div class="waf-card">
-				<h4>防火墙状态 <small id="waf_state_status" style="color:#667085;"></small></h4>
+				<h4>配置与接入状态 <small id="waf_state_status" style="color:#667085;"></small></h4>
+				<p id="runtime_status_detail" role="status">请点击顶部“核验接入”。只读检查当前磁盘配置，不自动启用防护，也不代表运行中的工作进程已经执行 Lua。</p>
 				<div class="waf_switch mtb20">
-					<span>防火墙总开关</span>
-					<div class="switch-wrapper">
+					<span>防火墙配置开关</span>
+					<div class="switch-wrapper" id="waf_master_switch">
 						<div class="swicth_container" data-type="1">
 							<span class="swicth_no">开</span>
 							<span class="swicth_label"></span>
@@ -1546,7 +1573,7 @@
 			var viewportWidth = window.innerWidth || document.documentElement.clientWidth || document.body.clientWidth || 1200;
 			var viewportHeight = window.innerHeight || document.documentElement.clientHeight || document.body.clientHeight || 800;
 			var panelWidth = Math.max(0, viewportWidth - 32);
-			var panelHeight = Math.max(0, viewportHeight - 64);
+			var panelHeight = Math.max(0, viewportHeight - 84);
 			var panelLeft = Math.max(8, Math.floor((viewportWidth - panelWidth) / 2));
 			var $root = this.$root || $('.waf_conter').last();
 			var $layer = $root.closest('.layui-layer-page');
@@ -1563,7 +1590,72 @@
 				});
 			}
 			$root.css({'height': panelHeight + 'px'});
-			$root.find('.waf_left_menu,.waf_rigth_body').css({'height': panelHeight + 'px'});
+		},
+		panel_section:function(page){
+			var sections={home:'overview',site:'protection',policies:'protection',overall:'protection',history:'access',blacklist:'access',whitelist:'access',ipstats:'observation',statistics:'observation',notification:'observation',logs:'observation',updates:'maintenance',webshell:'maintenance'};
+			return Object.prototype.hasOwnProperty.call(sections,page) ? sections[page] : null;
+		},
+		section_page:function(section){
+			var defaults={overview:'home',protection:'site',access:'history',observation:'ipstats',maintenance:'updates'};
+			if(!Object.prototype.hasOwnProperty.call(defaults,section)) return null;
+			return (this._section_last || {})[section] || defaults[section];
+		},
+		sync_panel_navigation:function(page){
+			var section=this.panel_section(page);
+			if(!section) return false;
+			if(!this._section_last) this._section_last={};
+			this._section_last[section]=page;
+			this.$root.find('.waf-section-tabs button').attr('aria-pressed','false');
+			this.$root.find('.waf-section-tabs button[data-section="'+section+'"]').attr('aria-pressed','true');
+			this.$root.find('.waf_left_menu li').prop('hidden',true).removeClass('active');
+			this.$root.find('.waf_left_menu li[data-section="'+section+'"]').prop('hidden',false);
+			this.$root.find('.waf_left_menu li button').attr('aria-current','false');
+			this.$root.find('.waf_left_menu li[data-target="'+page+'"]').addClass('active');
+			this.$root.find('.waf_left_menu li[data-target="'+page+'"] button').attr('aria-current','page');
+			this.$root.find('.waf_rigth_body>.item_con').removeClass('active');
+			this.$root.find('.waf_rigth_body>.item_con[data-type="'+page+'"]').addClass('active');
+			return true;
+		},
+		invalidate_runtime_status:function(){
+			this._runtime_sequence=(this._runtime_sequence || 0)+1;
+			if(this._runtime_request) this._runtime_request.abort();
+			this._runtime_request=null;
+			$('#runtime_status_refresh').prop('disabled',false);
+		},
+		render_runtime_status:function(result){
+			result=result || {};
+			if(typeof result.configured_open === 'boolean'){
+				this._configured_open=result.configured_open;
+				this.set_swicth_view('#waf_master_switch',!result.configured_open);
+			}
+			var configured=this._configured_open, state=result.integration || 'unverified';
+			var titles={unverified:'接入待核验',missing:'未接入 Nginx',incomplete:'接入配置不完整',configured:'配置已接入',unknown:'接入未确认'};
+			if(!Object.prototype.hasOwnProperty.call(titles,state)) state='unknown';
+			if(result.status === false) state='unknown';
+			var title=titles[state], detail='请手动核验当前磁盘上的 Nginx 接入配置；配置开关开启不代表防护已生效。';
+			if(state === 'missing') detail='当前磁盘配置中未发现本插件接入，不能据此认为防护已生效；本次没有修改配置或重载 Nginx。';
+			if(state === 'incomplete') detail='发现不完整或冲突的插件入口，请人工核对；不会自动补写接入、启用防护或重载 Nginx。';
+			if(state === 'configured') detail='当前磁盘配置包含兼容入口，但不代表运行中的工作进程已加载或执行 Lua，也不代表全部站点防护生效。';
+			if(state === 'unknown') detail='本次无法确认接入状态，请稍后重试或在服务器本地检查；不代表已生效，也不代表没有防护。';
+			if(configured === false){title='配置已关闭';detail='防火墙配置开关已关闭。'+detail;}
+			$('#waf_config_status').text(typeof configured === 'boolean' ? '配置开关：'+(configured?'开启':'关闭') : '配置开关：未确认');
+			$('#waf_shell_status').text(title).attr('data-state',configured === false ? 'closed' : state);
+			$('#overview_dashboard_shield .waf-shield-title').text(title);
+			$('#overview_dashboard_shield .waf-shield-sub').text('配置与运行状态分开核验');
+			$('#overview_dashboard_shield').addClass('is-off');
+			$('#runtime_status_detail').text(detail);
+		},
+		inspect_runtime_status:function(){
+			this.invalidate_runtime_status();
+			var _this=this, sequence=this._runtime_sequence;
+			this.render_runtime_status({integration:'unverified'});
+			$('#runtime_status_refresh').prop('disabled',true);
+			$('#waf_shell_status').text('正在核验接入');
+			this._runtime_request=this.http({method:'get_runtime_status',load:2,msg:false,check:true,timeout:10000,
+				success:function(res){if(sequence === _this._runtime_sequence) _this.render_runtime_status({status:!!res && res.status === true,configured_open:res && res.configured_open,integration:res && res.integration});},
+				error:function(){if(sequence === _this._runtime_sequence) _this.render_runtime_status({status:false});},
+				complete:function(){if(sequence === _this._runtime_sequence){_this._runtime_request=null;$('#runtime_status_refresh').prop('disabled',false);}}
+			});
 		},
 		// 初始化
 		init:function(){
@@ -1574,6 +1666,8 @@
 			this.$root = $('.waf_conter').last();
 			this._requests = [];
 			this._active_page = 'home';
+			this._section_last = {};
+			this._configured_open = null;
 			this.init_endpoint_policies();
 			this._tools_loaded = false;
 			this._map_expanded = false;
@@ -1616,11 +1710,13 @@
 			// 菜单跳转
 			$('.waf_left_menu li').off('click.free_waf').on('click.free_waf',function(){
 				var _type = $(this).attr('data-target');
-				var _target = $('.waf_rigth_body .item_con[data-type="'+ _type +'"]');
-				$(this).addClass('active').siblings().removeClass('active');
-				_target.addClass('active').siblings().removeClass('active');
 				_this.refresh_data_total(_type);
 			});
+			_this.bind_panel_event('click','.waf-section-tabs button',function(){
+				var page=_this.section_page($(this).attr('data-section'));
+				if(page) _this.refresh_data_total(page);
+			});
+			_this.bind_panel_event('click','#runtime_status_refresh',function(){_this.inspect_runtime_status();});
 			_this.bind_panel_event('click', '#site_detail_back', function(){
 				_this.show_site_list_view(true);
 			});
@@ -1944,11 +2040,15 @@
 				});
 			});
 			// 防火墙开关
-			$('.switch-wrapper').off('click.free_waf').on('click.free_waf',function(){
+			$('#waf_master_switch').off('click.free_waf').on('click.free_waf',function(){
 				var _type = Boolean(parseInt($(this).find('.swicth_container').attr('data-type')));
+				_this.invalidate_runtime_status();
+				_this._configured_open=null;
+				_this.render_runtime_status({integration:'unverified'});
 				_this.set_swicth_view(this,_type);
 				_this.open_waf_req(function(res){
 					layer.msg(res.msg,{icon:res.status?1:2});
+					_this.refresh_data_total('home');
 				});
 			});
 			// 防火墙select
@@ -2326,6 +2426,7 @@
 		// 刷新页面数据
 		refresh_data_total:function(type){
 			var _this = this;
+			if(!this.sync_panel_navigation(type)) return;
 			if(this._active_page === 'statistics' && type !== 'statistics') this.stop_statistics_polling();
 			if(this._active_page === 'updates' && type !== 'updates') this.stop_plugin_update_status();
 			if(this._active_page === 'policies' && type !== 'policies') this.stop_endpoint_requests();
@@ -2340,14 +2441,18 @@
 					this.load_endpoint_sites();
 				break;
 				case 'home': //首页
-					this.get_total_all(function(res){
+					this.invalidate_runtime_status();
+					var runtimeSequence=this._runtime_sequence, homeSequence=(this._home_sequence || 0)+1;
+					this._home_sequence=homeSequence;
+					this.render_runtime_status({integration:'unverified'});
+					if(this._total_request) this._total_request.abort();
+					this._total_request=this.get_total_all(function(res){
+						if(homeSequence !== _this._home_sequence) return;
+						if(!res || typeof res.open !== 'boolean' || !res.total || !Array.isArray(res.total.rules)){if(runtimeSequence === _this._runtime_sequence) _this.render_runtime_status({status:false});return;}
 						var rules = res.total.rules,_html = '';
 						_this.total_all = res;
-						$('.waf-shield-title').text(res.open ? '防火墙已启用' : '防火墙已关闭');
-						if(res.open) $('#overview_dashboard_shield').removeClass('is-off');
-						else $('#overview_dashboard_shield').addClass('is-off');
+						if(runtimeSequence === _this._runtime_sequence) _this.render_runtime_status({configured_open:res.open,integration:'unverified'});
 						$('#waf_state_status').text('已更新');
-						_this.set_swicth_view('.switch-wrapper',!_this.total_all.open);
 						$('.waf_total').addClass(_this.total_all.total.total>0?'grade_2':'grade_1').find('.item_data i:eq(0)').html(_this.addThousands(_this.total_all.total.total));
 						$('.waf_safe_day').find('.item_data i:eq(0)').html(_this.total_all.safe_day);
 						for(var i= 0;i< rules.length;i++){
@@ -2357,7 +2462,7 @@
 							</div>'
 						}
 						$('.waf_other_data').html(_html);
-					});
+					},function(){if(homeSequence === _this._home_sequence && runtimeSequence === _this._runtime_sequence) _this.render_runtime_status({status:false});});
 					this.render_overview_report();
 				break;
 				case 'overall': //全局
@@ -5143,9 +5248,10 @@
 			});
 		},
 		// 获取防火墙统计数据
-		get_total_all:function(callback){
-			this.http({
+		get_total_all:function(callback,error){
+			return this.http({
 				statusTarget:'#waf_state_status',
+				error:error,
 				tips:'正在获取防火墙状态，请稍候...',
 				method:'get_total_all',
 				success:function(res){

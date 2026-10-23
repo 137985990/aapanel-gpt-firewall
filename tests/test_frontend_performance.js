@@ -509,10 +509,11 @@ test('polling also has a wall-clock budget when individual requests are slow', (
   assert.equal(h.$('#website_stats_refresh').prop('disabled'), false);
 });
 
-test('shield status follows the actual master switch rather than a static running claim', () => {
+test('closed configuration is labelled as configuration, not running-worker evidence', () => {
   const h = harness();
   h.requests[0].resolve({ open: false, total: { rules: [], total: 0 }, safe_day: 0 });
-  assert.equal(h.$('.waf-shield-title').text(), '\u9632\u706b\u5899\u5df2\u5173\u95ed');
+  assert.equal(h.$('#overview_dashboard_shield .waf-shield-title').text(), '配置已关闭');
+  assert.match(h.$('#runtime_status_detail').text(), /配置开关已关闭/);
 });
 
 test('destroy is idempotent so old owners cannot remove the reopened panel handlers', () => {

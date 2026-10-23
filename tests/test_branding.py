@@ -55,11 +55,12 @@ class BrandingTest(unittest.TestCase):
         self.assertEqual(info['checks'], '/www/server/panel/plugin/free_waf')
         self.assertEqual(info['shell'], 'free_waf.sh')
         self.assertEqual(info['author'], '民国三年一场雨')
-        self.assertEqual(info['versions'], '0.1.3')
+        self.assertEqual(info['versions'], '0.1.4')
 
     def test_management_heading_and_export_names_use_new_brand(self):
         body = (ROOT / 'index.html').read_text(encoding='utf-8')
-        self.assertTrue('<h3>aapanel GPT Firewall</h3>' in body, 'management heading uses old branding')
+        self.assertTrue('<strong>aapanel GPT Firewall</strong>' in body, 'workspace header uses old branding')
+        self.assertIn('<h3>安全总览</h3>', body)
         self.assertTrue("'gpt_firewall_rule_bundle.json'" in body, 'rule export uses old branding')
         self.assertTrue("'gpt_firewall_blockade_records.json'" in body, 'ban export uses old branding')
         self.assertNotIn('当前 free_waf 基础版', body)

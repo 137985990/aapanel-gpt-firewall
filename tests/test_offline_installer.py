@@ -89,7 +89,7 @@ class OfflineInstallerTest(unittest.TestCase):
         for name in ("free_waf_main.py", "ban_store.py", "report_store.py", "website_statistics.py", "update_service.py"):
             self.write(self.plugin / name, "# imported backend; prior version unavailable\n")
         self.write(self.plugin / "index.html", "<html>already imported UI</html>\n")
-        self.write_json(self.plugin / "info.json", {"name": "free_waf", "versions": "0.1.3"})
+        self.write_json(self.plugin / "info.json", {"name": "free_waf", "versions": "0.1.4"})
         self.write_json(self.plugin / "rule.json", ["scanner_signature"])
         self.write(self.runtime / "init.lua", OLD_LUA)
         self.write(self.runtime / "waf.lua", "run_btwaf()\n")
@@ -191,7 +191,7 @@ class OfflineInstallerTest(unittest.TestCase):
         self.assertEqual((self.plugin / "free_waf_main.py").read_bytes(), backend)
         status = self.status()
         self.assertEqual(status["status"], "success")
-        self.assertEqual(status["version"], "0.1.3")
+        self.assertEqual(status["version"], "0.1.4")
         self.assertEqual(status["plugin_name"], "free_waf")
         self.assertTrue(status["waf_active"])
         self.assertTrue(status["runtime_changed"])
@@ -281,7 +281,7 @@ class OfflineInstallerTest(unittest.TestCase):
                 self.assertFalse(self.calls())
 
     def test_wrong_package_identity_is_rejected(self):
-        self.write_json(self.plugin / "info.json", {"name": "gpt_firewall", "versions": "0.1.3"})
+        self.write_json(self.plugin / "info.json", {"name": "gpt_firewall", "versions": "0.1.4"})
         self.assert_failed_without_runtime_change(self.run_installer(), self.state_snapshot())
 
     def test_wrong_package_version_is_rejected(self):
@@ -542,6 +542,8 @@ class OfflineInstallerTest(unittest.TestCase):
         self.assertNotIn("systemctl", source)
 
     @unittest.skipIf(os.name == "nt", "POSIX ownership/modes require a POSIX filesystem")
+    @unittest.skipUnless(getattr(os, "geteuid", lambda: 1)() == 0,
+                         "Mode-600 importer repair requires root, as in aaPanel")
     def test_repairs_importer_directory_modes_and_preserves_runtime_permissions(self):
         self.write(self.plugin / "data/nested/retained.json", "{}")
         original = self.runtime / "init.lua"
