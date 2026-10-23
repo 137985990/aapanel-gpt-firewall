@@ -5944,16 +5944,23 @@
 						return;
 					}
 					var rollback = job.rollback == null ? '未提供' : typeof job.rollback === 'object' ? JSON.stringify(job.rollback) : String(job.rollback);
-					$('#plugin_update_job').text('任务：'+(job.id || '--')+'\n目标版本：'+(job.target_version || '--')+'\n状态：'+(job.state || '未知')+'；阶段：'+(job.stage || '--')+'\n消息：'+(job.message || '')+'\n回退：'+rollback+(job.error ? '\n错误：'+job.error : '')+(job.error_code ? '\n错误码：'+job.error_code : '')+(job.failure_stage ? '\n失败阶段：'+job.failure_stage : '')+(job.notes ? '\n说明：'+job.notes : ''));
+					var installer = job.installer && typeof job.installer === 'object' && !Array.isArray(job.installer) ? job.installer : {};
+					var diagnostics = '', installerFields = [['stage','安装阶段'],['exit_code','安装退出码'],['diagnostic_code','安装诊断码'],['reason','安装原因'],['resource','安装资源']];
+					for(var d=0;d<installerFields.length;d++){
+						var field = installerFields[d], value = installer[field[0]];
+						if(value != null) diagnostics += '\n'+field[1]+'：'+(typeof value === 'object' ? JSON.stringify(value) : String(value));
+					}
 					var state = job.state, success = state === 'succeeded' || state === 'success';
 					_this._update_recovery_required = state === 'recovery_required' || !!(job.rollback && job.rollback.state === 'failed');
 					var failure = ['failed','error','rolled_back','rollback_failed','cancelled'].indexOf(state) !== -1 || !!job.error || _this._update_recovery_required;
+					var inactiveWarning = success && !failure && (job.waf_active === false || installer.waf_active === false) ? '警告：仅更新代码，WAF 未启用，防护未生效；不会自动启用 WAF，也不会自动重载 Nginx。' : '';
+					$('#plugin_update_job').text('任务：'+(job.id || '--')+'\n目标版本：'+(job.target_version || '--')+'\n状态：'+(job.state || '未知')+'；阶段：'+(job.stage || '--')+'\n消息：'+(job.message || '')+'\n回退：'+rollback+(job.error ? '\n错误：'+job.error : '')+(job.error_code ? '\n错误码：'+job.error_code : '')+(job.failure_stage ? '\n失败阶段：'+job.failure_stage : '')+(job.notes ? '\n说明：'+job.notes : '')+diagnostics+(inactiveWarning ? '\n'+inactiveWarning : ''));
 					if(success || failure){
 						_this.clear_update_timer('_update_deadline_timer');
 						_this._update_busy = _this._update_recovery_required;
 						_this._update_expected_job = null;
 						_this._update_check = null;
-						$('#plugin_update_status').text(_this._update_recovery_required ? '更新失败或恢复未完成，需要人工检查任务进程、备份、文件与回退结果；已停止自动查询并禁止再次安装。' : success && !failure ? '更新成功（后端报告）；请关闭并重新打开插件，再核验业务。' : '更新失败，请人工检查最近任务与回退结果；确认恢复后再检查版本，勿直接重复安装。').css('color',success && !failure ? '#027a48' : '#d92d20');
+						$('#plugin_update_status').text(_this._update_recovery_required ? '更新失败或恢复未完成，需要人工检查任务进程、备份、文件与回退结果；已停止自动查询并禁止再次安装。' : success && !failure ? '更新成功（后端报告）；'+inactiveWarning+'请关闭并重新打开插件，再核验业务。' : '更新失败，请人工检查最近任务与回退结果；确认恢复后再检查版本，勿直接重复安装。').css('color',success && !failure ? (inactiveWarning ? '#b54708' : '#027a48') : '#d92d20');
 						return;
 					}
 					_this._update_busy = true;

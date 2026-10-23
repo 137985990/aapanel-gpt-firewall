@@ -16,7 +16,7 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 
 
-PLUGIN_VERSION = "0.1.2"
+PLUGIN_VERSION = "0.1.3"
 
 _DEFAULT_BUDGETS = {
     "max_bytes": 32 * 1024 * 1024, "max_seconds": 10.0,

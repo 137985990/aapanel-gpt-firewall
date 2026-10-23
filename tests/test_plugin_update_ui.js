@@ -189,3 +189,153 @@ test('only boolean available=true enables installation and manual check cancels 
   h.fire('#plugin_update_start'); assert.equal(h.confirms.length,0);
   h.tick(3000); assert.equal(h.of('check_plugin_update').length,1);
 });
+
+test('failed update retains legacy fields and renders installer diagnostics as text', () => {
+  const h = ready(); start(h);
+  const job = { id: 'fixture-job', state: 'failed', stage: 'install', target_version: '0.1.3',
+    message: '安装未完成', rollback: { restored: true }, error: '安装失败', error_code: 'installer_failed',
+    failure_stage: 'install', notes: '请检查配置', installer: { exit_code: 23, stage: 'nginx_test',
+      diagnostic_code: 'nginx_test_failed', resource: 'nginx.conf', reason: 'Nginx 配置检查失败' } };
+  const original = JSON.stringify(job);
+  h.of('get_plugin_update_status').at(-1).resolve({ status: true, job });
+  const summary = h.$('#plugin_update_job').text();
+  for (const value of ['fixture-job', '0.1.3', '安装未完成', 'restored', '安装失败', 'installer_failed',
+    '请检查配置', 'nginx_test', '23', 'nginx_test_failed', 'nginx.conf', 'Nginx 配置检查失败']) {
+    assert.ok(summary.includes(value), value);
+  }
+  assert.match(summary, /失败阶段：install/);
+  assert.equal(h.$('#plugin_update_job').html(), '');
+  assert.match(h.$('#plugin_update_status').text(), /失败/);
+  assert.equal(JSON.stringify(job), original);
+  const reads = h.of('get_plugin_update_status').length; h.tick(10000);
+  assert.equal(h.of('get_plugin_update_status').length, reads);
+});
+
+for (const stage of ['preflight', 'backup', 'runtime_update', 'nginx_test', 'nginx_reload', 'complete']) {
+  test(`installer stage ${stage} renders independently of the outer job stage`, () => {
+    const h = ready(); start(h);
+    h.of('get_plugin_update_status').at(-1).resolve({ status: true, job: {
+      id: 'fixture-job', state: 'running', stage: 'install', installer: { stage },
+    } });
+    assert.match(h.$('#plugin_update_job').text(), /阶段：install/);
+    assert.ok(h.$('#plugin_update_job').text().includes(stage));
+    assert.equal(h.$('#plugin_update_job').html(), '');
+    assert.equal(h.$('#plugin_update_start').prop('disabled'), true);
+    const reads = h.of('get_plugin_update_status').length; h.tick(2000);
+    assert.equal(h.of('get_plugin_update_status').length, reads + 1);
+  });
+}
+
+for (const [field, value] of Object.entries({ exit_code: 0, diagnostic_code: 'runtime_update_failed',
+  reason: '运行时更新失败', resource: 'waf.conf' })) {
+  test(`optional installer ${field} is visible without other diagnostic fields`, () => {
+    const h = ready(); start(h);
+    h.of('get_plugin_update_status').at(-1).resolve({ status: true, job: {
+      id: 'fixture-job', state: 'succeeded', installer: { [field]: value },
+    } });
+    const summary = h.$('#plugin_update_job').text();
+    assert.ok(summary.includes(String(value)), `${field}: ${summary}`);
+    assert.doesNotMatch(summary, /undefined|\[object Object\]/);
+    assert.equal(h.$('#plugin_update_job').html(), '');
+    assert.match(h.$('#plugin_update_status').text(), /更新成功/);
+  });
+}
+
+test('unknown installer values and legacy messages remain literal text, never markup', () => {
+  const h = ready(); start(h);
+  const installer = { stage: '<img src=x onerror=alert(1)>', exit_code: '<svg onload=alert(2)>',
+    diagnostic_code: '<script>alert(3)</script>', resource: '<a href="javascript:alert(4)">file</a>',
+    reason: '<b>未知原因 & "原文"</b>', waf_active: '<img src=x onerror=alert(5)>' };
+  const message = '<iframe srcdoc="unsafe">更新信息</iframe>';
+  h.of('get_plugin_update_status').at(-1).resolve({ status: true, job: {
+    id: 'fixture-job', state: 'succeeded', message, installer,
+  } });
+  const summary = h.$('#plugin_update_job').text();
+  for (const field of ['stage', 'exit_code', 'diagnostic_code', 'resource', 'reason']) {
+    assert.ok(summary.includes(installer[field]), field);
+  }
+  assert.ok(summary.includes(message));
+  assert.equal(h.$('#plugin_update_job').html(), '');
+  assert.equal(h.$('#plugin_update_status').html(), '');
+  assert.doesNotMatch(h.$('#plugin_update_status').text(), /仅更新代码|WAF 未启用/);
+});
+
+for (const [source, flags] of [
+  ['job', { waf_active: false }],
+  ['installer', { installer: { waf_active: false } }],
+  ['both', { waf_active: false, installer: { waf_active: false } }],
+  ['inactive installer with active job', { waf_active: true, installer: { waf_active: false } }],
+  ['inactive job with active installer', { waf_active: false, installer: { waf_active: true } }],
+]) {
+  for (const state of ['succeeded', 'success']) {
+    test(`successful inactive update warns from ${source} with state ${state} without enabling or reloading`, () => {
+      const h = ready(); start(h);
+      const requests = h.requests.length;
+      h.of('get_plugin_update_status').at(-1).resolve({ status: true, job: {
+        id: 'fixture-job', state, stage: 'done', message: '代码更新完成', ...flags,
+      } });
+      for (const selector of ['#plugin_update_status', '#plugin_update_job']) {
+        const text = h.$(selector).text();
+        assert.match(text, /警告/);
+        assert.match(text, /仅更新代码/);
+        assert.match(text, /WAF 未启用/);
+        assert.match(text, /不会自动启用 WAF/);
+        assert.match(text, /不会自动重载 Nginx/);
+        assert.doesNotMatch(text, /防护已生效|防护已启用|WAF 已启用/);
+        assert.equal(h.$(selector).html(), '');
+      }
+      assert.match(h.$('#plugin_update_status').text(), /关闭.*重新打开/);
+      h.tick(10000);
+      assert.equal(h.requests.length, requests);
+      assert.equal(h.$('#plugin_update_start').prop('disabled'), true);
+    });
+  }
+}
+
+test('inactive warning remains in the job summary after a subsequent version check', () => {
+  const h = ready(); start(h);
+  h.of('get_plugin_update_status').at(-1).resolve({ status: true, job: {
+    id: 'fixture-job', state: 'succeeded', installer: { exit_code: 0, waf_active: false },
+  } });
+  h.fire('#plugin_update_check');
+  h.of('check_plugin_update').at(-1).resolve(check({ available: false }));
+  assert.match(h.$('#plugin_update_job').text(), /仅更新代码[\s\S]*WAF 未启用/);
+  assert.match(h.$('#plugin_update_job').text(), /退出码：0/);
+});
+
+test('older and partial records do not invent inactive protection state or installer failures', () => {
+  for (const flags of [{}, { installer: null }, { installer: {} }, { installer: [] }, { installer: 'unknown' },
+    { waf_active: true }, { installer: { waf_active: true } }, { waf_active: 'false' },
+    { installer: { waf_active: 'false' } }, { waf_active: 0 }, { installer: { waf_active: null } }]) {
+    const h = ready(); start(h);
+    h.of('get_plugin_update_status').at(-1).resolve({ status: true, job: {
+      id: 'fixture-job', state: 'succeeded', stage: 'done', message: 'finished', ...flags,
+    } });
+    assert.match(h.$('#plugin_update_status').text(), /更新成功.*关闭.*重新打开/);
+    assert.match(h.$('#plugin_update_job').text(), /fixture-job[\s\S]*finished/);
+    assert.doesNotMatch(h.$('#plugin_update_job').text(), /undefined|安装阶段|安装退出码|仅更新代码|WAF 未启用/);
+    assert.doesNotMatch(h.$('#plugin_update_status').text(), /仅更新代码|WAF 未启用|防护已生效|WAF 已启用/);
+    const reads = h.of('get_plugin_update_status').length; h.tick(10000);
+    assert.equal(h.of('get_plugin_update_status').length, reads);
+  }
+});
+
+test('inactive installer diagnostics do not turn failure or recovery into successful code-only updates', () => {
+  for (const fields of [{ state: 'failed' }, { state: 'recovery_required' },
+    { state: 'succeeded', error: '安装失败' }, { state: 'succeeded', rollback: { state: 'failed' } }]) {
+    const h = ready(); start(h);
+    h.of('get_plugin_update_status').at(-1).resolve({ status: true, job: {
+      id: 'fixture-job', ...fields, waf_active: false,
+      installer: { exit_code: 23, stage: 'nginx_test', reason: 'Nginx 配置检查失败', waf_active: false },
+    } });
+    assert.match(h.$('#plugin_update_status').text(), /失败|人工/);
+    assert.doesNotMatch(h.$('#plugin_update_status').text(), /更新成功|仅更新代码/);
+    assert.doesNotMatch(h.$('#plugin_update_job').text(), /仅更新代码/);
+    assert.match(h.$('#plugin_update_job').text(), /nginx_test[\s\S]*23[\s\S]*Nginx 配置检查失败/);
+    const reads = h.of('get_plugin_update_status').length; h.tick(10000);
+    assert.equal(h.of('get_plugin_update_status').length, reads);
+    h.fire('#plugin_update_check'); h.of('check_plugin_update').at(-1).resolve(check());
+    const recovery = fields.state === 'recovery_required' || fields.rollback?.state === 'failed';
+    assert.equal(h.$('#plugin_update_start').prop('disabled'), recovery);
+  }
+});

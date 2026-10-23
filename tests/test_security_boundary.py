@@ -361,19 +361,19 @@ class SecurityBoundaryTest(unittest.TestCase):
         self.backend.scan(paths, ['fixture-marker'])
         self.assertTrue(self.backend.get_security_boundary_report(None)['scan']['partial'])
 
-    def test_local_service_accepts_v012_and_replaces_cached_v011(self):
+    def test_local_service_accepts_v013_and_replaces_cached_v012(self):
         self.backend._free_waf_main__PATH = str(ROOT) + os.sep
         for name in ('update_service', 'website_statistics'):
             with self.subTest(name=name):
                 try:
                     module = self.backend._free_waf_main__local_service(name)
                 except ValueError as exc:
-                    self.fail('v0.1.2 service rejected: ' + str(exc))
-                self.assertEqual(module.PLUGIN_VERSION, '0.1.2')
-                module.PLUGIN_VERSION = '0.1.1'
+                    self.fail('v0.1.3 service rejected: ' + str(exc))
+                self.assertEqual(module.PLUGIN_VERSION, '0.1.3')
+                module.PLUGIN_VERSION = '0.1.2'
                 refreshed = self.backend._free_waf_main__local_service(name)
                 self.assertIsNot(module, refreshed)
-                self.assertEqual(refreshed.PLUGIN_VERSION, '0.1.2')
+                self.assertEqual(refreshed.PLUGIN_VERSION, '0.1.3')
 
 
 if __name__ == '__main__':

@@ -27,7 +27,7 @@ except ImportError:
     fcntl = None
 
 
-PLUGIN_VERSION = '0.1.2'
+PLUGIN_VERSION = '0.1.3'
 REPOSITORY = '137985990/aapanel-gpt-firewall'
 API_URL = 'https://api.github.com/repos/' + REPOSITORY + '/releases'
 DOWNLOAD_URL = 'https://github.com/' + REPOSITORY + '/releases/download/'
@@ -51,6 +51,31 @@ MANAGED_FILES = (
 WARNING = ('SHA256SUMS 与资源摘要来自同一 GitHub 发布，不是独立数字签名。'
            '不会重启面板；完成后请关闭并重新打开插件。Nginx 重载成功只确认信号发送，仍需人工验收。')
 _LOCAL_LOCKS = {}
+INSTALLER_STAGES = ('preflight', 'backup', 'runtime_update', 'nginx_test', 'nginx_reload', 'complete')
+INSTALLER_REASONS = {
+    'missing_resource': '必要的既有运行资源缺失。',
+    'unsafe_resource': '既有资源路径或符号链接不符合安全要求。',
+    'invalid_resource': '必要的既有资源为空或不可用。',
+    'invalid_json': '既有 JSON 文件无法解析，未重置数据。',
+    'json_schema': '既有 JSON 数据结构不兼容，未重写数据。',
+    'integration_conflict': 'Nginx 的 Lua 入口或共享字典缺失、冲突或不兼容。',
+    'runtime_incomplete': '旧运行目录不完整，不支持首次安装。',
+    'package_identity': '升级包内部标识或版本不匹配。',
+    'runtime_entrypoint': '既有 Lua 运行入口不兼容。',
+    'config_incomplete': '既有防护配置缺少必要字段。',
+    'response_template': '既有响应模板配置不完整。',
+    'scan_rules': '既有扫描器规则结构不兼容。',
+    'preflight_failed': '兼容性检查未通过，请检查本机安装状态。',
+    'nginx_test_failed': '宝塔 Nginx 配置检查失败，未确认升级生效。',
+    'nginx_reload_failed': '宝塔 Nginx 平滑重载失败，请核对回退结果。',
+}
+INSTALLER_RESOURCES = frozenset(Path(name).name for name in MANAGED_FILES) | frozenset((
+    'nginx.conf', 'free_waf.conf', 'waf.lua', 'rule.json', 'drop_ip.log', 'config.json',
+    'site.json', 'total.json', 'scan_black.json', 'cn.json', 'ip_black.json', 'ip_white.json',
+    'url_white.json', 'url_black.json', 'user_agent_white.json', 'user_agent.json',
+    'header.json', 'post.json', 'cookie.json', 'args.json', 'url.json', 'head_white.json',
+    'response_template', 'runtime_directory',
+))
 
 
 class UpdateError(Exception):
@@ -429,6 +454,25 @@ class UpdateService:
         keys = ('id', 'state', 'stage', 'message', 'tag', 'current_version', 'target_version',
                 'created_at', 'updated_at', 'pid', 'rollback', 'error_code', 'failure_stage')
         result = {key: job[key] for key in keys if key in job}
+        if isinstance(job.get('installer'), dict):
+            detail = job['installer']
+            result['installer'] = self._installer_summary(dict(
+                stage=detail.get('stage'), diagnostic_code=detail.get('diagnostic_code'),
+                diagnostic_resource=detail.get('resource'), waf_active=detail.get('waf_active')),
+                detail.get('exit_code'))
+        elif job.get('state') == 'succeeded':
+            # Old updaters execute the new installer but cannot save new job fields.
+            try:
+                path = self.plugin / 'install-status.json'
+                report = self._json(path)
+                if (self._installer_identity(report, job['target_version'])
+                        and report.get('status') == 'success' and report.get('stage') == 'complete'
+                        and job['created_at'] <= path.stat().st_mtime <= job['updated_at']):
+                    result['installer'] = self._installer_summary(report)
+            except Exception:
+                pass
+        if type(result.get('installer', {}).get('waf_active')) is bool:
+            result['waf_active'] = result['installer']['waf_active']
         if job['state'] in ('queued', 'running'):
             alive = None
             pid = job.get('pid')
@@ -444,6 +488,30 @@ class UpdateService:
                 result.update(state='recovery_required',
                               message='任务进程已退出或状态长时间未更新；不能确认安全结束，请人工检查备份和文件锁后恢复。')
         return result
+
+    @staticmethod
+    def _installer_identity(report, target_version):
+        return (isinstance(report, dict) and report.get('operation') == 'install'
+                and report.get('plugin_name') == 'free_waf'
+                and report.get('version') == target_version)
+
+    @staticmethod
+    def _installer_summary(report, exit_code=None):
+        # Never expose arbitrary installer output, configured paths, or raw messages.
+        detail = {}
+        if type(exit_code) is int and -255 <= exit_code <= 255:
+            detail['exit_code'] = exit_code
+        if report.get('stage') in INSTALLER_STAGES:
+            detail['stage'] = report['stage']
+        code = report.get('diagnostic_code')
+        if isinstance(code, str) and code in INSTALLER_REASONS:
+            detail.update(diagnostic_code=code, reason=INSTALLER_REASONS[code])
+        resource = report.get('diagnostic_resource')
+        if isinstance(resource, str) and resource in INSTALLER_RESOURCES:
+            detail['resource'] = resource
+        if type(report.get('waf_active')) is bool:
+            detail['waf_active'] = report['waf_active']
+        return detail
 
     def status(self):
         try:
@@ -744,15 +812,23 @@ class UpdateService:
                     installer_attempted = True
                     result = self._installer(self.plugin)
                     code = getattr(result, 'returncode', result)
-                    report = self._json(status_path)
-                    if (code != 0 or report.get('status') != 'success' or report.get('operation') != 'install'
-                            or report.get('plugin_name') != 'free_waf' or report.get('stage') != 'complete'
-                            or _version(report.get('version')) != job['target_version']
-                            or status_path.stat().st_mtime_ns == previous_stat
+                    job['installer'] = self._installer_summary({}, code)
+                    try:
+                        report = self._json(status_path)
+                        fresh_report = (self._installer_identity(report, job['target_version'])
+                                        and status_path.stat().st_mtime_ns != previous_stat)
+                    except Exception:
+                        raise UpdateError('installer', '安装器没有写入可校验的最新状态。')
+                    if fresh_report:
+                        job['installer'] = self._installer_summary(report, code)
+                    if (code != 0 or not fresh_report or report.get('status') != 'success'
+                            or report.get('stage') != 'complete'
                             or _version(self._current()) != job['target_version']):
                         raise UpdateError('installer', '安装器退出码、最新状态或目标版本校验失败。')
                     job.update(state='succeeded', stage='complete', message='升级完成，请关闭并重新打开插件，并人工验收业务。',
                                updated_at=self._clock())
+                    if job['installer'].get('waf_active') is False:
+                        job.update(waf_active=False, message='代码升级完成；防护保持未启用，未创建接入配置，未重载 Nginx。请关闭并重新打开插件。')
                     self._save(self.store / 'job.json', job)
                 except BaseException as error:
                     failure_stage = job.get('stage')

@@ -159,7 +159,7 @@ class UpdateServiceTest(unittest.TestCase):
     def test_version_and_bridge_contract_includes_published_prereleases(self):
         result = self.service.check()
         self.assertTrue(result['status'], result)
-        self.assertEqual(updater.PLUGIN_VERSION, '0.1.2')
+        self.assertEqual(updater.PLUGIN_VERSION, '0.1.3')
         self.assertEqual(result['current_version'], '0.1')
         self.assertEqual(result['latest_version'], '0.1.1')
         self.assertEqual(result['tag'], 'v0.1.1')
@@ -517,6 +517,108 @@ class UpdateServiceTest(unittest.TestCase):
         old = target.stat().st_mtime_ns
         self.assertEqual(self.run_job()['state'], 'succeeded')
         self.assertGreater(target.stat().st_mtime_ns, old)
+
+    def test_installer_failure_preserves_fixed_diagnostics_before_rollback(self):
+        def failing(plugin):
+            report = dict(operation='install', version='0.1.1', plugin_name='free_waf',
+                          status='failed', stage='preflight', waf_active=False,
+                          runtime_changed=False, diagnostic_code='missing_resource',
+                          diagnostic_resource='site.json', message='SECRET raw installer output')
+            self.write(plugin / 'install-status.json', json.dumps(report).encode())
+            return 1
+        self.service = self.make_service(installer=failing)
+        before = self.snapshot()
+        job = self.run_job()
+        self.assertEqual(job['state'], 'failed')
+        self.assertEqual(job['rollback']['state'], 'restored')
+        self.assertEqual(self.snapshot(), before)
+        detail = job.get('installer', {})
+        self.assertEqual(detail.get('exit_code'), 1)
+        self.assertEqual(detail.get('stage'), 'preflight')
+        self.assertEqual(detail.get('diagnostic_code'), 'missing_resource')
+        self.assertEqual(detail.get('resource'), 'site.json')
+        self.assertIn('缺失', detail.get('reason', ''))
+        self.assertNotIn('SECRET', json.dumps(job))
+
+    def test_inactive_success_is_not_reported_as_enabled_protection(self):
+        def inactive(plugin):
+            self.installer(plugin)
+            report = json.loads((plugin / 'install-status.json').read_text())
+            report['waf_active'] = False
+            self.write(plugin / 'install-status.json', json.dumps(report).encode())
+            return 0
+        self.service = self.make_service(installer=inactive)
+        job = self.run_job()
+        self.assertEqual(job['state'], 'succeeded')
+        self.assertIs(job.get('waf_active'), False)
+        self.assertIs(job.get('installer', {}).get('waf_active'), False)
+        self.assertIn('未启用', job['message'])
+        self.assertIn('未重载', job['message'])
+        self.assertFalse(self.reload_calls)
+
+    def test_untrusted_installer_details_are_not_exposed(self):
+        def failing(plugin):
+            self.installer(plugin)
+            report = json.loads((plugin / 'install-status.json').read_text())
+            report.update(status='failed', stage='SECRET_STAGE',
+                          diagnostic_code='SECRET_CODE', diagnostic_resource='SECRET_FILE',
+                          reason='SECRET_REASON', message='SECRET_MESSAGE', waf_active='false')
+            self.write(plugin / 'install-status.json', json.dumps(report).encode())
+            return 7
+        self.service = self.make_service(installer=failing)
+        job = self.run_job()
+        self.assertEqual(job['state'], 'failed')
+        self.assertEqual(job.get('installer', {}).get('exit_code'), 7)
+        self.assertNotIn('SECRET', json.dumps(job))
+        self.assertNotIn('waf_active', job.get('installer', {}))
+
+    def test_stale_installer_report_is_not_reused_as_failure_diagnostics(self):
+        path = self.plugin / 'install-status.json'
+        self.write(path, json.dumps({'status': 'failed', 'stage': 'nginx_reload',
+            'version': '0.1.1', 'plugin_name': 'free_waf', 'operation': 'install',
+            'diagnostic_code': 'missing_resource', 'diagnostic_resource': 'site.json'}).encode())
+        self.service = self.make_service(installer=lambda plugin: 1)
+        job = self.run_job()
+        self.assertEqual(job['state'], 'failed')
+        self.assertNotIn('diagnostic_code', job.get('installer', {}))
+        self.assertNotIn('stage', job.get('installer', {}))
+
+    def test_new_status_enriches_old_updater_success_only_with_matching_report(self):
+        job = self.run_job()
+        path = self.plugin / 'install-status.json'
+        report = json.loads(path.read_text())
+        report['waf_active'] = False
+        self.write(path, json.dumps(report).encode())
+        os.utime(path, (self.now, self.now))
+        saved_path = self.plugin / 'data/updates/job.json'
+        saved = json.loads(saved_path.read_text())
+        saved.pop('installer', None)
+        self.service._save(saved_path, saved)
+        enriched = self.service.status()['job']
+        self.assertIs(enriched.get('installer', {}).get('waf_active'), False)
+        self.assertIs(enriched.get('waf_active'), False)
+        self.assertNotIn('exit_code', enriched['installer'])
+        os.utime(path, (self.now - 1, self.now - 1))
+        stale = self.service.status()['job']
+        self.assertNotIn('installer', stale)
+        self.assertNotIn('waf_active', stale)
+        os.utime(path, (self.now + 0.5, self.now + 0.5))
+        later = self.service.status()['job']
+        self.assertNotIn('installer', later)
+        self.assertNotIn('waf_active', later)
+
+    def test_public_job_drops_unknown_or_private_installer_fields(self):
+        job = self.run_job()
+        saved_path = self.plugin / 'data/updates/job.json'
+        saved = json.loads(saved_path.read_text())
+        saved['installer'] = dict(stage=['SECRET'], exit_code=True,
+            diagnostic_code={'SECRET': 1}, resource='SECRET_PATH',
+            reason='SECRET_TEXT', waf_active='false', private='SECRET')
+        self.service._save(saved_path, saved)
+        result = self.service.status()
+        self.assertTrue(result['status'])
+        self.assertEqual(result['job']['installer'], {})
+        self.assertNotIn('SECRET', json.dumps(result))
 
     def test_restore_reload_error_is_reported_without_hiding_file_restore(self):
         def failing(plugin):

@@ -47,24 +47,52 @@ from pathlib import Path
 
 root, plugin, mode, *args = sys.argv[1:]
 plugin = Path(plugin)
+diagnostic_codes = {
+    'missing_resource', 'unsafe_resource', 'invalid_resource', 'invalid_json', 'json_schema',
+    'integration_conflict', 'runtime_incomplete', 'package_identity', 'runtime_entrypoint',
+    'config_incomplete', 'response_template', 'scan_rules', 'preflight_failed',
+    'nginx_test_failed', 'nginx_reload_failed',
+}
+resources = {
+    'nginx.conf', 'free_waf.conf', 'init.lua', 'waf.lua', 'free_waf_main.py', 'report_store.py',
+    'ban_store.py', 'website_statistics.py', 'update_service.py', 'index.html', 'info.json',
+    'rule.json', 'drop_ip.log', 'config.json', 'site.json', 'total.json', 'scan_black.json',
+    'cn.json', 'ip_black.json', 'ip_white.json', 'url_white.json', 'url_black.json',
+    'user_agent_white.json', 'user_agent.json', 'header.json', 'post.json', 'cookie.json',
+    'args.json', 'url.json', 'head_white.json', 'response_template', 'runtime_directory',
+}
+
+class CheckError(ValueError):
+    def __init__(self, code, message, resource=''):
+        super().__init__(message)
+        self.code = code
+        self.resource = resource if resource in resources else ''
 
 def mapped(name):
     if not isinstance(name, str) or not name.startswith('/'):
-        raise ValueError('旧运行资源必须使用绝对路径')
+        raise CheckError('unsafe_resource', '旧运行资源必须使用绝对路径')
     result = Path(root + name)
     if root and os.path.commonpath([str(Path(root).resolve()), str(result.resolve())]) != str(Path(root).resolve()):
-        raise ValueError('资源路径超出隔离测试目录')
+        raise CheckError('unsafe_resource', '资源路径超出隔离测试目录')
     return result
 
 def file(path):
-    if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
-        raise ValueError('必要的既有资源缺失或不安全：' + path.name)
+    if path.is_symlink():
+        raise CheckError('unsafe_resource', '必要的既有资源不能为符号链接：' + path.name, path.name)
+    if not path.is_file():
+        raise CheckError('missing_resource', '必要的既有资源缺失：' + path.name, path.name)
+    if path.stat().st_size == 0:
+        raise CheckError('invalid_resource', '必要的既有资源为空：' + path.name, path.name)
     return path
 
 def load(path, kind):
-    data = json.loads(file(path).read_text(encoding='utf-8-sig'))
+    source = file(path)
+    try:
+        data = json.loads(source.read_text(encoding='utf-8-sig'))
+    except (ValueError, UnicodeError):
+        raise CheckError('invalid_json', 'JSON 数据无法解析：' + path.name, path.name)
     if not isinstance(data, kind):
-        raise ValueError('JSON 结构不兼容：' + path.name)
+        raise CheckError('json_schema', 'JSON 结构不兼容：' + path.name, path.name)
     return data
 
 def directives(body):
@@ -81,19 +109,19 @@ def active(body, required=False):
     relevant = any('/www/server/free_waf/' in token for token in tokens)
     if relevant or required:
         if values('init_by_lua_file') != [init] or values('access_by_lua_file') != [access]:
-            raise ValueError('存在未知或冲突的 Lua 入口，不会改写引用配置')
+            raise CheckError('integration_conflict', '存在未知或冲突的 Lua 入口，不会改写引用配置')
         shared = values('lua_shared_dict')
         if any(shared.count(name) != 1 for name in ('free_waf', 'free_waf_drop_ip', 'free_waf_drop_sum')):
-            raise ValueError('旧版 Lua 共享字典缺失或冲突')
+            raise CheckError('integration_conflict', '旧版 Lua 共享字典缺失或冲突')
     return relevant
 
 try:
     if mode == 'status':
-        outcome, operation, stage, message, changed, loaded, rollback, backup = args
+        outcome, operation, stage, message, changed, loaded, rollback, backup, diagnostic = args
         target = plugin / 'install-status.json'
         if target.is_symlink():
             raise ValueError('安装状态文件路径不安全')
-        data = dict(product='aapanel GPT Firewall', version='0.1.2', plugin_name='free_waf',
+        data = dict(product='aapanel GPT Firewall', version='0.1.3', plugin_name='free_waf',
                     status=outcome, operation=operation, stage=stage, message=message,
                     runtime_changed=changed == 'true', waf_active=loaded == 'true',
                     rollback=rollback, runtime_backup=backup or None,
@@ -101,6 +129,12 @@ try:
                     warning='面板在安装钩子之前已覆盖后端和界面，钩子没有导入前的旧文件；'
                             '面板也可能忽略安装失败。Nginx 配置测试不等于 Lua 执行验证，'
                             '重载命令成功只确认信号已发出，仍需人工检查工作进程和业务。')
+        if outcome == 'failed' and diagnostic:
+            detail = json.loads(diagnostic)
+            if isinstance(detail, dict) and detail.get('code') in diagnostic_codes:
+                data['diagnostic_code'] = detail['code']
+                if detail.get('resource') in resources:
+                    data['diagnostic_resource'] = detail['resource']
         fd, name = tempfile.mkstemp(prefix='.install-status-', dir=str(plugin))
         try:
             with os.fdopen(fd, 'w', encoding='utf-8') as stream:
@@ -115,61 +149,64 @@ try:
     elif mode == 'preflight':
         file(mapped('/www/server/nginx/conf/nginx.conf'))
         include = mapped('/www/server/panel/vhost/nginx/free_waf.conf')
-        if include.exists() or args[0] == 'install':
+        # Missing integration is allowed only as a code upgrade, never auto-created.
+        if include.exists() or include.is_symlink():
             active(file(include).read_text(encoding='utf-8'), required=True)
         if args[0] == 'install':
             runtime = mapped('/www/server/free_waf')
             if runtime.is_symlink() or not runtime.is_dir():
-                raise ValueError('需要完整的既有运行目录，不支持首次安装')
+                raise CheckError('runtime_incomplete', '需要完整的既有运行目录，不支持首次安装', 'runtime_directory')
             for name in ('init.lua', 'free_waf_main.py', 'report_store.py', 'ban_store.py',
                          'website_statistics.py', 'update_service.py', 'index.html', 'info.json', 'rule.json'):
                 file(plugin / name)
             info = load(plugin / 'info.json', dict)
-            if info.get('name') != 'free_waf' or info.get('versions') != '0.1.2':
-                raise ValueError('需要内部标识为 free_waf、版本为 0.1.2 的兼容升级包')
+            if info.get('name') != 'free_waf' or info.get('versions') != '0.1.3':
+                raise CheckError('package_identity', '需要内部标识为 free_waf、版本为 0.1.3 的兼容升级包', 'info.json')
             load(plugin / 'rule.json', list)
             for name in ('init.lua', 'waf.lua', 'drop_ip.log'):
                 path = runtime / name
                 if path.is_symlink() or not path.is_file():
-                    raise ValueError('必要的既有运行资源缺失：' + name)
+                    raise CheckError('missing_resource', '必要的既有运行资源缺失或不安全：' + name, name)
                 if name.endswith('.lua'):
                     file(path)
             for path in (plugin / 'init.lua', runtime / 'init.lua'):
                 source = path.read_text(encoding='utf-8-sig')
                 if not re.search(r'''\bcpath\s*=\s*["']/www/server/free_waf/["']''', source) or not re.search(r'function\s+run_btwaf\s*\(', source):
-                    raise ValueError('旧版 init.lua 入口不兼容')
+                    raise CheckError('runtime_entrypoint', '旧版 init.lua 入口不兼容', 'init.lua')
             if not re.search(r'\brun_btwaf\s*\(\s*\)', (runtime / 'waf.lua').read_text(encoding='utf-8-sig')):
-                raise ValueError('既有 waf.lua 入口不兼容')
+                raise CheckError('runtime_entrypoint', '既有 waf.lua 入口不兼容', 'waf.lua')
             config = load(runtime / 'config.json', dict)
             load(runtime / 'site.json', dict)
             totals = load(runtime / 'total.json', dict)
             if not isinstance(totals.get('sites'), dict) or not isinstance(totals.get('rules'), dict):
-                raise ValueError('旧版统计数据结构不兼容')
+                raise CheckError('json_schema', '旧版统计数据结构不兼容', 'total.json')
             for key in ('open', 'retry', 'retry_time', 'retry_cycle', 'cc', 'scan', 'drop_abroad', 'url_black'):
                 if key not in config:
-                    raise ValueError('旧版配置缺少字段：' + key)
+                    raise CheckError('config_incomplete', '旧版配置缺少必要字段', 'config.json')
+            if not isinstance(config['cc'], dict):
+                raise CheckError('config_incomplete', '旧版 CC 配置不完整', 'config.json')
             for key in ('cycle', 'endtime', 'limit', 'status', 'open'):
                 if key not in config['cc']:
-                    raise ValueError('旧版 CC 配置不完整')
+                    raise CheckError('config_incomplete', '旧版 CC 配置不完整', 'config.json')
             templates = mapped(config.get('reqfile_path'))
             logs = mapped(config.get('logs_path'))
             if not templates.is_dir() or not logs.is_dir():
-                raise ValueError('既有响应模板或日志目录缺失')
+                raise CheckError('missing_resource', '既有响应模板或日志目录缺失')
             for key in ('get', 'post', 'cookie', 'user-agent', 'other'):
                 item = config.get(key)
                 required = ('reqfile', 'status') if key == 'other' else ('reqfile', 'status', 'open')
                 if not isinstance(item, dict) or not all(k in item for k in required):
-                    raise ValueError('响应模板配置不完整')
+                    raise CheckError('response_template', '响应模板配置不完整', 'config.json')
                 name = item['reqfile']
                 if not isinstance(name, str) or Path(name).name != name:
-                    raise ValueError('响应模板文件名不安全')
+                    raise CheckError('unsafe_resource', '响应模板文件名不安全', 'response_template')
                 file(templates / name)
             scan_black = load(runtime / 'rule' / 'scan_black.json', dict)
             for key in ('cookie', 'args', 'header'):
                 value = scan_black.get(key)
                 if not (isinstance(value, str) or
                         isinstance(value, list) and all(isinstance(rule, str) for rule in value)):
-                    raise ValueError('扫描器规则结构不兼容：scan_black.json：' + key)
+                    raise CheckError('scan_rules', '扫描器规则结构不兼容：scan_black.json', 'scan_black.json')
             for name in ('cn', 'ip_black', 'ip_white', 'url_white', 'url_black',
                          'user_agent_white', 'user_agent', 'header', 'post', 'cookie', 'args', 'url', 'head_white'):
                 load(runtime / 'rule' / (name + '.json'), list)
@@ -177,6 +214,9 @@ try:
         raise ValueError('未知的安装器辅助操作')
 except Exception as error:
     print('离线兼容预检或状态记录失败：' + str(error), file=sys.stderr)
+    if mode in ('preflight', 'active'):
+        print(json.dumps({'code': error.code if isinstance(error, CheckError) else 'preflight_failed',
+                          'resource': error.resource if isinstance(error, CheckError) else ''}))
     sys.exit(1)
 PY
 )" "$root" "$plugin" "$@"
@@ -190,10 +230,11 @@ rollback=not_needed
 backup=
 temporary=
 locked=false
+diagnostic=
 
 nginx_test() { "$nginx" -t -p "$nginx_prefix" -c "$nginx_conf"; }
 nginx_reload() { "$nginx" -s reload -p "$nginx_prefix" -c "$nginx_conf"; }
-fail() { message=$1; printf '%s\n' "$message" >&2; exit 1; }
+fail() { message=$1; diagnostic=${2:-$diagnostic}; printf '%s\n' "$message" >&2; exit 1; }
 
 finish() {
     local code=$? outcome=success restore=
@@ -216,7 +257,7 @@ finish() {
     fi
     [[ -z $temporary || ! -e $temporary ]] || rm -f -- "$temporary"
     [[ $locked == false ]] || rmdir -- "$plugin/.gpt-firewall-install.lock"
-    if ! helper status "$outcome" "$operation" "$stage" "$message" "$changed" "$loaded" "$rollback" "$backup"; then
+    if ! helper status "$outcome" "$operation" "$stage" "$message" "$changed" "$loaded" "$rollback" "$backup" "$diagnostic"; then
         printf '%s\n' '无法写入 install-status.json；请勿将面板提示视为安装成功。' >&2
         code=1
     fi
@@ -229,12 +270,18 @@ trap 'message="升级被中断；请检查 install-status.json 和运行文件�
 [[ $operation == install || $operation == uninstall ]] || fail '仅支持 install（兼容升级）或 uninstall。'
 mkdir "$plugin/.gpt-firewall-install.lock" || fail '已有安装任务或遗留锁，请先检查后再重试。'
 locked=true
-helper status running "$operation" "$stage" "$message" false false "$rollback" ''
+helper status running "$operation" "$stage" "$message" false false "$rollback" '' ''
 [[ -x $nginx && ! -L $nginx ]] || fail '缺少 aaPanel 自带 Nginx；未更新运行文件。'
-helper preflight "$operation"
-nginx_test || fail '现有 Nginx 配置测试失败；未更新运行文件。'
+diagnostic=$(helper preflight "$operation") || exit 1
+nginx_test || fail '现有 Nginx 配置测试失败；未更新运行文件。' '{"code":"nginx_test_failed","resource":"nginx.conf"}'
 dump=$("$nginx" -T -p "$nginx_prefix" -c "$nginx_conf" 2>/dev/null) || fail '无法安全读取 Nginx 生效配置；未更新运行文件。'
-loaded=$(printf '%s\n' "$dump" | helper active)
+if loaded=$(printf '%s\n' "$dump" | helper active); then
+    diagnostic=
+else
+    diagnostic=$loaded
+    loaded=false
+    exit 1
+fi
 unset dump
 
 if [[ $operation == uninstall ]]; then
@@ -261,13 +308,13 @@ changed=true
 mv -f "$temporary" "$runtime/init.lua"
 temporary=
 stage=nginx_test
-nginx_test || fail '更新后的 Nginx 测试失败；将恢复原 init.lua。'
+nginx_test || fail '更新后的 Nginx 测试失败；将恢复原 init.lua。' '{"code":"nginx_test_failed","resource":"nginx.conf"}'
 if [[ $loaded == true ]]; then
     stage=nginx_reload
-    nginx_reload || fail 'Nginx 重载失败；将恢复原 init.lua 并尝试测试、重载旧版本。'
+    nginx_reload || fail 'Nginx 重载失败；将恢复原 init.lua 并尝试测试、重载旧版本。' '{"code":"nginx_reload_failed","resource":"nginx.conf"}'
 fi
 stage=complete
 message='离线兼容升级完成；只替换运行 init.lua，配置、规则、站点、日志及封禁状态未改动。'
 if [[ $loaded == false ]]; then
-    message+=' 当前 include 未加载；未重载，新的 Lua 尚未经活动 Nginx 执行验证。'
+    message+=' 防护保持未启用，未创建接入配置、未重载 Nginx；新的 Lua 尚未经活动 Nginx 执行验证。'
 fi

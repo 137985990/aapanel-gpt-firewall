@@ -89,7 +89,7 @@ class OfflineInstallerTest(unittest.TestCase):
         for name in ("free_waf_main.py", "ban_store.py", "report_store.py", "website_statistics.py", "update_service.py"):
             self.write(self.plugin / name, "# imported backend; prior version unavailable\n")
         self.write(self.plugin / "index.html", "<html>already imported UI</html>\n")
-        self.write_json(self.plugin / "info.json", {"name": "free_waf", "versions": "0.1.2"})
+        self.write_json(self.plugin / "info.json", {"name": "free_waf", "versions": "0.1.3"})
         self.write_json(self.plugin / "rule.json", ["scanner_signature"])
         self.write(self.runtime / "init.lua", OLD_LUA)
         self.write(self.runtime / "waf.lua", "run_btwaf()\n")
@@ -191,7 +191,7 @@ class OfflineInstallerTest(unittest.TestCase):
         self.assertEqual((self.plugin / "free_waf_main.py").read_bytes(), backend)
         status = self.status()
         self.assertEqual(status["status"], "success")
-        self.assertEqual(status["version"], "0.1.2")
+        self.assertEqual(status["version"], "0.1.3")
         self.assertEqual(status["plugin_name"], "free_waf")
         self.assertTrue(status["waf_active"])
         self.assertTrue(status["runtime_changed"])
@@ -281,7 +281,7 @@ class OfflineInstallerTest(unittest.TestCase):
                 self.assertFalse(self.calls())
 
     def test_wrong_package_identity_is_rejected(self):
-        self.write_json(self.plugin / "info.json", {"name": "gpt_firewall", "versions": "0.1.2"})
+        self.write_json(self.plugin / "info.json", {"name": "gpt_firewall", "versions": "0.1.3"})
         self.assert_failed_without_runtime_change(self.run_installer(), self.state_snapshot())
 
     def test_wrong_package_version_is_rejected(self):
@@ -350,6 +350,7 @@ class OfflineInstallerTest(unittest.TestCase):
     def test_baseline_nginx_failure_does_not_update_runtime(self):
         self.write(self.root / "fail-baseline-test", "1")
         self.assert_failed_without_runtime_change(self.run_installer(), self.state_snapshot())
+        self.assertEqual(self.status().get('diagnostic_code'), 'nginx_test_failed')
 
     def test_foreign_active_runtime_path_is_not_rewritten(self):
         self.write(self.include, WAF_INCLUDE.replace("/free_waf/init.lua", "/other_waf/init.lua"))
@@ -358,10 +359,69 @@ class OfflineInstallerTest(unittest.TestCase):
 
     def test_missing_nginx_include_is_not_created(self):
         self.include.unlink()
+        self.set_active(False)
+        before = self.state_snapshot()
         result = self.run_installer()
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(self.include.exists())
-        self.assertEqual((self.runtime / "init.lua").read_text(encoding="utf-8"), OLD_LUA)
+        self.assertEqual((self.runtime / "init.lua").read_text(encoding="utf-8"), NEW_LUA)
+        self.assertEqual(self.state_snapshot(), before)
+        self.assertFalse(self.status()["waf_active"])
+        self.assertFalse(any("-s reload" in call for call in self.calls()))
+
+    def test_missing_include_does_not_bypass_runtime_schema_checks(self):
+        self.include.unlink()
+        self.set_active(False)
+        self.write_json(self.runtime / "site.json", [])
+        self.assert_failed_without_runtime_change(self.run_installer(), self.state_snapshot())
+        self.assertEqual(self.status().get("diagnostic_code"), "json_schema")
+        self.assertEqual(self.status().get("diagnostic_resource"), "site.json")
+
+    def test_missing_include_does_not_bypass_effective_hook_validation(self):
+        self.include.unlink()
+        self.set_active(False)
+        dump = self.root / "nginx-dump.txt"
+        self.write(dump, dump.read_text(encoding="utf-8") + WAF_INCLUDE.replace(
+            "/free_waf/waf.lua", "/other_waf/waf.lua"))
+        self.assert_failed_without_runtime_change(self.run_installer(), self.state_snapshot())
+        self.assertEqual(self.status().get("diagnostic_code"), "integration_conflict")
+
+    def test_missing_include_supports_compatible_alternative_integration(self):
+        self.include.unlink()
+        self.set_active(False)
+        dump = self.root / "nginx-dump.txt"
+        self.write(dump, dump.read_text(encoding="utf-8") + WAF_INCLUDE)
+        before = self.state_snapshot()
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(self.status()["waf_active"])
+        self.assertEqual(self.state_snapshot(), before)
+        self.assertFalse(self.include.exists())
+        self.assertEqual(len([c for c in self.calls() if "-s reload" in c]), 1)
+
+    def test_empty_existing_include_is_not_treated_as_absent(self):
+        self.write(self.include, "")
+        self.set_active(False)
+        self.assert_failed_without_runtime_change(self.run_installer(), self.state_snapshot())
+        self.assertEqual(self.status().get("diagnostic_code"), "invalid_resource")
+        self.assertEqual(self.status().get("diagnostic_resource"), "free_waf.conf")
+
+    @unittest.skipIf(os.name == "nt", "POSIX symlink checks")
+    def test_dangling_include_symlink_is_not_treated_as_absent(self):
+        self.include.unlink()
+        self.include.symlink_to(self.root / "missing-include-target")
+        self.set_active(False)
+        self.assert_failed_without_runtime_change(self.run_installer(), self.state_snapshot())
+        self.assertEqual(self.status().get("diagnostic_code"), "unsafe_resource")
+
+    def test_preflight_diagnostics_do_not_copy_configured_paths_or_values(self):
+        path = self.runtime / "config.json"
+        config = json.loads(path.read_text(encoding="utf-8"))
+        config["reqfile_path"] = "PRIVATE_SECRET_not_absolute"
+        self.write_json(path, config)
+        self.assert_failed_without_runtime_change(self.run_installer(), self.state_snapshot())
+        self.assertEqual(self.status().get("diagnostic_code"), "unsafe_resource")
+        self.assertNotIn("PRIVATE_SECRET", json.dumps(self.status()))
 
     def test_inactive_runtime_update_does_not_reload(self):
         self.set_active(False)
@@ -428,6 +488,7 @@ class OfflineInstallerTest(unittest.TestCase):
         before = self.state_snapshot()
         result = self.run_installer()
         self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.status().get('diagnostic_code'), 'nginx_reload_failed')
         self.assertEqual(self.status()["rollback"], "restored")
         self.assertEqual(self.status()["status"], "failed")
         self.assertEqual((self.runtime / "init.lua").read_text(encoding="utf-8"), OLD_LUA)
