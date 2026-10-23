@@ -55,7 +55,7 @@ class BrandingTest(unittest.TestCase):
         self.assertEqual(info['checks'], '/www/server/panel/plugin/free_waf')
         self.assertEqual(info['shell'], 'free_waf.sh')
         self.assertEqual(info['author'], '民国三年一场雨')
-        self.assertEqual(info['versions'], '0.1.5')
+        self.assertEqual(info['versions'], '0.1.6')
 
     def test_management_heading_and_export_names_use_new_brand(self):
         body = (ROOT / 'index.html').read_text(encoding='utf-8')

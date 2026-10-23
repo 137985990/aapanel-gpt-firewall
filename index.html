@@ -295,6 +295,30 @@
 	.waf_conter .website_stats_scroll table{min-width:720px}
 	.waf_conter #website_stats_trend svg{display:block;width:100%;height:auto;max-height:280px}
 	.waf_conter .website_stats_meta{font-size:12px;color:#667085;line-height:1.8;margin:8px 0;overflow-wrap:anywhere}
+	.waf_conter .task_tabs{display:flex;gap:6px;border-bottom:1px solid var(--waf-line);padding-bottom:12px;margin-bottom:14px}
+	.waf_conter .task_tab{border:1px solid #cedbd2;border-radius:5px;background:#fff;padding:7px 22px;color:#64796c;cursor:pointer}
+	.waf_conter .task_tab.active{background:#eaf4ed;border-color:#369775;color:#216a48;font-weight:600}
+	.waf_conter .task_panel[hidden],.waf_conter #task_detail[hidden]{display:none}
+	.waf_conter .task_controls{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;margin:14px 0}
+	.waf_conter .task_controls label{display:flex;flex-direction:column;gap:5px;margin:0;min-width:0;max-width:100%;font-size:12px;color:#64796c;font-weight:400}
+	.waf_conter .task_controls .task_search{flex:1;min-width:150px}
+	.waf_conter .task_controls input,.waf_conter .task_controls select{height:34px;max-width:100%;box-sizing:border-box;border:1px solid #cedbd2;border-radius:4px;background:#fff;padding:5px 8px;color:#263b32}
+	.waf_conter .task_controls input[type="number"]{width:110px}
+	.waf_conter .task_scroll{overflow-x:auto;max-width:100%;border:1px solid var(--waf-line);border-radius:5px}
+	.waf_conter .task_scroll table{width:100%;min-width:820px;border:0}
+	.waf_conter #task_processes_list{min-width:1100px}
+	.waf_conter .task_scroll th{white-space:nowrap;font-size:12px;line-height:1.5;padding:10px;background:#f3f8f4;color:#64796c}
+	.waf_conter .task_scroll td{padding:9px 10px;line-height:1.7;font-size:12px;overflow-wrap:anywhere;vertical-align:top}
+	.waf_conter .task_scroll .task_name{min-width:130px;max-width:220px}
+	.waf_conter .task_summary{padding:12px 14px;background:linear-gradient(120deg,#eef7f0,#fafcfb);border:1px solid #dce9df;border-radius:6px;color:#335c44;line-height:1.9;overflow-wrap:anywhere}
+	.waf_conter .task_meta{font-size:12px;line-height:1.8;color:#64796c;margin:8px 0;overflow-wrap:anywhere}
+	.waf_conter .task_pager{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:14px 0 0;font-size:12px;color:#64796c}
+	.waf_conter .task_detail_grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 16px;margin:10px 0 0}
+	.waf_conter .task_detail_grid>div{min-width:0;padding:9px 0;border-bottom:1px solid var(--waf-line)}
+	.waf_conter .task_detail_grid dt{color:#718579;font-size:12px;font-weight:400;margin-bottom:5px}
+	.waf_conter .task_detail_grid dd{color:#263b32;font-size:13px;margin:0;overflow-wrap:anywhere}
+	.waf_conter #task_detail{min-width:0;max-width:100%;box-sizing:border-box;background:linear-gradient(135deg,#fff,#f3f9f5)}
+	@media (max-width:720px){.waf_conter .task_detail_grid{grid-template-columns:minmax(0,1fr)}.waf_conter .task_controls label{flex:1 1 120px}.waf_conter .task_controls .task_search{flex-basis:100%}.waf_conter .task_controls input,.waf_conter .task_controls select{width:100%}.waf_conter .task_controls button{flex:1 1 120px}}
 	.waf_conter .plugin_update_notes{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;background:#f8fafb;border:1px solid #e4e7ec;border-radius:4px;padding:14px;font:13px/1.8 inherit}
 	.waf_conter #plugin_update_job{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.8}
 	.waf_conter .waf-page-title{padding:14px 16px;border-color:#e1e9e4}
@@ -356,6 +380,7 @@
 			<li data-target="notification" data-section="observation" hidden><button type="button">防御通知</button></li>
 			<li data-target="logs" data-section="observation" hidden><button type="button">操作日志</button></li>
 			<li data-target="updates" data-section="maintenance" hidden><button type="button">插件更新</button></li>
+			<li data-target="task_manager" data-section="maintenance" hidden><button type="button">任务管理</button></li>
 			<li data-target="webshell" data-section="maintenance" hidden><button type="button">诊断工具</button></li>
 		</ul>
 	</nav>
@@ -1401,6 +1426,53 @@
 				<table class="waf_table" style="width:100%;"><thead><tr><th style="width:180px;">项目</th><th>值</th></tr></thead><tbody id="website_stats_settings_table"><tr><td colspan="2" style="text-align:center;color:#999;padding:18px;">正在加载统计设置...</td></tr></tbody></table>
 			</div>
 		</div>
+		<div class="item_con" data-type="task_manager">
+			<div class="waf-page-title"><h3>任务管理</h3><p>只读查看进程与网络。不会终止进程、断开连接或修改配置，不提供破坏性操作。</p></div>
+			<div class="waf-notice-safe">仅当前可见命名空间；进程与连接表均为有限快照，数量不是全主机完整总数。CPU 单核为 100%，多核进程可超过 100%；速率为约 0.2 秒短时采样，不是长期平均。缺失指标显示“--”，不表示零。首次进入各页签采样一次，之后仅刷新、应用条件或翻页时请求，无自动刷新。</div>
+			<div class="task_tabs" role="tablist" aria-label="任务管理视图">
+				<button type="button" id="task_processes_tab" class="task_tab active" data-task-view="processes" role="tab" aria-selected="true" aria-controls="task_processes_panel">进程</button>
+				<button type="button" id="task_network_tab" class="task_tab" data-task-view="network" role="tab" aria-selected="false" aria-controls="task_network_panel">网络</button>
+			</div>
+			<section id="task_processes_panel" class="waf-card task_panel" role="tabpanel" aria-labelledby="task_processes_tab">
+				<div class="waf-dashboard-head"><div><h4>进程快照</h4><p id="task_processes_status" role="status" aria-live="polite">进入此页后采样，不自动刷新。</p></div><button type="button" id="task_processes_refresh" class="btn btn-default btn-sm task_refresh" data-task-view="processes">刷新进程</button></div>
+				<p id="task_processes_summary" class="task_summary">尚未采样。</p>
+				<form id="task_processes_form" class="task_controls">
+					<label class="task_search" for="task_processes_search">筛选进程<input id="task_processes_search" type="search" maxlength="80" placeholder="进程名、进程号或用户编号" autocomplete="off" /></label>
+					<label for="task_processes_sort">排序<select id="task_processes_sort"><option value="cpu_percent">CPU 占用</option><option value="rss_bytes">驻留内存</option><option value="read_rate">磁盘读取速率</option><option value="write_rate">磁盘写入速率</option><option value="pid">进程号</option><option value="name">进程名</option></select></label>
+					<label for="task_processes_order">顺序<select id="task_processes_order"><option value="desc">降序</option><option value="asc">升序</option></select></label>
+					<label for="task_processes_per_page">每页条数<select id="task_processes_per_page"><option value="25">25 条</option><option value="50">50 条</option><option value="100">100 条</option></select></label>
+					<button type="submit" id="task_processes_apply" class="btn btn-success btn-sm">应用筛选与排序</button>
+				</form>
+				<p class="task_meta">输入和选择不会发起请求；点击应用后采样并回到第 1 页。翻页和刷新使用已应用的条件。</p>
+				<p id="task_processes_checked" class="task_meta">尚无采样时间。</p><p id="task_processes_coverage" class="task_meta">等待覆盖说明。</p>
+				<div class="task_scroll" tabindex="0" role="region" aria-label="进程列表，可横向滚动"><table id="task_processes_list" class="waf_table"><thead><tr><th>进程号</th><th>进程名</th><th>用户编号</th><th>状态</th><th>CPU</th><th>驻留内存</th><th>虚拟内存</th><th>磁盘读取</th><th>磁盘写入</th><th>线程数</th><th>只读详情</th></tr></thead><tbody id="task_processes_table"><tr><td colspan="11">尚未采样。</td></tr></tbody></table></div>
+				<div class="task_pager"><button type="button" id="task_processes_prev" class="btn btn-default btn-sm task_prev" data-task-view="processes" disabled>上一页</button><span id="task_processes_page_info">尚未采样。</span><button type="button" id="task_processes_next" class="btn btn-default btn-sm task_next" data-task-view="processes" disabled>下一页</button></div>
+			</section>
+			<section id="task_detail" class="waf-card" aria-labelledby="task_detail_title" hidden>
+				<div class="waf-dashboard-head"><div><h4 id="task_detail_title">进程详情（只读）</h4><p id="task_detail_status" role="status" aria-live="polite"></p></div><button type="button" id="task_detail_close" class="btn btn-default btn-sm">收起详情</button></div>
+				<div id="task_detail_content"></div><p id="task_detail_checked" class="task_meta"></p><p id="task_detail_coverage" class="task_meta"></p>
+			</section>
+			<section id="task_network_panel" class="waf-card task_panel" role="tabpanel" aria-labelledby="task_network_tab" hidden>
+				<div class="waf-dashboard-head"><div><h4>网络快照</h4><p id="task_network_status" role="status" aria-live="polite">进入此页后采样，不自动刷新。</p></div><button type="button" id="task_network_refresh" class="btn btn-default btn-sm task_refresh" data-task-view="network">刷新网络</button></div>
+				<p id="task_network_summary" class="task_summary">尚未采样。</p>
+				<form id="task_network_form" class="task_controls" novalidate>
+					<label class="task_search" for="task_network_search">筛选连接<input id="task_network_search" type="search" maxlength="80" placeholder="地址、进程名或进程号" autocomplete="off" /></label>
+					<label for="task_network_protocol">协议<select id="task_network_protocol"><option value="all">全部协议</option><option value="tcp">TCP / IPv4</option><option value="tcp6">TCP / IPv6</option><option value="udp">UDP / IPv4</option><option value="udp6">UDP / IPv6</option></select></label>
+					<label for="task_network_state">连接状态<select id="task_network_state"><option value="all">全部状态</option><option value="LISTEN">监听</option><option value="ESTABLISHED">已建立</option><option value="TIME_WAIT">等待超时关闭</option><option value="CLOSE_WAIT">等待本地关闭</option><option value="SYN_SENT">已发送连接请求</option><option value="SYN_RECV">已收到连接请求</option><option value="FIN_WAIT1">等待关闭确认</option><option value="FIN_WAIT2">等待对端关闭</option><option value="LAST_ACK">等待最后确认</option><option value="CLOSING">双方关闭中</option><option value="CLOSE">已关闭</option><option value="UNCONN">未连接</option></select></label>
+					<label for="task_network_port">端口<input id="task_network_port" type="number" min="0" max="65535" step="1" placeholder="全部端口" /></label>
+					<label for="task_network_sort">排序<select id="task_network_sort"><option value="local_port">本地端口</option><option value="remote_port">远端端口</option><option value="state">连接状态</option><option value="pid">进程号</option></select></label>
+					<label for="task_network_order">顺序<select id="task_network_order"><option value="asc">升序</option><option value="desc">降序</option></select></label>
+					<label for="task_network_per_page">每页条数<select id="task_network_per_page"><option value="25">25 条</option><option value="50">50 条</option><option value="100">100 条</option></select></label>
+					<button type="submit" id="task_network_apply" class="btn btn-success btn-sm">应用筛选与排序</button>
+				</form>
+				<p class="task_meta">条件仅在点击应用后生效；端口匹配本地或远端。进程归属受权限与采样上限影响，未知进程号显示“--”，不代表没有所属进程。</p>
+				<p id="task_network_checked" class="task_meta">尚无采样时间。</p><p id="task_network_coverage" class="task_meta">等待覆盖说明。</p>
+				<div class="task_scroll" tabindex="0" role="region" aria-label="连接列表，可横向滚动"><table class="waf_table"><thead><tr><th>协议</th><th>本地地址与端口</th><th>远端地址与端口</th><th>连接状态</th><th>用户编号</th><th>进程号</th><th>进程名</th></tr></thead><tbody id="task_network_table"><tr><td colspan="7">尚未采样。</td></tr></tbody></table></div>
+				<div class="task_pager"><button type="button" id="task_network_prev" class="btn btn-default btn-sm task_prev" data-task-view="network" disabled>上一页</button><span id="task_network_page_info">尚未采样。</span><button type="button" id="task_network_next" class="btn btn-default btn-sm task_next" data-task-view="network" disabled>下一页</button></div>
+				<h4 style="margin-top:20px">网络接口</h4><p class="task_meta">接口累计字节与本次短时速率，不等于上述连接流量，不受连接筛选条件影响。</p>
+				<div class="task_scroll" tabindex="0" role="region" aria-label="网络接口，可横向滚动"><table class="waf_table"><thead><tr><th>接口名</th><th>累计接收</th><th>累计发送</th><th>接收速率</th><th>发送速率</th></tr></thead><tbody id="task_network_interfaces"><tr><td colspan="5">尚未采样。</td></tr></tbody></table></div>
+			</section>
+		</div>
 		<div class="item_con" data-type="updates">
 			<div class="waf-page-title"><h3>插件更新</h3><p>自动检查不会自动安装；更新源、6 小时检查缓存及备份由后端管理。</p></div>
 			<div class="waf-notice-safe">安装前请自行备份配置、规则和站点数据。关闭页面只停止状态查询，不会中止已确认的服务器更新任务。页面不会自动刷新或跳转外部地址。</div>
@@ -1574,6 +1646,10 @@
 			this.stop_statistics_polling();
 			this.stop_plugin_update_status();
 			this.stop_endpoint_requests();
+			this.stop_task_requests();
+			this._task_views = null;
+			this.clear_task_snapshot('processes','页面已关闭。');
+			this.clear_task_snapshot('network','页面已关闭。');
 			clearTimeout(this._shell_timer);
 			var timers = this._timers || [];
 			for(var t=0;t<timers.length;t++) clearTimeout(timers[t]);
@@ -1609,7 +1685,7 @@
 			$root.css({'height': panelHeight + 'px'});
 		},
 		panel_section:function(page){
-			var sections={home:'overview',site:'protection',policies:'protection',overall:'protection',history:'access',blacklist:'access',whitelist:'access',ipstats:'observation',statistics:'observation',notification:'observation',logs:'observation',updates:'maintenance',webshell:'maintenance'};
+			var sections={home:'overview',site:'protection',policies:'protection',overall:'protection',history:'access',blacklist:'access',whitelist:'access',ipstats:'observation',statistics:'observation',notification:'observation',logs:'observation',updates:'maintenance',task_manager:'maintenance',webshell:'maintenance'};
 			return Object.prototype.hasOwnProperty.call(sections,page) ? sections[page] : null;
 		},
 		section_page:function(section){
@@ -1727,6 +1803,7 @@
 			this._configured_open = null;
 			this._repair_busy = false;
 			this.init_endpoint_policies();
+			this.init_task_manager();
 			this._tools_loaded = false;
 			this._map_expanded = false;
 			this._dashboard_data = null;
@@ -2489,6 +2566,7 @@
 			if(this._active_page === 'statistics' && type !== 'statistics') this.stop_statistics_polling();
 			if(this._active_page === 'updates' && type !== 'updates') this.stop_plugin_update_status();
 			if(this._active_page === 'policies' && type !== 'policies') this.stop_endpoint_requests();
+			if(this._active_page === 'task_manager' && type !== 'task_manager') this.stop_task_requests();
 			if(type !== 'home'){
 				this.expand_attack_map(false);
 				this.dispose_dashboard_charts();
@@ -2496,6 +2574,9 @@
 			}
 			this._active_page = type;
 			switch(type){
+				case 'task_manager':
+					this.select_task_view(this._task_view);
+				break;
 				case 'policies':
 					this.load_endpoint_sites();
 				break;
@@ -6863,6 +6944,262 @@
 				}
 				$('#endpoint_policy_events').html(html || '<tr><td colspan="7">本次未返回已记录事件。可能尚未启用、未超限或采样未覆盖，请勿据此判断没有流量。</td></tr>');
 			},failed);
+		},
+		init_task_manager:function(){
+			var _this=this;
+			this._task_epoch=(this._task_epoch || 0)+1;
+			this._task_request=null;
+			this._task_pending_kind=null;
+			this._task_pending_view=null;
+			this._task_view='processes';
+			this._task_views={
+				processes:{attempted:false,loading:false,report:null,query:{page:1,per_page:25,search:'',sort:'cpu_percent',order:'desc'}},
+				network:{attempted:false,loading:false,report:null,query:{page:1,per_page:25,search:'',protocol:'all',state:'all',port:'',sort:'local_port',order:'asc'}}
+			};
+			this.clear_task_detail();
+			['processes','network'].forEach(function(view){
+				var query=_this._task_views[view].query;
+				Object.keys(query).forEach(function(key){if(key!=='page') $('#task_'+view+'_'+key).val(String(query[key]));});
+				$('#task_'+view+'_panel').prop('hidden',view!=='processes');
+				$('#task_'+view+'_tab').attr('aria-selected',view==='processes'?'true':'false').attr('tabindex',view==='processes'?'0':'-1');
+				$('#task_'+view+'_tab')[view==='processes'?'addClass':'removeClass']('active');
+				_this.clear_task_snapshot(view,'进入此页后采样，不自动刷新。');
+				_this.task_update_controls(view);
+				_this.bind_panel_event('submit','#task_'+view+'_form',function(event){event.preventDefault();_this.apply_task_filters(view);});
+			});
+			this.bind_panel_event('click','.task_tab',function(){_this.select_task_view($(this).attr('data-task-view'));});
+			this.bind_panel_event('keydown','.task_tab',function(event){
+				if(['ArrowLeft','ArrowRight','Home','End'].indexOf(event.key)===-1 || !_this.task_alive()) return;
+				event.preventDefault();
+				var view=event.key==='Home'?'processes':event.key==='End'?'network':(_this._task_view==='processes'?'network':'processes');
+				_this.select_task_view(view);$('#task_'+view+'_tab')[0].focus();
+			});
+			this.bind_panel_event('click','.task_refresh',function(){
+				var view=$(this).attr('data-task-view');
+				if(_this.task_alive() && view===_this._task_view) _this.load_task_view(view,_this._task_views[view].query);
+			});
+			this.bind_panel_event('click','.task_prev',function(){_this.task_change_page($(this).attr('data-task-view'),-1);});
+			this.bind_panel_event('click','.task_next',function(){_this.task_change_page($(this).attr('data-task-view'),1);});
+			this.bind_panel_event('click','.task_process_detail',function(){_this.show_task_detail($(this).attr('data-task-index'));});
+			this.bind_panel_event('click','#task_detail_close',function(){
+				if(_this._task_pending_kind==='detail') _this.stop_task_requests();
+				else _this.clear_task_detail();
+			});
+		},
+		task_alive:function(){
+			return !this._destroyed && this._active_page==='task_manager' && this.$root && this.$root[0].isConnected && !!this._task_views;
+		},
+		clear_task_detail:function(){
+			$('#task_detail').prop('hidden',true);
+			$('#task_detail_content').html('');
+			$('#task_detail_status').text('');
+			$('#task_detail_checked').text('');
+			$('#task_detail_coverage').text('');
+		},
+		clear_task_snapshot:function(view,message){
+			if(this._task_views && this._task_views[view]) this._task_views[view].report=null;
+			$('#task_'+view+'_table').html('<tr><td colspan="'+(view==='processes'?11:7)+'">'+this.endpoint_text(message)+'</td></tr>');
+			$('#task_'+view+'_status').text(message);
+			$('#task_'+view+'_summary').text('尚无可用快照。');
+			$('#task_'+view+'_checked').text('尚无可用采样时间。');
+			$('#task_'+view+'_coverage').text('未取得有效快照，不能据此判断进程或连接情况。');
+			$('#task_'+view+'_page_info').text('尚未采样。');
+			$('#task_'+view+'_prev').prop('disabled',true);
+			$('#task_'+view+'_next').prop('disabled',true);
+			if(view==='network') $('#task_network_interfaces').html('<tr><td colspan="5">'+this.endpoint_text(message)+'</td></tr>');
+		},
+		stop_task_requests:function(){
+			// Abort callbacks may run synchronously; invalidate ownership first.
+			this._task_epoch=(this._task_epoch || 0)+1;
+			var pending=this._task_request, view=this._task_pending_view, kind=this._task_pending_kind;
+			this._task_request=null;this._task_pending_view=null;this._task_pending_kind=null;
+			if(kind==='list' && this._task_views && this._task_views[view]){
+				this._task_views[view].loading=false;
+				this.clear_task_snapshot(view,'采样已取消，请点击刷新重试。');
+				this.task_update_controls(view);
+			}
+			this.clear_task_detail();
+			if(pending) pending.abort();
+		},
+		select_task_view:function(view){
+			if(!this.task_alive() || ['processes','network'].indexOf(view)===-1) return;
+			if(this._task_view!==view) this.stop_task_requests();
+			this._task_view=view;
+			['processes','network'].forEach(function(target){
+				$('#task_'+target+'_panel').prop('hidden',view!==target);
+				$('#task_'+target+'_tab').attr('aria-selected',view===target?'true':'false').attr('tabindex',view===target?'0':'-1');
+				$('#task_'+target+'_tab')[view===target?'addClass':'removeClass']('active');
+			});
+			var state=this._task_views[view];
+			if(!state.attempted) this.load_task_view(view,state.query);
+		},
+		apply_task_filters:function(view){
+			if(!this.task_alive() || view!==this._task_view) return;
+			var prefix='#task_'+view+'_', sorts=view==='processes'?['cpu_percent','rss_bytes','read_rate','write_rate','pid','name']:['local_port','remote_port','state','pid'];
+			var size=Number($(prefix+'per_page').val()), sort=$(prefix+'sort').val(), order=$(prefix+'order').val();
+			var search=$.trim($(prefix+'search').val());
+			if(Array.from(search).length>80 || /[\x00-\x1f]/.test(search)){
+				$('#task_'+view+'_status').text('筛选文字最多 80 个字符，且不能包含控制字符，请修改后重试。');return;
+			}
+			var query={page:1,per_page:[25,50,100].indexOf(size)!==-1?size:25,search:search,sort:sorts.indexOf(sort)!==-1?sort:sorts[0],order:order==='asc'?'asc':'desc'};
+			if(view==='network'){
+				var port=$.trim($(prefix+'port').val()), protocol=$(prefix+'protocol').val(), socketState=$(prefix+'state').val();
+				if(port!=='' && (!/^\d{1,5}$/.test(port) || Number(port)>65535)){
+					$('#task_network_status').text('端口必须为 0 至 65535 的整数，或留空后重试。');return;
+				}
+				query.port=port===''?'':Number(port);
+				query.protocol=['all','tcp','tcp6','udp','udp6'].indexOf(protocol)!==-1?protocol:'all';
+				query.state=['all','LISTEN','ESTABLISHED','TIME_WAIT','CLOSE_WAIT','SYN_SENT','SYN_RECV','FIN_WAIT1','FIN_WAIT2','LAST_ACK','CLOSING','CLOSE','UNCONN'].indexOf(socketState)!==-1?socketState:'all';
+			}
+			this.load_task_view(view,query);
+		},
+		task_change_page:function(view,delta){
+			if(!this.task_alive() || view!==this._task_view) return;
+			var state=this._task_views[view], report=state.report;
+			if(state.loading || !report) return;
+			var page=report.page+delta, pages=Math.max(1,Math.ceil(report.total/report.per_page));
+			if(page<1 || page>pages) return;
+			this.load_task_view(view,Object.assign({},state.query,{page:page}));
+		},
+		task_update_controls:function(view){
+			var state=this._task_views && this._task_views[view], busy=!!(state && state.loading), report=state && state.report;
+			$('#task_'+view+'_refresh').prop('disabled',busy);
+			$('#task_'+view+'_apply').prop('disabled',busy);
+			$('#task_'+view+'_prev').prop('disabled',busy || !report || report.page<=1);
+			$('#task_'+view+'_next').prop('disabled',busy || !report || report.page*report.per_page>=report.total);
+			if(report) $('#task_'+view+'_page_info').text('第 '+report.page+' / '+Math.max(1,Math.ceil(report.total/report.per_page))+' 页 · 筛选后 '+report.total+' 条（有限快照） · 每页 '+report.per_page+' 条');
+		},
+		task_valid_snapshot:function(view,result){
+			function number(value){return typeof value==='number' && isFinite(value) && value>=0;}
+			function integer(value){return number(value) && Math.floor(value)===value;}
+			if(!result || result.status!==true || !Array.isArray(result.items) || !integer(result.total) || !integer(result.page) || result.page<1 || [25,50,100].indexOf(result.per_page)===-1 || !number(result.checked_at) || result.checked_at===0 || !number(result.sampled_seconds) || typeof result.partial!=='boolean' || !Array.isArray(result.reasons)) return false;
+			var summary=result.summary;
+			if(!summary || typeof summary!=='object' || Array.isArray(summary)) return false;
+			if(view==='network') return Array.isArray(result.interfaces) && integer(summary.socket_count) && integer(summary.listen_count) && integer(summary.established_count);
+			return integer(summary.process_count) && (summary.cpu_count===null || integer(summary.cpu_count)) && (summary.memory_total_bytes===null || number(summary.memory_total_bytes)) && Array.isArray(summary.load) && (summary.load.length===3 || (result.partial && summary.load.length===0)) && summary.load.every(function(value){return value===null || number(value);});
+		},
+		load_task_view:function(view,query){
+			if(!this.task_alive() || view!==this._task_view) return;
+			this.stop_task_requests();
+			var _this=this, state=this._task_views[view], epoch=this._task_epoch, owner=this._generation;
+			state.attempted=true;state.loading=true;state.query=Object.assign({},query);
+			this.clear_task_snapshot(view,'正在采样，请稍候；不会自动刷新。');
+			this.task_update_controls(view);
+			function current(){return _this.task_alive() && _this._task_view===view && _this._task_epoch===epoch && _this._generation===owner;}
+			function failed(message){if(current()) _this.clear_task_snapshot(view,'读取失败：'+message+'；请点击刷新重试。');}
+			this._task_pending_kind='list';this._task_pending_view=view;
+			this._task_request=this.http({method:view==='processes'?'get_task_processes':'get_task_network',data:state.query,load:2,msg:false,check:true,timeout:10000,
+				success:function(result){
+					if(!current()) return;
+					if(!_this.task_valid_snapshot(view,result)){failed(result && result.status===false?_this.task_error(result.code):'返回格式不可用');return;}
+					state.report=Object.assign({},result,{items:result.items.slice(0,result.per_page)});
+					state.query.page=result.page;state.query.per_page=result.per_page;
+					_this.render_task_snapshot(view,state.report);
+				},
+				error:function(xhr,message){failed(message);},
+				complete:function(){
+					if(!current()) return;
+					_this._task_request=null;_this._task_pending_kind=null;_this._task_pending_view=null;
+					state.loading=false;_this.task_update_controls(view);
+				}
+			});
+		},
+		task_number:function(value,digits){
+			if(typeof value!=='number' || !isFinite(value) || value<0) return '--';
+			return digits===undefined?String(value):value.toFixed(digits);
+		},
+		task_bytes:function(value){return this.task_number(value)==='--'?'--':this.format_bytes(value);},
+		task_rate:function(value){return this.task_number(value)==='--'?'--':this.task_bytes(value)+'/s';},
+		task_cpu:function(value){return this.task_number(value)==='--'?'--':this.task_number(value,1)+'%';},
+		task_time:function(value){
+			if(typeof value!=='number' || !isFinite(value) || value<=0) return '--';
+			var date=new Date(value*1000);
+			return isFinite(date.getTime())?date.toLocaleString('zh-CN',{hour12:false}):'--';
+		},
+		task_checked:function(result){return '采样时间（本地时区）：'+this.task_time(result.checked_at)+'；短时采样 '+this.task_number(result.sampled_seconds,2)+' 秒。';},
+		task_error:function(code){
+			var messages={parameters:'筛选参数不正确，请重新选择。',unsupported:'任务管理仅支持可读取本机进程信息的 Linux 面板。',timeout:'本次采集超时，已停止采集；请稍后手动重试。',unavailable:'本次采集未完成，请稍后手动重试。',process_changed:'进程已退出或身份发生变化，请刷新进程列表后重试。'};
+			return typeof code==='string' && Object.prototype.hasOwnProperty.call(messages,code)?messages[code]:'本次采集未完成，请稍后手动重试。';
+		},
+		task_coverage:function(result){
+			var labels={time_limit:'采样达到时间上限',process_limit:'进程采样达到数量上限',process_unavailable:'部分进程不可读取',process_changed:'采样期间进程已退出或身份变化',io_unavailable:'部分磁盘读写指标不可读取',system_unavailable:'部分系统指标不可读取',memory_unavailable:'部分内存指标不可读取',fd_limit:'文件描述符计数达到上限',fd_unavailable:'文件描述符计数不可读取',socket_limit:'连接采样达到数量上限',socket_unavailable:'部分连接表不可读取',interface_limit:'网络接口采样达到数量上限',interface_unavailable:'部分网络接口指标不可读取',ownership_partial:'部分连接进程归属未知',counter_reset:'采样计数器已重置，相关速率不可用'};
+			var reasons=Array.isArray(result.reasons)?result.reasons:[], notices=[];
+			reasons.forEach(function(code){
+				var label=typeof code==='string' && Object.prototype.hasOwnProperty.call(labels,code)?labels[code]:'部分指标不可用或采样受限';
+				if(notices.indexOf(label)===-1) notices.push(label);
+			});
+			return (result.partial || notices.length?'部分采样':'本次采样已返回')+'；仅当前可见命名空间的有限快照，不代表主机总数。'+(notices.length?' '+notices.join('；')+'。':'');
+		},
+		task_state_label:function(value,network){
+			var labels=network?{LISTEN:'监听',ESTABLISHED:'已建立',TIME_WAIT:'等待超时关闭',CLOSE_WAIT:'等待本地关闭',SYN_SENT:'已发送连接请求',SYN_RECV:'已收到连接请求',FIN_WAIT1:'等待关闭确认',FIN_WAIT2:'等待对端关闭',LAST_ACK:'等待最后确认',CLOSING:'双方关闭中',CLOSE:'已关闭',UNCONN:'未连接'}:{R:'运行',S:'休眠',D:'不可中断休眠',Z:'僵尸',T:'停止',t:'跟踪停止',I:'空闲',X:'已退出'};
+			return typeof value==='string' && Object.prototype.hasOwnProperty.call(labels,value)?labels[value]+'（'+value+'）':(value || '--');
+		},
+		render_task_snapshot:function(view,result){
+			var _this=this, summary=result.summary, e=function(value){return _this.endpoint_text(value==null?'--':value);}, rows='';
+			if(view==='processes'){
+				$('#task_processes_summary').text('采样进程数（有上限）：'+this.task_number(summary.process_count)+' · 逻辑 CPU：'+this.task_number(summary.cpu_count)+' · 系统内存：'+this.task_bytes(summary.memory_total_bytes)+' · 系统负载（1 / 5 / 15 分钟）：'+(summary.load.length?summary.load.map(function(value){return _this.task_number(value);}).join(' / '):'--'));
+				result.items.forEach(function(row,index){
+					row=row || {};
+					rows+='<tr><td>'+e(row.pid)+'</td><td class="task_name">'+e(row.name)+'</td><td>'+e(row.uid)+'</td><td>'+e(_this.task_state_label(row.state,false))+'</td><td>'+_this.task_cpu(row.cpu_percent)+'</td><td>'+_this.task_bytes(row.rss_bytes)+'</td><td>'+_this.task_bytes(row.vms_bytes)+'</td><td>'+_this.task_rate(row.read_rate)+'</td><td>'+_this.task_rate(row.write_rate)+'</td><td>'+e(row.threads)+'</td><td><button type="button" class="btlink task_process_detail" data-task-index="'+index+'">查看详情</button></td></tr>';
+				});
+			}else{
+				$('#task_network_summary').text('采样连接数（有上限）：'+this.task_number(summary.socket_count)+' · 监听：'+this.task_number(summary.listen_count)+' · 已建立：'+this.task_number(summary.established_count));
+				function endpoint(address,port){var text=String(address==null?'--':address);return (text.indexOf(':')===-1?e(text):'['+e(text)+']')+':'+e(port);}
+				result.items.forEach(function(row){
+					row=row || {};
+					rows+='<tr><td>'+e(row.protocol)+'</td><td>'+endpoint(row.local_address,row.local_port)+'</td><td>'+endpoint(row.remote_address,row.remote_port)+'</td><td>'+e(_this.task_state_label(row.state,true))+'</td><td>'+e(row.uid)+'</td><td>'+e(row.pid)+'</td><td class="task_name">'+e(row.process_name || '未知')+'</td></tr>';
+				});
+				var interfaces=result.interfaces.map(function(row){
+					row=row || {};
+					return '<tr><td>'+e(row.name)+'</td><td>'+_this.task_bytes(row.received_bytes)+'</td><td>'+_this.task_bytes(row.sent_bytes)+'</td><td>'+_this.task_rate(row.receive_rate)+'</td><td>'+_this.task_rate(row.send_rate)+'</td></tr>';
+				}).join('');
+				$('#task_network_interfaces').html(interfaces || '<tr><td colspan="5">本次未返回可见网络接口。</td></tr>');
+			}
+			$('#task_'+view+'_table').html(rows || '<tr><td colspan="'+(view==='processes'?11:7)+'">本次有限快照中未找到匹配记录。</td></tr>');
+			$('#task_'+view+'_status').text('已取得快照；不会自动刷新。');
+			$('#task_'+view+'_checked').text(this.task_checked(result));
+			$('#task_'+view+'_coverage').text(this.task_coverage(result));
+		},
+		show_task_detail:function(index){
+			if(!this.task_alive() || this._task_view!=='processes') return;
+			var state=this._task_views.processes;
+			if(state.loading) return;
+			var position=Number(index), row=state.report && /^\d+$/.test(String(index)) && state.report.items[position];
+			this.stop_task_requests();
+			$('#task_detail').prop('hidden',false);
+			$('#task_detail')[0].scrollIntoView({behavior:'smooth',block:'start'});
+			if(!row || typeof row.pid!=='number' || row.pid<1 || Math.floor(row.pid)!==row.pid || typeof row.identity!=='string' || !/^\d{1,24}$/.test(row.identity)){
+				$('#task_detail_status').text('缺少有效进程身份，请刷新进程列表后重试。');return;
+			}
+			var _this=this, pid=row.pid, identity=row.identity, epoch=this._task_epoch, owner=this._generation;
+			function current(){return _this.task_alive() && _this._task_view==='processes' && epoch===_this._task_epoch && owner===_this._generation;}
+			function failed(message){
+				if(!current()) return;
+				$('#task_detail_content').html('');$('#task_detail_checked').text('');$('#task_detail_coverage').text('');
+				$('#task_detail_status').text(message+'；进程可能已退出或 PID 已复用，请刷新进程列表后重试。');
+			}
+			$('#task_detail_status').text('正在核对进程身份并读取详情，不单独采样 CPU 或磁盘速率。');
+			this._task_pending_kind='detail';this._task_pending_view='processes';
+			this._task_request=this.http({method:'get_task_process_detail',data:{pid:pid,identity:identity},load:2,msg:false,check:true,timeout:10000,
+				success:function(result){
+					if(!current()) return;
+					var process=result && result.process;
+					if(!result || result.status!==true || !process || process.pid!==pid || process.identity!==identity || typeof result.checked_at!=='number' || !isFinite(result.checked_at) || result.checked_at<=0 || typeof result.partial!=='boolean' || !Array.isArray(result.reasons)){
+						failed(result && result.status===false?_this.task_error(result.code):'进程详情或身份无法核实');return;
+					}
+					_this.render_task_detail(result);
+				},
+				error:function(xhr,message){failed(message);},
+				complete:function(){if(current()){_this._task_request=null;_this._task_pending_kind=null;_this._task_pending_view=null;}}
+			});
+		},
+		render_task_detail:function(result){
+			var row=result.process, _this=this;
+			var fields=[['进程号',row.pid],['父进程号',row.ppid],['进程名',row.name],['用户编号',row.uid],['状态',this.task_state_label(row.state,false)],['启动时间（本地时区）',this.task_time(row.started_at)],['线程数',row.threads],['CPU（详情不单独采样）',this.task_cpu(row.cpu_percent)],['驻留内存',this.task_bytes(row.rss_bytes)],['虚拟内存',this.task_bytes(row.vms_bytes)],['比例驻留内存（PSS）',this.task_bytes(row.pss_bytes)],['独占内存（USS）',this.task_bytes(row.uss_bytes)],['交换内存',this.task_bytes(row.swap_bytes)],['文件描述符数量',this.task_number(row.fd_count)],['磁盘读取（详情不单独采样）',this.task_rate(row.read_rate)],['磁盘写入（详情不单独采样）',this.task_rate(row.write_rate)]];
+			$('#task_detail_content').html('<dl class="task_detail_grid">'+fields.map(function(field){return '<div><dt>'+field[0]+'</dt><dd>'+_this.endpoint_text(field[1]==null?'--':field[1])+'</dd></div>';}).join('')+'</dl>');
+			$('#task_detail_status').text('已核对列表中的进程身份；详情不单独采样 CPU 或磁盘速率，缺失值不表示零。');
+			$('#task_detail_checked').text('详情读取时间（本地时区）：'+this.task_time(result.checked_at));
+			$('#task_detail_coverage').text(this.task_coverage(result));
 		},
 		// 请求封装
 		http: function (obj) {

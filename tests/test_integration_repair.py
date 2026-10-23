@@ -288,8 +288,8 @@ class IntegrationRepairTest(unittest.TestCase):
                                 ('failed', {'state': 'recovery_required'})):
             with self.subTest(state=state, rollback=rollback):
                 self.service._save(self.service.store / 'job.json', {
-                    'id': 'a' * 32, 'state': state, 'target_version': '0.1.5',
-                    'tag': 'v0.1.5', 'rollback': rollback})
+                    'id': 'a' * 32, 'state': state, 'target_version': '0.1.6',
+                    'tag': 'v0.1.6', 'rollback': rollback})
                 self.assertFalse(self.apply()['status'])
                 self.assertFalse(self.target.exists())
 

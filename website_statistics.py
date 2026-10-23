@@ -5,10 +5,14 @@ import gzip
 import heapq
 import ipaddress
 import io
+import json
 import math
 import os
 import re
 import stat
+import socket
+import subprocess
+import sys
 import time
 import zlib
 from collections import Counter
@@ -16,7 +20,7 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 
 
-PLUGIN_VERSION = "0.1.5"
+PLUGIN_VERSION = "0.1.6"
 
 _DEFAULT_BUDGETS = {
     "max_bytes": 32 * 1024 * 1024, "max_seconds": 10.0,
@@ -671,3 +675,456 @@ class StatisticsService:
             value = re.search(r'\b' + field + r':\s*(?:"' + _QUOTED + r'"|([^,]*))', line)
             row[field] = _unescape(value[1] if value[1] is not None else value[2].strip()) if value else ""
         return row
+
+
+# Installed updaters accept exactly 21 files. Keep this independent read-only
+# service here until a manifest migration can safely introduce a new module.
+class TaskManagerService:
+    WORKER_SECONDS = 4
+    MAX_OUTPUT_BYTES = 512 * 1024
+    WORKER = r'''
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location('_gpt_readonly_tasks', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+source = spec.loader.get_source(spec.name)
+exec(compile(source, sys.argv[1], 'exec', dont_inherit=True), module.__dict__)
+request = json.loads(sys.stdin.buffer.read(4097))
+params = module.TaskManagerService.validate(request['operation'], request['params'])
+result = module._TaskSnapshotReader().collect(request['operation'], params)
+body = json.dumps(result, ensure_ascii=True, allow_nan=False).encode('ascii')
+if len(body) > module.TaskManagerService.MAX_OUTPUT_BYTES:
+    raise ValueError('snapshot limit')
+sys.stdout.buffer.write(body)
+'''
+    STATES = frozenset(('LISTEN', 'ESTABLISHED', 'TIME_WAIT', 'CLOSE_WAIT', 'SYN_SENT',
+                        'SYN_RECV', 'FIN_WAIT1', 'FIN_WAIT2', 'LAST_ACK', 'CLOSING', 'CLOSE', 'UNCONN'))
+
+    @staticmethod
+    def validate(operation, params):
+        if operation not in ('processes', 'detail', 'network') or not isinstance(params, dict):
+            raise ValueError('operation')
+
+        def integer(key, default, minimum, maximum):
+            value = params.get(key, default)
+            if isinstance(value, bool) or not re.fullmatch(r'[0-9]{1,10}', str(value)):
+                raise ValueError('number')
+            value = int(value)
+            if not minimum <= value <= maximum:
+                raise ValueError('number')
+            return value
+
+        if operation == 'detail':
+            identity = params.get('identity', '')
+            if not isinstance(identity, str) or not re.fullmatch(r'[0-9]{1,24}', identity):
+                raise ValueError('identity')
+            return dict(pid=integer('pid', None, 1, 2147483647), identity=identity)
+        search = params.get('search', '')
+        if not isinstance(search, str) or len(search) > 80 or any(ord(c) < 32 for c in search):
+            raise ValueError('search')
+        per_page = integer('per_page', 25, 1, 100)
+        if per_page not in (25, 50, 100):
+            raise ValueError('page size')
+        result = dict(page=integer('page', 1, 1, 100000), per_page=per_page, search=search.casefold())
+        default_sort = 'cpu_percent' if operation == 'processes' else 'local_port'
+        keys = (('cpu_percent', 'rss_bytes', 'read_rate', 'write_rate', 'pid', 'name')
+                if operation == 'processes' else ('local_port', 'remote_port', 'state', 'pid'))
+        result['sort'] = params.get('sort', default_sort)
+        result['order'] = params.get('order', 'desc' if operation == 'processes' else 'asc')
+        if result['sort'] not in keys or result['order'] not in ('asc', 'desc'):
+            raise ValueError('sort')
+        if operation == 'network':
+            result['protocol'] = params.get('protocol', 'all')
+            result['state'] = params.get('state', 'all')
+            if (result['protocol'] not in ('all', 'tcp', 'tcp6', 'udp', 'udp6')
+                    or result['state'] not in TaskManagerService.STATES | {'all'}):
+                raise ValueError('network filter')
+            result['port'] = None if params.get('port', '') in ('', None) else integer('port', None, 0, 65535)
+        return result
+
+    @staticmethod
+    def error(code):
+        messages = {'parameters': '筛选参数不正确，请重新选择。',
+                    'unsupported': '任务管理仅支持可读取本机 proc 的 Linux 面板。',
+                    'timeout': '本次采集超时，已停止采集；请稍后手动重试。',
+                    'unavailable': '本次采集未完成，请稍后手动重试。',
+                    'process_changed': '进程已退出或身份发生变化，请刷新进程列表后重试。'}
+        return dict(status=False, code=code, msg=messages.get(code, messages['unavailable']))
+
+    def collect(self, operation, params):
+        try:
+            params = self.validate(operation, params)
+        except (ValueError, TypeError):
+            return self.error('parameters')
+        if os.name != 'posix':
+            return self.error('unsupported')
+        child = None
+        try:
+            child = subprocess.Popen([sys.executable, '-I', '-c', self.WORKER, os.path.realpath(__file__)],
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                     close_fds=True)
+            request = json.dumps(dict(operation=operation, params=params)).encode('utf-8')
+            output, _ = child.communicate(request, timeout=self.WORKER_SECONDS)
+            if child.returncode != 0 or len(output) > self.MAX_OUTPUT_BYTES:
+                return self.error('unavailable')
+            result = json.loads(output)
+            if not isinstance(result, dict) or not isinstance(result.get('status'), bool):
+                return self.error('unavailable')
+            return result
+        except subprocess.TimeoutExpired:
+            if child is not None:
+                child.kill()
+                child.communicate()
+            return self.error('timeout')
+        except Exception:
+            if child is not None and child.poll() is None:
+                child.kill()
+                child.communicate()
+            return self.error('unavailable')
+
+
+class _TaskSnapshotReader:
+    MAX_PROCESSES = 2048
+    MAX_SOCKET_ROWS = 8192
+    MAX_FDS = 8192
+    MAX_FDS_PER_PROCESS = 256
+    MAX_INTERFACES = 128
+    MAX_SECONDS = 2.0
+    SAMPLE_SECONDS = .2
+    TCP_STATES = {'01': 'ESTABLISHED', '02': 'SYN_SENT', '03': 'SYN_RECV', '04': 'FIN_WAIT1',
+                  '05': 'FIN_WAIT2', '06': 'TIME_WAIT', '07': 'CLOSE', '08': 'CLOSE_WAIT',
+                  '09': 'LAST_ACK', '0A': 'LISTEN', '0B': 'CLOSING', '0C': 'SYN_RECV'}
+
+    def __init__(self, root='/proc', hz=None, page_size=None, sleep=time.sleep, clock=time.monotonic):
+        self.root, self.sleep, self.clock = Path(root), sleep, clock
+        self.hz = hz if hz is not None else os.sysconf('SC_CLK_TCK')
+        self.page_size = page_size if page_size is not None else os.sysconf('SC_PAGE_SIZE')
+        self.deadline = self.clock() + self.MAX_SECONDS
+        self.reasons = set()
+        self.boot_time = None
+
+    def _budget(self):
+        if self.clock() >= self.deadline:
+            self.reasons.add('time_limit')
+            return False
+        return True
+
+    def _read(self, path, maximum=65536):
+        with (self.root / path).open('rb') as stream:
+            raw = stream.read(maximum + 1)
+        if len(raw) > maximum:
+            raise ValueError('read limit')
+        return raw.decode('utf-8', 'replace')
+
+    @staticmethod
+    def _text(value, limit=64):
+        return ''.join(c for c in str(value) if c.isprintable())[:limit]
+
+    @staticmethod
+    def _numbers(body):
+        result = {}
+        for line in body.splitlines():
+            fields = line.split()
+            if len(fields) >= 2 and fields[1].isdigit():
+                result[fields[0].rstrip(':')] = int(fields[1]) * (1024 if len(fields) > 2 and fields[2] == 'kB' else 1)
+        return result
+
+    def _pids(self):
+        result = []
+        with os.scandir(self.root) as entries:
+            for index, entry in enumerate(entries):
+                if not self._budget() or index >= 8192:
+                    self.reasons.add('process_limit')
+                    break
+                if entry.name.isascii() and entry.name.isdigit():
+                    if len(result) >= self.MAX_PROCESSES:
+                        self.reasons.add('process_limit')
+                        break
+                    result.append(int(entry.name))
+        return sorted(result)
+
+    def _process(self, pid, with_io=True):
+        body = self._read(str(pid) + '/stat', 8192)
+        left, right = body.find('('), body.rfind(')')
+        if left <= 0 or right <= left or int(body[:left].strip()) != pid:
+            raise ValueError('stat')
+        fields = body[right + 1:].split()
+        if len(fields) < 22:
+            raise ValueError('stat')
+        started = int(fields[19])
+        row = dict(pid=pid, ppid=int(fields[1]), name=self._text(body[left + 1:right]),
+                   state=self._text(fields[0], 1), identity=str(started),
+                   rss_bytes=max(0, int(fields[21])) * self.page_size, vms_bytes=max(0, int(fields[20])),
+                   threads=max(0, int(fields[17])), started_at=None if self.boot_time is None else self.boot_time + started / self.hz,
+                   uid=None, cpu_percent=None, read_rate=None, write_rate=None,
+                   _ticks=int(fields[11]) + int(fields[12]), _at=self.clock(), _io={})
+        try:
+            status = self._read(str(pid) + '/status')
+            uid = re.search(r'^Uid:\s+([0-9]+)', status, re.M)
+            row['uid'] = int(uid[1]) if uid else None
+        except (OSError, ValueError):
+            self.reasons.add('process_unavailable')
+        if with_io:
+            try:
+                row['_io'] = self._numbers(self._read(str(pid) + '/io', 8192))
+                if not {'read_bytes', 'write_bytes'} <= row['_io'].keys():
+                    self.reasons.add('io_unavailable')
+            except (OSError, ValueError):
+                self.reasons.add('io_unavailable')
+        verified = self._read(str(pid) + '/stat', 8192)
+        verified_fields = verified[verified.rfind(')') + 1:].split()
+        if len(verified_fields) < 20 or str(int(verified_fields[19])) != row['identity']:
+            self.reasons.add('process_changed')
+            raise ValueError('process changed')
+        return row
+
+    def _snapshot(self):
+        result = {}
+        for pid in self._pids():
+            if not self._budget():
+                break
+            try:
+                result[pid] = self._process(pid)
+            except (OSError, ValueError, IndexError):
+                self.reasons.add('process_unavailable')
+        return result
+
+    @staticmethod
+    def _public_process(row):
+        return {key: value for key, value in row.items() if not key.startswith('_')}
+
+    def _sample_processes(self):
+        first = self._snapshot()
+        start = self.clock()
+        self.sleep(self.SAMPLE_SECONDS)
+        second = self._snapshot()
+        elapsed = self.clock() - start
+        result = []
+        for pid, row in second.items():
+            previous = first.get(pid)
+            if previous is None:
+                self.reasons.add('process_unavailable')
+                continue
+            if previous['identity'] != row['identity']:
+                self.reasons.add('process_changed')
+                continue
+            interval = row['_at'] - previous['_at']
+            if interval > 0:
+                ticks = row['_ticks'] - previous['_ticks']
+                if ticks >= 0:
+                    row['cpu_percent'] = round(ticks * 100 / self.hz / interval, 2)
+                for key, output in (('read_bytes', 'read_rate'), ('write_bytes', 'write_rate')):
+                    if key in row['_io'] and key in previous['_io']:
+                        delta = row['_io'][key] - previous['_io'][key]
+                        row[output] = round(delta / interval, 2) if delta >= 0 else None
+            result.append(self._public_process(row))
+        if first.keys() != second.keys():
+            self.reasons.add('process_unavailable')
+        return result, elapsed
+
+    def _system_summary(self):
+        result = dict(process_count=0, cpu_count=os.cpu_count(), memory_total_bytes=None, load=[])
+        try:
+            for line in self._read('stat', 256 * 1024).splitlines():
+                if line.startswith('btime '):
+                    self.boot_time = int(line.split()[1])
+            result['memory_total_bytes'] = self._numbers(self._read('meminfo')).get('MemTotal')
+            result['load'] = [float(x) for x in self._read('loadavg', 1024).split()[:3]]
+            if (self.boot_time is None or result['memory_total_bytes'] is None or len(result['load']) != 3
+                    or not all(math.isfinite(value) for value in result['load'])):
+                raise ValueError('load')
+        except (OSError, ValueError, IndexError):
+            result['load'] = []
+            self.reasons.add('system_unavailable')
+        return result
+
+    def _page(self, rows, params):
+        key = params['sort']
+        present = [row for row in rows if row.get(key) is not None]
+        missing = [row for row in rows if row.get(key) is None]
+        present.sort(key=lambda row: (row[key].casefold() if isinstance(row[key], str) else row[key], row.get('pid') or 0),
+                     reverse=params['order'] == 'desc')
+        rows = present + missing
+        page = min(params['page'], max(1, math.ceil(len(rows) / params['per_page'])))
+        offset = (page - 1) * params['per_page']
+        return dict(items=rows[offset:offset + params['per_page']], total=len(rows), page=page, per_page=params['per_page'])
+
+    def _detail(self, params):
+        pid = params['pid']
+        try:
+            row = self._process(pid, with_io=False)
+            if row['identity'] != params['identity']:
+                return TaskManagerService.error('process_changed')
+            row.update(pss_bytes=None, uss_bytes=None, swap_bytes=None, fd_count=None)
+            try:
+                row['swap_bytes'] = self._numbers(self._read(str(pid) + '/status')).get('VmSwap')
+                memory = self._numbers(self._read(str(pid) + '/smaps_rollup'))
+                row['pss_bytes'] = memory.get('Pss')
+                if 'Private_Clean' in memory and 'Private_Dirty' in memory:
+                    row['uss_bytes'] = memory['Private_Clean'] + memory['Private_Dirty'] + memory.get('Private_Hugetlb', 0)
+                row['swap_bytes'] = memory.get('Swap', row['swap_bytes'])
+                if any(row[key] is None for key in ('pss_bytes', 'uss_bytes', 'swap_bytes')):
+                    self.reasons.add('memory_unavailable')
+            except (OSError, ValueError):
+                self.reasons.add('memory_unavailable')
+            try:
+                count = 0
+                with os.scandir(self.root / str(pid) / 'fd') as entries:
+                    for _ in entries:
+                        count += 1
+                        if count > self.MAX_FDS or not self._budget():
+                            self.reasons.add('fd_limit')
+                            break
+                    else:
+                        row['fd_count'] = count
+            except OSError:
+                self.reasons.add('fd_unavailable')
+            # Guard PID reuse across all auxiliary reads, not just before them.
+            if self._process(pid, with_io=False)['identity'] != row['identity']:
+                return TaskManagerService.error('process_changed')
+            return dict(process=self._public_process(row))
+        except (OSError, ValueError, IndexError):
+            return TaskManagerService.error('process_changed')
+
+    @staticmethod
+    def _address(value, ipv6):
+        address, port = value.split(':')
+        if len(address) != (32 if ipv6 else 8):
+            raise ValueError('address')
+        binary = b''.join(int(address[i:i + 8], 16).to_bytes(4, sys.byteorder) for i in range(0, len(address), 8))
+        return socket.inet_ntop(socket.AF_INET6 if ipv6 else socket.AF_INET, binary), int(port, 16)
+
+    def _sockets(self):
+        result, count = [], 0
+        for protocol in ('tcp', 'tcp6', 'udp', 'udp6'):
+            try:
+                with (self.root / 'net' / protocol).open('r', encoding='ascii', errors='replace') as stream:
+                    stream.readline(1025)
+                    while self._budget():
+                        line = stream.readline(1025)
+                        if not line:
+                            break
+                        count += 1
+                        if count > self.MAX_SOCKET_ROWS:
+                            self.reasons.add('socket_limit')
+                            return result
+                        fields = line.split()
+                        try:
+                            if len(line) > 1024 or len(fields) < 10:
+                                raise ValueError('socket')
+                            local, local_port = self._address(fields[1], protocol.endswith('6'))
+                            remote, remote_port = self._address(fields[2], protocol.endswith('6'))
+                            state = 'UNCONN' if protocol.startswith('udp') and fields[3] == '07' else self.TCP_STATES.get(fields[3])
+                            if state is None or not (0 <= local_port <= 65535 and 0 <= remote_port <= 65535):
+                                raise ValueError('state')
+                            result.append(dict(protocol=protocol, local_address=local, local_port=local_port,
+                                               remote_address=remote, remote_port=remote_port, state=state,
+                                               uid=int(fields[7]), pid=None, process_name='', _inode=int(fields[9])))
+                        except (OSError, ValueError, IndexError):
+                            self.reasons.add('socket_unavailable')
+            except OSError:
+                self.reasons.add('socket_unavailable')
+        return result
+
+    def _interfaces(self):
+        result = {}
+        try:
+            for line in self._read('net/dev').splitlines()[2:]:
+                if ':' not in line:
+                    continue
+                name, values = line.rsplit(':', 1)
+                fields = values.split()
+                if len(fields) < 16:
+                    raise ValueError('interface')
+                if len(result) >= self.MAX_INTERFACES:
+                    self.reasons.add('interface_limit')
+                    break
+                name = self._text(name.strip())
+                result[name] = dict(name=name, received_bytes=int(fields[0]), sent_bytes=int(fields[8]),
+                                    receive_rate=None, send_rate=None)
+        except (OSError, ValueError):
+            self.reasons.add('interface_unavailable')
+        return result
+
+    def _owners(self, rows):
+        wanted = {row['_inode'] for row in rows if row['_inode']}
+        if not wanted:
+            return
+        owners, inspected = {}, 0
+        for pid in self._pids():
+            if not self._budget() or inspected >= self.MAX_FDS or wanted <= owners.keys():
+                break
+            try:
+                before = self._process(pid, with_io=False)
+                owned = []
+                with os.scandir(self.root / str(pid) / 'fd') as entries:
+                    for index, entry in enumerate(entries):
+                        if index >= self.MAX_FDS_PER_PROCESS or inspected >= self.MAX_FDS or not self._budget():
+                            self.reasons.add('ownership_partial')
+                            break
+                        inspected += 1
+                        try:
+                            target = os.readlink(entry.path)
+                        except OSError:
+                            continue
+                        match = re.fullmatch(r'socket:\[([0-9]+)\]', target)
+                        if match and int(match[1]) in wanted:
+                            owned.append(int(match[1]))
+                if self._process(pid, with_io=False)['identity'] == before['identity']:
+                    for inode in owned:
+                        owners.setdefault(inode, (pid, before['name']))
+            except (OSError, ValueError, IndexError):
+                self.reasons.add('ownership_partial')
+        for row in rows:
+            if row['_inode'] in owners:
+                row['pid'], row['process_name'] = owners[row['_inode']]
+        if wanted - owners.keys():
+            self.reasons.add('ownership_partial')
+
+    def _network(self, params):
+        before, start = self._interfaces(), self.clock()
+        self.sleep(self.SAMPLE_SECONDS)
+        after, elapsed = self._interfaces(), self.clock() - start
+        for name, row in after.items():
+            previous = before.get(name)
+            if previous is not None and elapsed > 0:
+                for key, rate in (('received_bytes', 'receive_rate'), ('sent_bytes', 'send_rate')):
+                    delta = row[key] - previous[key]
+                    row[rate] = round(delta / elapsed, 2) if delta >= 0 else None
+        if before.keys() != after.keys():
+            self.reasons.add('interface_unavailable')
+        rows = self._sockets()
+        summary = dict(socket_count=len(rows), listen_count=sum(row['state'] == 'LISTEN' for row in rows),
+                       established_count=sum(row['state'] == 'ESTABLISHED' for row in rows))
+        rows = [row for row in rows if (params['protocol'] == 'all' or row['protocol'] == params['protocol'])
+                and (params['state'] == 'all' or row['state'] == params['state'])
+                and (params['port'] is None or params['port'] in (row['local_port'], row['remote_port']))]
+        self._owners(rows)
+        if params['search']:
+            rows = [row for row in rows if params['search'] in ' '.join(str(row[key]) for key in
+                    ('local_address', 'local_port', 'remote_address', 'remote_port', 'pid', 'process_name')).casefold()]
+        for row in rows:
+            row.pop('_inode', None)
+        return dict(self._page(rows, params), interfaces=list(after.values()), sampled_seconds=round(elapsed, 4), summary=summary)
+
+    def collect(self, operation, params):
+        if not self.root.is_dir():
+            return TaskManagerService.error('unsupported')
+        try:
+            if operation == 'network':
+                result = self._network(params)
+            else:
+                summary = self._system_summary()
+                if operation == 'detail':
+                    result = self._detail(params)
+                    if result.get('status') is False:
+                        return result
+                else:
+                    rows, elapsed = self._sample_processes()
+                    summary['process_count'] = len(rows)
+                    if params['search']:
+                        rows = [row for row in rows if params['search'] in ('%s %s %s' % (row['pid'], row['name'], row['uid'])).casefold()]
+                    result = dict(self._page(rows, params), summary=summary, sampled_seconds=round(elapsed, 4))
+            result.update(status=True, partial=bool(self.reasons), reasons=sorted(self.reasons), checked_at=time.time())
+            return result
+        except (OSError, ValueError, IndexError):
+            return TaskManagerService.error('unavailable')

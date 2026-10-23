@@ -118,13 +118,13 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         module = sys.modules.get(key)
         if (module is None or getattr(module, '__file__', None) != path
                 or getattr(module, '_source_signature', None) != signature
-                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.5'):
+                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.6'):
             spec = importlib.util.spec_from_file_location(key, path)
             module = importlib.util.module_from_spec(spec)
             # Read source explicitly: same-second upgrades must not reuse stale bytecode.
             source = spec.loader.get_source(key)
             exec(compile(source, path, 'exec', dont_inherit=True), module.__dict__)
-            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.5':
+            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.6':
                 raise ValueError('服务版本不匹配，请重新打开插件')
             module._source_signature = signature
             sys.modules[key] = module
@@ -132,6 +132,25 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
 
     def __statistics_service(self):
         return self.__local_service('website_statistics').StatisticsService(self.__access_log_path)
+
+    def __task_service(self):
+        return self.__local_service('website_statistics').TaskManagerService()
+
+    def __task_snapshot(self, operation, get, fields):
+        try:
+            params = {key: getattr(get, key) for key in fields if hasattr(get, key)}
+            return self.__task_service().collect(operation, params)
+        except Exception:
+            return dict(status=False, code='unavailable', msg='本次采集未完成，请稍后手动重试。')
+
+    def get_task_processes(self, get):
+        return self.__task_snapshot('processes', get, ('page', 'per_page', 'search', 'sort', 'order'))
+
+    def get_task_process_detail(self, get):
+        return self.__task_snapshot('detail', get, ('pid', 'identity'))
+
+    def get_task_network(self, get):
+        return self.__task_snapshot('network', get, ('page', 'per_page', 'search', 'sort', 'order', 'protocol', 'state', 'port'))
 
     def __update_service(self):
         return self.__local_service('update_service').UpdateService(self.__PATH)

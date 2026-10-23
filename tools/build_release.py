@@ -7,7 +7,7 @@ import re
 import zipfile
 
 
-VERSION = '0.1.5'
+VERSION = '0.1.6'
 PLUGIN_FILES = (
     'info.json', 'install.sh', 'free_waf_main.py', 'index.html',
     'init.lua', 'ban_store.py', 'report_store.py', 'website_statistics.py', 'update_service.py',
@@ -19,6 +19,7 @@ PLUGIN_FILES = (
 SOURCE_FILES = PLUGIN_FILES + (
     '.gitignore', '.gitattributes', 'tools/ci-template.yml',
     'docs/images/policies.png', 'docs/images/statistics.png',
+    'docs/images/task-manager.png',
     'tools/build_release.py', 'tools/check.py',
     'tools/audit_registration_state.lua', 'tools/audit_rule_identity.lua', 'tools/audit_runtime_routes.lua',
     'tools/audit_endpoint_policy.lua',
@@ -35,6 +36,7 @@ SOURCE_FILES = PLUGIN_FILES + (
     'tests/test_endpoint_policy.py', 'tests/test_security_boundary.py', 'tests/test_endpoint_policy_ui.js',
     'tests/test_runtime_status.py', 'tests/test_console_ui.js',
     'tests/test_integration_repair.py', 'tests/test_integration_runtime.py', 'tests/test_integration_probe.py',
+    'tests/test_task_manager.py', 'tests/test_task_manager_ui.js',
 )
 SECRET_PATTERNS = (
     r'(?m)^-----BEGIN (?:OPENSSH |RSA |EC )?PRIVATE KEY-----',
