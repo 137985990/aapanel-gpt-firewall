@@ -44,7 +44,8 @@ local function state_key(scope, ip, kind)
 end
 
 local function fixture(rules, extra_scopes)
-    local f = {files = {}, shared = {}, generic = {}, writes = 0, query = {}, post_args = {}}
+    local f = {files = {}, shared = {}, generic = {}, writes = 0, query = {}, post_args = {},
+        lock_files = {}, descriptors = {}, locked = {}, metadata = {}, next_fd = 10, next_inode = 1}
     local config = {
         open = false, log = false, reqfile_path = 'fixture-html',
         cc = {cycle = 60, endtime = 60, limit = 2, status = 403},
@@ -82,6 +83,11 @@ local function fixture(rules, extra_scopes)
         shared = {free_waf = dictionary(f.shared), free_waf_drop_ip = dictionary(f.generic)},
         re = {find = function(value, pattern) return string.find(value, pattern) end},
         unescape_uri = function(value) return value end,
+        md5 = function(value)
+            local hash = 5381
+            for i = 1, #value do hash = (hash * 33 + value:byte(i)) % 2147483647 end
+            return string.format('%032x', hash)
+        end,
         say = function(body) f.output[#f.output + 1] = body end,
         exit = function(status) f.exit_status = status; error(exit_marker, 0) end,
         req = {
@@ -92,17 +98,112 @@ local function fixture(rules, extra_scopes)
             read_body = function() end,
         },
     }
+    local lock_path = root .. 'rule/ip_black.json.lock'
+    local function assert_locked()
+        assert(f.locked[lock_path], 'blacklist IO must hold the transaction lock')
+    end
+    local function metadata(path)
+        if not f.metadata[path] then
+            f.metadata[path] = {dev=1,ino=f.next_inode,nlink=1,mode=32768+384,uid=1000,gid=1000}
+            f.next_inode = f.next_inode + 1
+        end
+        return f.metadata[path]
+    end
+    local ffi = {os = 'Linux', arch = 'x64', C = {}, cdef = function() end,
+        errno = function() return f.errno or 2 end,
+        new = function(kind, value) if kind=='struct gpt_fw_stat[1]' then return {[0]={}} end; return value end}
+    function ffi.C.open(path, flags, mode)
+        if flags == 655426 then
+            assert(path == lock_path and mode == 384, 'unexpected lock protocol')
+            f.lock_files[path] = f.lock_files[path] or {}
+        elseif flags == 657408 then
+            if not f.lock_files[path] and f.files[path] == nil then f.errno=2; return -1 end
+        else
+            assert(flags == 655553 and mode == 384 and path:match('%.tmp$'), 'unexpected temporary protocol')
+            assert_locked()
+            f.writes = f.writes + 1
+            if f.fail_write then return -1 end
+            if f.files[path] ~= nil then f.errno=17; return -1 end
+            f.files[path] = ''
+        end
+        local fd = f.next_fd
+        f.next_fd = fd + 1
+        metadata(path)
+        f.descriptors[fd] = path
+        return fd
+    end
+    function ffi.C.gpt_fw_fstat(fd, buffer)
+        for key,value in pairs(metadata(assert(f.descriptors[fd]))) do buffer[0][key]=value end
+        return 0
+    end
+    function ffi.C.gpt_fw_fchmod(fd, mode) metadata(assert(f.descriptors[fd])).mode=32768+mode; return 0 end
+    function ffi.C.gpt_fw_fchown(fd, uid, gid)
+        local row=metadata(assert(f.descriptors[fd])); row.uid,row.gid=uid,gid; return 0
+    end
+    local function stage_result(stage)
+        if f.fail_stage ~= stage then return 0 end
+        if f.fail_result == false then return -1 end
+        error('fixture ' .. stage .. ' failure')
+    end
+    function ffi.C.gpt_fw_write(fd, body, size)
+        local path=assert(f.descriptors[fd])
+        f.files[path]=f.fail_stage=='write' and body:sub(1,1) or body
+        return stage_result('write') == 0 and size or -1
+    end
+    function ffi.C.gpt_fw_fsync(fd) return stage_result('flush') end
+    function ffi.C.flock(fd, operation)
+        assert(operation == 6, 'request locks must be nonblocking')
+        local path = assert(f.descriptors[fd])
+        if f.lock_busy or f.locked[path] then return -1 end
+        f.locked[path] = fd
+        return 0
+    end
+    function ffi.C.close(fd)
+        local path = assert(f.descriptors[fd])
+        if f.locked[path] == fd then f.locked[path] = nil end
+        f.descriptors[fd] = nil
+        if path:match('%.tmp$') then
+            f.close_attempts = (f.close_attempts or 0) + 1
+            return stage_result('close')
+        end
+        return 0
+    end
+    local function assert_temporary(path)
+        local prefix = root .. 'rule/ip_black.json.'
+        assert(path:sub(1, #prefix) == prefix and path:sub(-4) == '.tmp', 'unexpected temporary path: ' .. path)
+    end
     local env = setmetatable({
-        ngx = ngx, os = {time = function() return now end},
-        require = function(name) assert(name == 'cjson'); return json end,
+        ngx = ngx, os = {time = function() return now end,
+            rename = function(temporary, path)
+                assert_temporary(temporary); assert_locked()
+                assert(path == root .. 'rule/ip_black.json' and f.files[temporary] ~= nil)
+                if f.fail_rename then return nil, 'fixture rename failure' end
+                f.files[path], f.files[temporary] = f.files[temporary], nil
+                f.metadata[path], f.metadata[temporary] = f.metadata[temporary], nil
+                f.renames = (f.renames or 0) + 1
+                return true
+            end,
+            remove = function(path)
+                assert_temporary(path); assert_locked()
+                f.files[path] = nil
+                f.metadata[path] = nil
+                return true
+            end},
+        require = function(name)
+            if name == 'cjson' then return json end
+            assert(name == 'ffi', 'unexpected module: ' .. name)
+            return ffi
+        end,
         io = {open = function(path, mode)
-            if mode == 'rb' and path == root .. 'repeat_bans.json' then return nil,'missing',2 end
-            if mode == 'r' then
-                if f.files[path] == nil then return nil end
-                return {read = function() return f.files[path] end, close = function() end}
+            if mode == 'r' or mode == 'rb' then
+                if f.loaded and path == root .. 'rule/ip_black.json' then assert_locked() end
+                if f.files[path] == nil then return nil, 'missing', 2 end
+                local body = f.files[path]
+                return {read = function() return body end, close = function() return true end}
             end
             if mode == 'ab' and path == root .. 'drop_ip.log' then return nil end
-            assert(mode == 'w' and path == root .. 'rule/ip_black.json', 'unexpected write: ' .. path)
+            assert(mode == 'wb', 'unexpected write mode: ' .. tostring(mode))
+            assert_temporary(path); assert_locked()
             f.writes = f.writes + 1
             if f.fail_write then return nil end
             f.files[path] = ''
@@ -129,6 +230,7 @@ local function fixture(rules, extra_scopes)
     local chunk = assert(loadstring(source, '@init.lua'))
     setfenv(chunk, env)
     chunk()
+    f.loaded = true
     f.env, f.ngx = env, ngx
     function f:request(path, query)
         self.output, self.exit_status, self.query = {}, nil, query or {}
@@ -138,6 +240,7 @@ local function fixture(rules, extra_scopes)
         assert(self.exit_status == 200 and ngx.status == 200)
         assert(ngx.header.content_type == 'application/json;')
         assert(#self.output == 1, 'route must emit exactly one JSON document')
+        assert(next(self.descriptors) == nil and next(self.locked) == nil, 'route leaked a lock descriptor')
         local body = self.output[1]
         return json.decode(body), body
     end
@@ -195,6 +298,7 @@ function tests.clean_route_writes_real_json_and_refreshes_lexical_cache()
     f.shared['registration_guard:count:fixture:scope:verify:192.0.2.11'] = 99
     local decoded = f:request('/clean_btwaf_drop_ip')
     assert(decoded.status == true and f.writes == 1)
+    assert(f.renames == 1 and f.lock_files[root .. 'rule/ip_black.json.lock'], 'publish must keep the fixed lock inode')
     assert(f.files[root .. 'rule/ip_black.json'] == '[]', 'persistent empty array must stay an array')
     assert(f.shared['registration_guard:count:fixture:scope:verify:192.0.2.11'] == nil)
     local _, body = f:request('/get_btwaf_drop_ip')
@@ -217,6 +321,37 @@ function tests.real_write_open_failure_keeps_bans_and_cached_rules()
     assert(f:request('/clean_btwaf_drop_ip').status == false)
     assert(f.shared['registration_guard:ban:fixture:scope:192.0.2.11'] == 1)
     assert(#f:request('/get_btwaf_drop_ip') == 2)
+end
+
+function tests.blacklist_lock_contention_cannot_clear_bans_or_publish()
+    local f = fixture({exact_rule(12)})
+    local path = root .. 'rule/ip_black.json'
+    local original = f.files[path]
+    f.generic['192.0.2.10'] = 7
+    f.lock_busy = true
+    assert(f:request('/clean_btwaf_drop_ip').status == false)
+    assert(f.files[path] == original and f.writes == 0)
+    assert(f.generic['192.0.2.10'] == 7 and #f:request('/get_btwaf_drop_ip') == 2)
+    local inode = f.lock_files[path .. '.lock']
+    f.lock_busy = false
+    assert(f:request('/clean_btwaf_drop_ip').status == true)
+    assert(f.lock_files[path .. '.lock'] == inode, 'lock inode was replaced after contention')
+end
+
+function tests.atomic_rename_failure_keeps_original_json_and_runtime_bans()
+    local f = fixture({exact_rule(12)})
+    local path = root .. 'rule/ip_black.json'
+    local original = f.files[path]
+    f.generic['192.0.2.10'] = 7
+    f.fail_rename = true
+    assert(f:request('/clean_btwaf_drop_ip').status == false)
+    assert(f.files[path] == original and f.renames == nil)
+    assert(f.generic['192.0.2.10'] == 7 and #f:request('/get_btwaf_drop_ip') == 2)
+    for name in pairs(f.files) do assert(name:sub(-4) ~= '.tmp', 'failed publish leaked a temporary file') end
+    local inode = f.lock_files[path .. '.lock']
+    f.fail_rename = false
+    assert(f:request('/clean_btwaf_drop_ip').status == true)
+    assert(f.lock_files[path .. '.lock'] == inode)
 end
 
 function tests.loaded_post_rules_and_site_exceptions_keep_original_indices()
@@ -381,9 +516,13 @@ function tests.real_write_flush_close_failures_cannot_report_clean_success()
             f.generic['192.0.2.10'] = 7
             f.fail_stage = stage
             if returns_false then f.fail_result = false end
+            local path = root .. 'rule/ip_black.json'
+            local original = f.files[path]
             local response = f:request('/clean_btwaf_drop_ip')
             assert(response.status == false, stage .. ' failure incorrectly reported success')
             assert(f.close_attempts == 1, 'write failure must still close its file')
+            assert(f.files[path] == original, 'failed staged write changed committed JSON')
+            for name in pairs(f.files) do assert(name:sub(-4) ~= '.tmp', 'failed write leaked a temporary file') end
             assert(f.shared['registration_guard:ban:fixture:scope:192.0.2.11'] == 1)
             assert(f.shared['registration_guard:count:fixture:scope:verify:192.0.2.11'] == 9)
             assert(f.generic['192.0.2.10'] == 7)

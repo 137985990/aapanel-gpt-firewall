@@ -31,6 +31,35 @@ class PanelPerformanceTest(unittest.TestCase):
         self.public = types.SimpleNamespace()
         self.backend = load_backend(self.public)
 
+    def test_migrated_totals_are_used_by_read_and_cleanup(self):
+        from ban_store import BanStore
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / '.statistics').mkdir()
+            legacy = json.dumps({'total': 1, 'rules': {}, 'sites': {}})
+            (root / 'total.json').write_text(legacy, encoding='utf-8')
+            path = root / '.statistics/total.json'
+            path.write_text(json.dumps({'total': 19, 'rules': {}, 'sites': {'fixture.example': {}}}), encoding='utf-8')
+            self.backend._free_waf_main__path = str(root) + os.sep
+            self.backend._free_waf_main__ban_store_module = lambda: types.SimpleNamespace(BanStore=BanStore)
+            self.public.readFile = lambda name: Path(name).read_text(encoding='utf-8')
+            self.public.writeFile = lambda name, text: Path(name).write_text(text, encoding='utf-8')
+            self.assertEqual(self.backend.get_total(None)['total'], 19)
+            self.backend._free_waf_main__remove_log_file('fixture.example')
+            self.assertEqual(json.loads(path.read_text())['sites'], {})
+            self.assertEqual((root / 'total.json').read_text(), legacy)
+            self.assertTrue(path.with_name('total.json.lock').exists())
+
+    def test_corrupt_migrated_totals_do_not_fall_back_to_legacy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / '.statistics').mkdir()
+            (root / 'total.json').write_text(json.dumps({'total': 99, 'rules': {}, 'sites': {}}))
+            (root / '.statistics/total.json').write_text('{broken')
+            self.backend._free_waf_main__path = str(root) + os.sep
+            self.public.readFile = lambda name: Path(name).read_text(encoding='utf-8')
+            self.assertNotEqual(self.backend.get_total(None)['total'], 99)
+
     def test_home_read_does_not_install_write_or_query_domains(self):
         config = {"open": True, "start_time": 0}
         totals = {"total": 10, "rules": {"args": 2, "url": 3}, "sites": {}}
@@ -165,7 +194,7 @@ class PanelPerformanceTest(unittest.TestCase):
         old = (now - datetime.timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')
         latest = now.strftime('%Y-%m-%d %H:%M:%S')
         virtual_root = '/www/wwwlogs/free_waf_log/'
-        original_open, original_exists, original_listdir = open, os.path.exists, os.listdir
+        original_open, original_exists, original_listdir, original_scandir = open, os.path.exists, os.listdir, os.scandir
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / ('example_' + now.strftime('%Y-%m-%d') + '.log')
             entries = [[old, '192.0.2.1', 'GET', '/old', 'test', 'args']] * 30
@@ -178,7 +207,8 @@ class PanelPerformanceTest(unittest.TestCase):
 
             with patch('builtins.open', side_effect=lambda path, *a, **kw: original_open(redirect(path), *a, **kw)), \
                  patch.object(os.path, 'exists', side_effect=lambda path: original_exists(redirect(path))), \
-                 patch.object(os, 'listdir', side_effect=lambda path: original_listdir(redirect(path))):
+                 patch.object(os, 'listdir', side_effect=lambda path: original_listdir(redirect(path))), \
+                 patch.object(os, 'scandir', side_effect=lambda path: original_scandir(redirect(path))):
                 result = self.backend.get_overview_report(None)
         self.assertEqual(len(result['dynamics']), 20)
         self.assertEqual(result['dynamics'][0]['uri'], '/newest')

@@ -55,8 +55,22 @@ local function fixture(overrides)
     env.request_uri, env.uri, env.uri_request_args = '/login', '/login', {}
     env.json, env.config, env.site_config = json, config, sites
     env.write_log = function() error('legacy retry/attack counter changed') end
-    env.read_file=function() return {} end
-    env.write_file=function() return true end
+    env.read_file=function(name)
+        assert(name=='ip_black' and f.lock_owner, 'read must hold the blacklist transaction')
+        return {}
+    end
+    env.repeat_ban_lock=function(path)
+        assert(path=='fixture/ip_black.json.lock')
+        if f.lock_busy then return nil end
+        assert(not f.lock_owner)
+        f.lock_owner={fd=17}; return f.lock_owner
+    end
+    env.repeat_ban_unlock=function(owner)
+        assert(owner==f.lock_owner); f.lock_owner=nil
+    end
+    env.runtime_atomic_write=function()
+        error('unchanged empty blacklist must not be published')
+    end
     env.jpath='fixture/'
     env.write_drop_ip = function() f.drops[#f.drops + 1] = true end
     env.write_drop_ip_entry = function(...) f.drops[#f.drops + 1] = {...}; return true end
@@ -75,7 +89,7 @@ local function fixture(overrides)
         'endpoint_record_event', 'endpoint_limit_response', 'endpoint_policy_guard',
         'clear_endpoint_state', 'repeat_ban_state_identity', 'cc_counter_key', 'cc', 'cc2', 'security_verification', 'registration_guard_scopes',
         'registration_state_ip', 'registration_state_ambiguous', 'clear_registration_state',
-        'get_return_state', 'encode_json_array', 'get_btwaf_drop_ip', 'clean_btwaf_drop_ip'}
+        'get_return_state', 'encode_json_array', 'get_btwaf_drop_ip', 'with_ip_black_lock', 'clean_btwaf_drop_ip'}
     for _,name in ipairs(helpers) do
         local start = source:find('function ' .. name .. '%(')
         assert(start, 'missing production helper: ' .. name)
@@ -190,6 +204,18 @@ check('bulk unban removes hidden endpoint revisions and counters', function()
         assert(not f:request())
         assert(#f.env.get_btwaf_drop_ip()==0)
     end
+end)
+check('bulk unban lock contention preserves endpoint bans and counters', function()
+    local f=fixture({action='ban'}); for i=1,3 do f:request() end
+    local shared, before=f.ngx.shared.free_waf,{}
+    for _,key in ipairs(shared:get_keys()) do before[key]=shared:get(key) end
+    f.lock_busy=true
+    assert(f.env.clean_btwaf_drop_ip().status==false)
+    for key,value in pairs(before) do assert(shared:get(key)==value, 'lock failure changed endpoint state') end
+    assert(f:request()==429 and f.lock_owner==nil)
+    f.lock_busy=false
+    assert(f.env.clean_btwaf_drop_ip().status==true)
+    assert(not f:request() and f.lock_owner==nil)
 end)
 check('enhanced cc aggregates fingerprint across clients but not sites or paths', function()
     local f=fixture(); f.sites['example.org'].cc={increase=true}; f.sites['other.example'].cc={increase=true}

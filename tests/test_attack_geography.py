@@ -19,11 +19,14 @@ class AttackGeographyTest(unittest.TestCase):
             M=Mock(side_effect=AssertionError("overview must not query domain tables")),
         )
         self.backend = load_backend(self.public)
+        self.backend._free_waf_main__PATH = str(Path(__file__).resolve().parents[1])
         self.backend.get_waf_drop_ip = Mock(return_value=[])
         self.today = datetime.date.today().isoformat()
 
-    def report(self, ips, records=None, database_error=None, logs=None, missing_logs=False):
+    def report(self, ips, records=None, database_error=None, logs=None, missing_logs=False, active_ips=None):
         records = records or {}
+        if active_ips is not None:
+            self.backend.get_waf_drop_ip.return_value = active_ips
 
         def lookup(ip):
             record = records.get(ip)
@@ -36,7 +39,7 @@ class AttackGeographyTest(unittest.TestCase):
         maxmind = types.SimpleNamespace(open_database=self.open_database)
         virtual_logs = "/www/wwwlogs/free_waf_log/"
         virtual_drop = "/www/server/free_waf/drop_ip.log"
-        original_open, original_exists, original_listdir = open, os.path.exists, os.listdir
+        original_open, original_exists, original_listdir, original_scandir = open, os.path.exists, os.listdir, os.scandir
         opened_modes = []
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -70,7 +73,8 @@ class AttackGeographyTest(unittest.TestCase):
             with patch.dict(sys.modules, {"maxminddb": maxmind}), \
                  patch("builtins.open", side_effect=read_only_open), \
                  patch.object(os.path, "exists", side_effect=lambda path: original_exists(redirect(path))), \
-                 patch.object(os, "listdir", side_effect=lambda path: original_listdir(redirect(path))):
+                 patch.object(os, "listdir", side_effect=lambda path: original_listdir(redirect(path))), \
+                 patch.object(os, "scandir", side_effect=lambda path: original_scandir(redirect(path))):
                 result = self.backend.get_overview_report(None)
 
             self.assertEqual(before, {path.name: path.read_bytes() for path in log_root.glob("*")})
@@ -270,7 +274,7 @@ class AttackGeographyTest(unittest.TestCase):
         })
         self.assertEqual(result["attack_geography"]["located"], 1)
         self.assertEqual(result["attack_geography"]["unlocated"], 4)
-        self.assertEqual(self.reader.get.call_args_list, [call("192.0.2.1"), call("192.0.2.2")])
+        self.assertCountEqual(self.reader.get.call_args_list, [call("192.0.2.1"), call("192.0.2.2")])
 
     def test_malformed_records_are_unlocated_without_losing_counts(self):
         records = {
@@ -306,6 +310,45 @@ class AttackGeographyTest(unittest.TestCase):
         self.assertEqual(result["attack_geography"]["countries"], [])
         self.assertEqual(result["attack_geography"]["total"], 0)
         self.reader.get.assert_not_called()
+
+    def test_blocked_ip_locations_reuse_map_lookups_and_resolve_only_selected_extra_ips(self):
+        result = self.report(['8.8.8.8'] * 2, records={
+            '8.8.8.8': {'country': {'iso_code': 'US', 'names': {'zh-CN': '美国', 'en': 'United States'}},
+                        'city': {'names': {'zh-CN': '山景城'}}},
+            '1.1.1.1': {'country': {'en_short_code': 'CN', 'country': '中国', 'province': '广东'}},
+        }, active_ips=['8.8.8.8', '1.1.1.1', '10.0.0.1', 'not-an-ip'])
+        locations = {row['ip']: row for row in result['blocked_ips']}
+        self.assertEqual(locations['8.8.8.8']['location'], '美国 山景城')
+        self.assertEqual(locations['1.1.1.1']['location'], '中国 广东')
+        self.assertEqual(locations['10.0.0.1']['location_status'], 'private')
+        self.assertEqual(locations['not-an-ip']['location'], '未知')
+        self.assertEqual(self.reader.get.call_args_list, [call('8.8.8.8'), call('1.1.1.1')])
+
+    def test_blocked_ips_survive_missing_database_with_explicit_unknown(self):
+        result = self.report([], database_error=OSError('missing'), active_ips=['8.8.8.8', '192.168.1.1'])
+        rows = {row['ip']: row for row in result['blocked_ips']}
+        self.assertEqual(rows['8.8.8.8']['location'], '未知')
+        self.assertEqual(rows['8.8.8.8']['location_status'], 'unavailable')
+        self.assertEqual(rows['192.168.1.1']['location_status'], 'private')
+
+    def test_only_ten_visible_blocked_ips_are_looked_up(self):
+        ips = ['8.8.8.%d' % n for n in range(1, 40)]
+        result = self.report([], active_ips=ips)
+        self.assertEqual(len(result['blocked_ips']), 10)
+        self.assertEqual(self.reader.get.call_count, 10)
+
+    def test_cached_blocked_ip_keeps_database_unavailable_status(self):
+        result = self.report(['8.8.8.8'], database_error=OSError('missing'), active_ips=['8.8.8.8'])
+        self.assertEqual(result['blocked_ips'][0]['location_status'], 'unavailable')
+        self.assertEqual(result['blocked_ips'][0]['location'], '未知')
+
+    def test_cached_blocked_ip_keeps_lookup_failure_without_retry_or_error_disclosure(self):
+        result = self.report(['8.8.8.8'] * 3, records={'8.8.8.8': ValueError('private path')},
+                             active_ips=['8.8.8.8'])
+        self.assertEqual(result['blocked_ips'][0]['location_status'], 'lookup_error')
+        self.assertEqual(result['blocked_ips'][0]['location'], '未知')
+        self.reader.get.assert_called_once_with('8.8.8.8')
+        self.assertNotIn('private path', json.dumps(result))
 
     def test_missing_log_directory_reports_zero_counts(self):
         result = self.report([], logs={}, missing_logs=True)

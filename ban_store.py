@@ -3,8 +3,26 @@ import ipaddress
 import os
 import re
 import stat
+import tempfile
+import threading
 import time
+from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+    import msvcrt
+
+
+def _locked_rules(method):
+    @wraps(method)
+    def locked(self, *args, **kwargs):
+        with self._transaction():
+            return method(self, *args, **kwargs)
+    return locked
 
 
 class BanStore:
@@ -12,6 +30,44 @@ class BanStore:
         self.rule_path = Path(rule_path)
         self.meta_path = Path(meta_path) if meta_path else None
         self.now_fn = now_fn or (lambda: int(time.time()))
+        self._lock = threading.RLock()
+        self._lock_depth = 0
+
+    @contextmanager
+    def _transaction(self):
+        with self._lock:
+            if self._lock_depth:
+                yield
+                return
+            # Lua uses the same permanent inode and Linux flock protocol.
+            path = self.rule_path.with_name(self.rule_path.name + '.lock')
+            descriptor = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0)
+                                 | getattr(os, 'O_CLOEXEC', 0), 0o600)
+            try:
+                locked = os.fstat(descriptor)
+                named = path.lstat()
+                if (not stat.S_ISREG(locked.st_mode) or locked.st_nlink != 1
+                        or (locked.st_dev, locked.st_ino) != (named.st_dev, named.st_ino)):
+                    raise OSError('unsafe IP blacklist lock inode')
+                if fcntl is not None:
+                    owner = self.rule_path.stat() if self.rule_path.exists() else self.rule_path.parent.stat()
+                    # Grant lock access to the same group/other writers, never to readers alone.
+                    mode = 0o600 | (0o060 if owner.st_mode & 0o020 else 0) | (0o006 if owner.st_mode & 0o002 else 0)
+                    if (locked.st_uid, locked.st_gid) != (owner.st_uid, owner.st_gid):
+                        os.fchown(descriptor, owner.st_uid, owner.st_gid)
+                    if stat.S_IMODE(os.fstat(descriptor).st_mode) != mode:
+                        os.fchmod(descriptor, mode)
+                if fcntl is not None:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX)
+                else:
+                    msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+                self._lock_depth = 1
+                try:
+                    yield
+                finally:
+                    self._lock_depth = 0
+            finally:
+                os.close(descriptor)
 
     def load_rules(self):
         if not self.rule_path.exists():
@@ -19,10 +75,41 @@ class BanStore:
         body = self.rule_path.read_text()
         if not body.strip():
             return []
-        return json.loads(body)
+        rules = json.loads(body)
+        if not isinstance(rules, list):
+            raise ValueError('invalid IP blacklist')
+        return rules
 
+    @_locked_rules
     def save_rules(self, rules):
-        self.rule_path.write_text(json.dumps(rules, separators=(",", ":")))
+        body = json.dumps(rules, separators=(",", ":")).encode('utf-8')
+        previous = self.rule_path.stat() if self.rule_path.exists() else None
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=self.rule_path.parent, prefix='.ip-black-', delete=False) as stream:
+                temporary = stream.name
+                if hasattr(os, 'fchown') and os.geteuid() == 0:
+                    owner = previous or self.rule_path.parent.stat()
+                    os.fchown(stream.fileno(), owner.st_uid, owner.st_gid)
+                os.chmod(temporary, stat.S_IMODE(previous.st_mode) if previous else 0o600)
+                stream.write(body)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self.rule_path)
+            temporary = None
+            if self.rule_path.read_bytes() != body:
+                raise OSError('IP blacklist write verification failed')
+        finally:
+            if temporary is not None:
+                os.unlink(temporary)
+
+    @_locked_rules
+    def mutate_rules(self, mutator):
+        rules = mutator(self.load_rules())
+        if not isinstance(rules, list):
+            raise ValueError('IP blacklist mutator must return a list')
+        self.save_rules(rules)
+        return rules
 
     def _ip_to_arr(self, ip):
         parts = ip.split(".")
@@ -39,6 +126,7 @@ class BanStore:
     def _is_expired(self, rule, now):
         return len(rule) >= 3 and int(rule[2]) > 0 and int(rule[2]) <= now
 
+    @_locked_rules
     def prune_and_migrate(self, default_seconds=28800):
         now = int(self.now_fn())
         changed = False
@@ -65,6 +153,7 @@ class BanStore:
                 result.append(".".join(map(str, rule[0])))
         return result
 
+    @_locked_rules
     def add_temp_ban(self, ip, seconds, reason="manual_temp"):
         ipn = self._ip_to_arr(ip)
         now = int(self.now_fn())
@@ -79,6 +168,7 @@ class BanStore:
         self.save_rules(rules)
         return True
 
+    @_locked_rules
     def remove_exact_ip(self, ip):
         ipn = self._ip_to_arr(ip)
         removed = False
@@ -92,6 +182,7 @@ class BanStore:
             self.save_rules(new_rules)
         return removed
 
+    @_locked_rules
     def clear_exact_ips(self):
         removed = 0
         new_rules = []

@@ -127,6 +127,10 @@ class UpdateServiceTest(unittest.TestCase):
             'status': 'success', 'stage': 'complete', 'operation': 'install',
             'version': '0.1.1', 'plugin_name': 'free_waf', 'waf_active': True,
             'runtime_changed': True,
+            'task_id': json.loads((plugin / '.gpt-firewall-install.lock/owner.json').read_text())['task_id'],
+            'runtime_write': dict(dev=(self.runtime / 'init.lua').stat().st_dev,
+                                  ino=(self.runtime / 'init.lua').stat().st_ino,
+                                  sha256=hashlib.sha256((self.runtime / 'init.lua').read_bytes()).hexdigest()),
         }).encode())
         return 0
 
@@ -159,7 +163,7 @@ class UpdateServiceTest(unittest.TestCase):
     def test_version_and_bridge_contract_includes_published_prereleases(self):
         result = self.service.check()
         self.assertTrue(result['status'], result)
-        self.assertEqual(updater.PLUGIN_VERSION, '0.1.7')
+        self.assertEqual(updater.PLUGIN_VERSION, '0.1.8')
         self.assertEqual(result['current_version'], '0.1')
         self.assertEqual(result['latest_version'], '0.1.1')
         self.assertEqual(result['tag'], 'v0.1.1')
@@ -318,7 +322,7 @@ class UpdateServiceTest(unittest.TestCase):
         self.assertEqual(job['state'], 'failed')
         self.assertEqual(job['rollback']['state'], 'restored')
 
-    def test_stale_inactive_installer_report_cannot_suppress_restore_reload(self):
+    def test_stale_installer_report_cannot_authorize_runtime_rollback(self):
         self.write(self.plugin / 'install-status.json', json.dumps({
             'status': 'success', 'version': '0.1', 'waf_active': False, 'runtime_changed': False,
         }).encode())
@@ -330,8 +334,13 @@ class UpdateServiceTest(unittest.TestCase):
         with mock.patch.object(self.service, '_restore_nginx') as restore:
             job = self.run_job()
         self.assertEqual(job['state'], 'failed')
-        self.assertEqual(self.snapshot(), before)
-        restore.assert_called_once()
+        self.assertEqual((self.runtime / 'init.lua').read_bytes(), b'new runtime\n')
+        self.assertIn('runtime', job['rollback']['conflicts'])
+        after = self.snapshot()
+        runtime = str((self.runtime / 'init.lua').relative_to(self.root))
+        self.assertEqual({k: v for k, v in after.items() if k != runtime},
+                         {k: v for k, v in before.items() if k != runtime})
+        restore.assert_not_called()
 
     def test_concurrent_unapplied_code_and_runtime_edits_are_preserved_without_installer(self):
         write = self.service._atomic_write
@@ -522,7 +531,8 @@ class UpdateServiceTest(unittest.TestCase):
         def failing(plugin):
             report = dict(operation='install', version='0.1.1', plugin_name='free_waf',
                           status='failed', stage='preflight', waf_active=False,
-                          runtime_changed=False, diagnostic_code='missing_resource',
+                          runtime_changed=False, task_id=self.service._install_owner['task_id'],
+                          diagnostic_code='missing_resource',
                           diagnostic_resource='site.json', message='SECRET raw installer output')
             self.write(plugin / 'install-status.json', json.dumps(report).encode())
             return 1
@@ -814,7 +824,9 @@ class UpdateServiceTest(unittest.TestCase):
         self.assertEqual(len(self.install_calls), 1)
 
     def test_production_installer_uses_only_fixed_bash_argv(self):
-        with mock.patch.object(self.service, '_production'), mock.patch.object(self.service, '_command', return_value=(0, b'')) as command:
+        with self.service._install_lock('a' * 32), mock.patch.object(self.service, '_test_mode', False), \
+                mock.patch.object(self.service, '_production'), \
+                mock.patch.object(self.service, '_command', return_value=(0, b'')) as command:
             self.assertEqual(self.service._run_installer(self.plugin), 0)
         self.assertEqual(command.call_args.args[0], ['/bin/bash', str(self.plugin / 'install.sh'), 'install'])
 

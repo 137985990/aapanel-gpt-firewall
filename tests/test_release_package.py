@@ -19,7 +19,7 @@ class ReleasePackageTest(unittest.TestCase):
         spec.loader.exec_module(self.builder)
 
     def test_v011_packages_local_services_and_regressions(self):
-        self.assertEqual(self.builder.VERSION, '0.1.7')
+        self.assertEqual(self.builder.VERSION, '0.1.8')
         for name in ('website_statistics.py', 'update_service.py', 'docs/UPDATES.md'):
             self.assertIn(name, self.builder.PLUGIN_FILES)
         for name in ('tests/test_website_statistics.py', 'tests/test_update_service.py',
@@ -38,6 +38,21 @@ class ReleasePackageTest(unittest.TestCase):
             service = updater.UpdateService(Path(directory) / 'panel/plugin/free_waf', test_mode=True)
             payloads = service._payloads(Path(result['archive']).read_bytes(), self.builder.VERSION)
             self.assertEqual(set(payloads), set(self.builder.PLUGIN_FILES))
+
+    def test_agent_entrypoint_ships_in_source_without_expanding_upgrade_manifest(self):
+        self.assertIn('AGENTS.md', self.builder.SOURCE_FILES)
+        self.assertNotIn('AGENTS.md', self.builder.PLUGIN_FILES)
+        self.assertEqual(len(self.builder.PLUGIN_FILES), 21)
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.builder.build(ROOT, Path(directory) / 'output')
+            entrypoint = (Path(result['source']) / 'AGENTS.md').read_text(encoding='utf-8')
+            self.assertIn('docs/UPGRADE.md#agent-安装升级清单', entrypoint)
+            with zipfile.ZipFile(result['archive']) as archive:
+                guide = archive.read('free_waf/docs/UPGRADE.md').decode('utf-8')
+                readme = archive.read('free_waf/README.md').decode('utf-8')
+                self.assertIn('## Agent 安装升级清单', guide)
+                self.assertIn('docs/UPGRADE.md#agent-安装升级清单', readme)
+                self.assertNotIn('free_waf/AGENTS.md', archive.namelist())
 
     def test_release_excludes_private_docs_and_unknown_files(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -62,7 +77,7 @@ class ReleasePackageTest(unittest.TestCase):
                 self.assertEqual(set(names), {'free_waf/' + name for name in self.builder.PLUGIN_FILES})
                 self.assertTrue(all('..' not in name.split('/') and not name.startswith('/') for name in names))
                 metadata = json.loads(archive.read('free_waf/info.json'))
-                self.assertEqual(metadata['versions'], '0.1.7')
+                self.assertEqual(metadata['versions'], '0.1.8')
                 self.assertIn('install.sh', ' '.join(names))
             self.assertTrue((output / 'SHA256SUMS').is_file())
 

@@ -57,9 +57,24 @@ local function fixture()
             ban_seconds = 60,
         },
         jpath = 'fixture/',
-        read_file = function(name) assert(name == 'ip_black'); return f.rules end,
-        write_file = function(path, body)
+        read_file = function(name)
+            assert(name == 'ip_black' and f.lock_owner, 'read must hold the blacklist transaction')
+            return f.rules
+        end,
+        repeat_ban_lock = function(path)
+            assert(path == 'fixture/ip_black.json.lock')
+            if f.lock_busy then return nil end
+            assert(not f.lock_owner, 'nested blacklist lock')
+            f.lock_owner = {fd = 17}
+            return f.lock_owner
+        end,
+        repeat_ban_unlock = function(owner)
+            assert(owner == f.lock_owner, 'wrong lock owner')
+            f.lock_owner = nil
+        end,
+        runtime_atomic_write = function(path, body, owner)
             assert(path == 'fixture/ip_black.json')
+            assert(owner and owner == f.lock_owner, 'publish must hold the blacklist transaction')
             f.writes = f.writes + 1
             f.written_rules = body
             if f.write_failure then return f.write_result end
@@ -85,7 +100,7 @@ local function fixture()
         'is_runtime_ban_ipv4', 'is_runtime_ban_ip', 'registration_guard_state_key',
         'endpoint_normalize_ip', 'endpoint_state_ip', 'clear_endpoint_state', 'repeat_ban_state_identity',
         'registration_guard_scopes', 'registration_state_ip', 'registration_state_ambiguous', 'clear_registration_state',
-        'get_btwaf_drop_ip', 'remove_btwaf_drop_ip', 'clean_btwaf_drop_ip',
+        'get_btwaf_drop_ip', 'remove_btwaf_drop_ip', 'with_ip_black_lock', 'clean_btwaf_drop_ip',
         'registration_guard_path_matches', 'registration_guard',
     }) do
         local body = source:match('function ' .. name .. '%b()%s*.-\nend')
@@ -249,6 +264,19 @@ function tests.clean_without_persistent_changes_skips_write()
     assert(f.generic['192.0.2.10'] == nil)
 end
 
+function tests.clean_lock_busy_preserves_all_state()
+    local f = fixture()
+    f.rules[1] = exact_rule(10, now + 1)
+    f.generic['192.0.2.10'] = 7
+    local ban = 'registration_guard:ban:fixture:192.0.2.10'
+    f.shared[ban] = 1
+    f.lock_busy = true
+    assert(f.env.clean_btwaf_drop_ip().status == false)
+    assert(f.writes == 0 and f.env.ip_black_rules == f.rules)
+    assert(f.generic['192.0.2.10'] == 7 and f.shared[ban] == 1)
+    assert(f.lock_owner == nil)
+end
+
 function tests.clean_refreshes_cache_after_backend_removed_persistent_rules()
     local f = fixture()
     f.env.ip_black_rules = {exact_rule(10, now + 1)}
@@ -265,6 +293,7 @@ local function write_failure(result)
     f.write_failure, f.write_result = true, result
     assert(f.env.clean_btwaf_drop_ip().status == false, 'persistence failure must not report success')
     assert(f.writes == 1)
+    assert(f.lock_owner == nil, 'failed write leaked the transaction lock')
     assert(f.env.ip_black_rules == f.rules, 'failed write replaced cached rules')
     assert(f.generic['192.0.2.10'] == 7, 'failed write removed generic ban')
     assert(f.shared['registration_guard:ban:fixture:192.0.2.10'] == 1, 'failed write removed registration ban')

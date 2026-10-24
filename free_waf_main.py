@@ -13,7 +13,7 @@ PLUGIN_PATH = '/www/server/panel/plugin/free_waf/'
 if PLUGIN_PATH not in sys.path:
     sys.path.insert(0, PLUGIN_PATH)
 import report_store
-if getattr(report_store, 'REPORT_STORE_VERSION', 0) != 2:
+if getattr(report_store, 'REPORT_STORE_VERSION', 0) != 3:
     # The panel reloads the plugin entry point but may retain imported modules.
     import importlib
     report_store = importlib.reload(report_store)
@@ -60,6 +60,10 @@ BROAD_UA_TOKENS = [
 ]
 
 class free_waf_main:
+    LEGACY_LOG_MAX_LINES = 20000
+    LEGACY_LOG_MAX_BYTES = 8 * 1024 * 1024
+    LEGACY_LOG_MAX_FILES = 64
+    LEGACY_LOG_MAX_SECONDS = 1.5
     SCAN_MAX_DEPTH = 16
     SCAN_MAX_FILES = 1000
     SCAN_MAX_ENTRIES = 10000
@@ -118,13 +122,13 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         module = sys.modules.get(key)
         if (module is None or getattr(module, '__file__', None) != path
                 or getattr(module, '_source_signature', None) != signature
-                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.7'):
+                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.8'):
             spec = importlib.util.spec_from_file_location(key, path)
             module = importlib.util.module_from_spec(spec)
             # Read source explicitly: same-second upgrades must not reuse stale bytecode.
             source = spec.loader.get_source(key)
             exec(compile(source, path, 'exec', dont_inherit=True), module.__dict__)
-            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.7':
+            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.8':
                 raise ValueError('服务版本不匹配，请重新打开插件')
             module._source_signature = signature
             sys.modules[key] = module
@@ -193,14 +197,40 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             ret[i['name']] = i['path']
         return public.returnMsg(True, ret)
 
+    def __policy_mutation(operation):
+        from functools import wraps
+
+        @wraps(operation)
+        def call(self, *args, **kwargs):
+            try:
+                with self.__endpoint_transaction():
+                    pending = self.__path + '.policy-recovery/pending.json'
+                    if os.path.lexists(pending):
+                        raise RuntimeError('上次策略发布尚待人工恢复')
+                    previous = getattr(self, '_free_waf_main__policy_reads', None)
+                    self.__policy_reads = {}
+                    try:
+                        return operation(self, *args, **kwargs)
+                    finally:
+                        self.__policy_reads = previous
+            except (OSError, ValueError, TypeError, IndexError, KeyError, RuntimeError):
+                if os.path.lexists(self.__path + '.policy-recovery/pending.json'):
+                    return public.returnMsg(False, '策略恢复未确认，已保留私有快照并阻止继续修改；请先人工核查，不要重复提交或删除恢复记录。')
+                return public.returnMsg(False, '配置未确认生效；请检查写入权限、并发修改和 Nginx 状态后重试，不要重复提交。')
+        return call
+
+    @__policy_mutation
     def import_data(self, get):
         name = get.s_Name;
+        self.__rule_name(name)
+        if name == 'ip_black':
+            return public.returnMsg(False, 'IP 黑名单请使用带封禁时长的专用入口，未导入')
         try:
             pdata = json.loads(get.pdata)
         except:
             return public.returnMsg(False, '数据格式不正确')
-        if not pdata: return public.returnMsg(False, '数据格式不正确')
-        iplist = self.__get_rule(name)
+        if type(pdata) is not list or not pdata: return public.returnMsg(False, '数据格式不正确')
+        iplist = self.__get_rule(name) or []
         for ips in pdata:
             if ips in iplist: continue;
             iplist.insert(0, ips)
@@ -219,6 +249,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             'rules': rules
         }
 
+    @__policy_mutation
     def import_rule_bundle(self, get):
         """Import editable rule sets only. This cannot create IP bans."""
         try:
@@ -228,15 +259,19 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         if not isinstance(pdata, dict) or not isinstance(pdata.get('rules'), dict):
             return public.returnMsg(False, '数据格式不正确')
 
-        imported = 0
+        changes = {}
+        if set(pdata['rules']) - set(RULE_BUNDLE_NAMES):
+            return public.returnMsg(False, '规则包包含不支持的规则文件')
         for name in RULE_BUNDLE_NAMES:
             if name not in pdata['rules']:
                 continue
             rule_data = pdata['rules'][name]
-            if not isinstance(rule_data, list):
-                return public.returnMsg(False, '规则数据不正确：' + name)
-            self.__write_rule(name, rule_data)
-            imported += 1
+            self.__validate_rule(name, rule_data)
+            changes[name] = rule_data
+        if not changes:
+            return public.returnMsg(False, '规则包没有可导入的规则')
+        self.__publish_rules(changes)
+        imported = len(changes)
 
         self.__write_log('导入可编辑 WAF 规则包，更新 ' + str(imported) + ' 个规则文件')
         return public.returnMsg(True, '规则包导入成功：' + str(imported) + ' 个规则文件')
@@ -787,7 +822,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         return m.hexdigest()
 
     def get_config(self,get):
-        config = json.loads(public.readFile(self.__path + 'config.json'));
+        config = json.loads(self.__read_policy(self.__path + 'config.json'));
         config.setdefault('from_data', True)
         config.setdefault('retry_cycle', 60)
         return config
@@ -996,6 +1031,8 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
 
     def __write_repeat_site_config(self, body, expected=None):
         import stat
+        if os.path.lexists(self.__path + '.policy-recovery/pending.json'):
+            raise RuntimeError('策略恢复未确认，停止站点配置写入')
         path = os.path.abspath(self.__path + 'site.json')
         info = self.__no_link_path(path)
         if not stat.S_ISREG(info.st_mode):
@@ -1117,7 +1154,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                 return public.returnMsg(False, '累计封禁策略保存或生效失败，自动恢复未确认，可能已部分处理；独立备份已保留，请检查配置和 Nginx 状态。')
             return public.returnMsg(False, '累计封禁策略保存或生效失败，已恢复原策略并核实重载；独立备份已保留。')
 
-    def __repeat_ban_store(self):
+    def __ban_store_module(self):
         import hashlib
         import importlib.util
         import sys
@@ -1136,7 +1173,10 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             exec(compile(source, path, 'exec', dont_inherit=True), module.__dict__)
             module._source_digest = digest
             sys.modules[key] = module
-        return module.BanEscalationStore(self.__path + 'repeat_bans.json')
+        return module
+
+    def __repeat_ban_store(self):
+        return self.__ban_store_module().BanEscalationStore(self.__path + 'repeat_bans.json')
 
     def __repeat_page(self, value, maximum):
         if type(value) is str and re.fullmatch(r'[1-9][0-9]{0,8}', value):
@@ -1261,6 +1301,8 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         return locked()
 
     def __write_endpoint_policies(self, site_name, config, rules, original):
+        if os.path.lexists(self.__path + '.policy-recovery/pending.json'):
+            return public.returnMsg(False, '策略恢复未确认，停止接口策略写入，请先人工核查。')
         path = self.__path + 'site.json'
         config[site_name]['endpoint_limits'] = rules
         candidate = json.dumps(config)
@@ -1493,6 +1535,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         config['top'] = self.get_config(None)
         return config
     
+    @__policy_mutation
     def set_open(self,get):
         config = self.get_config(None)
         if config['open']: 
@@ -1505,6 +1548,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         self.__write_config(config)
         return public.returnMsg(True,'设置成功!');
     
+    @__policy_mutation
     def set_obj_open(self,get):
         config = self.get_config(None)
         if get.obj not in config: return public.returnMsg(False, get.obj + ' 不是可切换设置')
@@ -1544,12 +1588,14 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         self.__write_site_config(site_config)
         return public.returnMsg(True,'设置成功!');
     
+    @__policy_mutation
     def set_obj_status(self,get):
         config = self.get_config(None)
         config[get.obj]['status'] = int(get.statusCode)
         self.__write_config(config)
         return public.returnMsg(True,'设置成功!');
     
+    @__policy_mutation
     def set_cc_conf(self,get):
         config = self.get_config(None)
         config['cc']['cycle'] = int(get.cycle)
@@ -1571,6 +1617,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         self.__write_log('设置站点 ['+get.siteName+'] CC 配置：' + get.cycle + ' 秒内累计请求超过 ' + get.limit + ' 次，封禁 ' + get.endtime + ' 秒，增强：' + get.increase);
         return public.returnMsg(True,'设置成功!');
     
+    @__policy_mutation
     def add_cnip(self,get):
         ipn = [self.__format_ip(get.start_ip),self.__format_ip(get.end_ip)]
         if not ipn[0] or not ipn[1]: return public.returnMsg(False,'IP 段格式不正确');
@@ -1582,6 +1629,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         self.__write_log('添加 IP 段 ['+get.start_ip+'-'+get.end_ip+'] 到国内 IP 库');
         return public.returnMsg(True,'添加成功!');
     
+    @__policy_mutation
     def remove_cnip(self,get):
         index = int(get.index)
         iplist = self.__get_rule('cn')
@@ -1591,6 +1639,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         self.__write_log('从国内 IP 库移除 [' + '.'.join(map(str,ipn[0])) + '-' + '.'.join(map(str,ipn[1]))+']');
         return public.returnMsg(True,'删除成功!');
     
+    @__policy_mutation
     def add_ip_white(self,get):
         ipn = [self.__format_ip(get.start_ip),self.__format_ip(get.end_ip)]
         if not ipn[0] or not ipn[1]: return public.returnMsg(False,'IP 段格式不正确');
@@ -1602,6 +1651,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         self.__write_log('添加 IP 段 [ '+get.start_ip+'-'+get.end_ip+' ] 到 IP 白名单');
         return public.returnMsg(True,'添加成功!');
     
+    @__policy_mutation
     def remove_ip_white(self,get):
         index = int(get.index)
         iplist = self.__get_rule('ip_white')
@@ -1624,9 +1674,8 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             pass
 
     def __ban_store(self):
-        if not BanStore:
-            return None
-        return BanStore(IP_BLACK_PATH, IP_BLACK_META_PATH)
+        return self.__ban_store_module().BanStore(self.__path + 'rule/ip_black.json',
+                                                self.__path + 'rule/ip_black_meta.json')
 
     def __safety_item(self, key, title, ok, detail, action=''):
         return {
@@ -2102,19 +2151,9 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
 
     def remove_ip_black_exact(self, ip):
         store = self.__ban_store()
-        if store:
-            removed = store.remove_exact_ip(ip)
-        else:
-            ipn = list(map(int, ip.split('.')))
-            iplist = self.__get_rule('ip_black')
-            if not isinstance(iplist, list):
-                raise ValueError('无法读取 IP 黑名单')
-            new_list = [item for item in iplist if not (
-                len(item) >= 2 and item[0] == ipn and item[1] == ipn)]
-            removed = len(new_list) != len(iplist)
-            if removed:
-                if public.writeFile(self.__path + 'rule/ip_black.json', json.dumps(new_list)) is not True:
-                    raise OSError('IP 黑名单保存失败')
+        if not store:
+            raise RuntimeError('封禁存储不可用，未写入')
+        removed = store.remove_exact_ip(ip)
         if removed:
             self.__reload_panel_nginx()
         return removed
@@ -2163,6 +2202,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         self.__write_log('解除 IP 精确封禁 [ ' + ip + ' ]')
         return public.returnMsg(True, ip + ' 的精确封禁已解除；IP 段规则不受影响。')
 
+    @__policy_mutation
     def add_ip_black(self,get):
         ipn = [self.__format_ip(get.start_ip),self.__format_ip(get.end_ip)]
         if not ipn[0] or not ipn[1]: return public.returnMsg(False,'IP 段格式不正确');
@@ -2175,51 +2215,47 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             ban_seconds = 60
         if ban_seconds > MANUAL_MAX_BAN_SECONDS:
             ban_seconds = MANUAL_MAX_BAN_SECONDS
+        self.__validate_rule('ip_black', [ipn])
+        store = self.__ban_store()
+        if not store:
+            return public.returnMsg(False, '封禁存储不可用，未写入')
         if get.start_ip == get.end_ip:
-            store = self.__ban_store()
-            if store:
-                try:
-                    added = store.add_temp_ban(get.start_ip, ban_seconds, reason='manual_temp')
-                    if not added:
-                        return public.returnMsg(False, '指定 IP 已存在活动封禁。');
-                    self.__write_drop_ip_entry(get.start_ip, drop_time=ban_seconds, reason='manual_temp')
-                    public.serviceReload()
-                    self.__write_log('添加 IP [ '+get.start_ip+' ] 到 IP 黑名单，时长 '+str(ban_seconds)+' 秒');
-                    return public.returnMsg(True,'添加成功!');
-                except:
-                    pass
-        iplist = self.__get_rule('ip_black')
-        for item in iplist:
-            if len(item) >= 2 and item[0] == ipn[0] and item[1] == ipn[1]:
-                return public.returnMsg(False,'指定 IP 段已存在!');
-        if get.start_ip == get.end_ip:
-            import time as _t
-            iplist.insert(0, ipn + [int(_t.time()) + ban_seconds])
+            if not store.add_temp_ban(get.start_ip, ban_seconds, reason='manual_temp'):
+                return public.returnMsg(False, '指定 IP 已存在活动封禁。')
         else:
-            iplist.insert(0, ipn)
-        self.__write_rule('ip_black', iplist)
+            def add_range(rules):
+                if any(item[:2] == ipn for item in rules):
+                    raise ValueError('指定 IP 段已存在')
+                return [ipn] + rules
+            store.mutate_rules(add_range)
+        self.__reload_panel_nginx()
         if get.start_ip == get.end_ip:
             self.__write_drop_ip_entry(get.start_ip, drop_time=ban_seconds, reason='manual_temp')
         self.__write_log('添加 IP 段 [ '+get.start_ip+'-'+get.end_ip+' ] 到 IP 黑名单');
         return public.returnMsg(True,'添加成功!');
     
+    @__policy_mutation
     def remove_ip_black(self,get):
         index = int(get.index)
-        iplist = self.__get_rule('ip_black')
         now = time.time()
-        active_items = []
-        for i,item in enumerate(iplist):
-            if len(item) >= 3 and now > item[2]:
-                continue
-            active_items.append((i,item))
-        if index < 0 or index >= len(active_items):
-            return public.returnMsg(False,'指定 IP 段不存在。');
-        real_index, ipn = active_items[index]
-        del(iplist[real_index])
-        self.__write_rule('ip_black', iplist)
+        store = self.__ban_store()
+        if not store:
+            return public.returnMsg(False, '封禁存储不可用，未删除')
+        selected = []
+        def remove(rules):
+            active = [(i, row) for i, row in enumerate(rules) if len(row) < 3 or now <= row[2]]
+            if index < 0 or index >= len(active):
+                raise ValueError('指定 IP 段不存在')
+            real_index, row = active[index]
+            selected.append(row)
+            return rules[:real_index] + rules[real_index + 1:]
+        store.mutate_rules(remove)
+        ipn = selected[0]
+        self.__reload_panel_nginx()
         self.__write_log('从 IP 黑名单移除 [' + '.'.join(map(str,ipn[0])) + '-' + '.'.join(map(str,ipn[1]))+']');
         return public.returnMsg(True,'删除成功!');
     
+    @__policy_mutation
     def add_url_white(self,get):
         url_white = self.__get_rule('url_white')
         url_rule = get.url_rule.strip()
@@ -2229,6 +2265,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         self.__write_log('添加 URL 规则 ['+url_rule+'] 到 URL 白名单');
         return public.returnMsg(True,'添加成功!');
     
+    @__policy_mutation
     def remove_url_white(self,get):
         url_white = self.__get_rule('url_white')
         index = int(get.index)
@@ -2238,6 +2275,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         self.__write_log('从 URL 白名单移除 URL 规则 ['+url_rule+']');
         return public.returnMsg(True,'删除成功!');
     
+    @__policy_mutation
     def add_url_black(self,get):
         url_white = self.__get_rule('url_black')
         url_rule = get.url_rule.strip()
@@ -2247,6 +2285,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         self.__write_log('添加 URL 规则 ['+url_rule+'] 到 URL 黑名单');
         return public.returnMsg(True,'添加成功!');
     
+    @__policy_mutation
     def remove_url_black(self,get):
         url_white = self.__get_rule('url_black')
         index = int(get.index)
@@ -2256,12 +2295,14 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         self.__write_log('从 URL 黑名单移除 URL 规则 ['+url_rule+']');
         return public.returnMsg(True,'删除成功!');
     
+    @__policy_mutation
     def save_scan_rule(self,get):
         scan_rule = {'header':get.header,'cookie':get.cookie,'args':get.args}
         self.__write_rule('scan_black', scan_rule)
         self.__write_log('修改扫描器过滤规则');
         return public.returnMsg(True,'设置成功')
     
+    @__policy_mutation
     def set_retry(self,get):
         config = self.get_config(None)
         config['retry'] = int(get.retry)
@@ -2427,6 +2468,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         if not rule: return [];
         return rule
     
+    @__policy_mutation
     def add_rule(self,get):
         rule = self.__get_rule(get.ruleName)
         if not rule: rule = []
@@ -2434,28 +2476,33 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         for ru in rule:
             if ru[1] == ruleValue[1]: return public.returnMsg(False,'指定规则已存在，请勿重复添加。');
         rule.append(ruleValue)
-        self.__write_rule(get.ruleName, rule)
+        self.__write_rule(get.ruleName, rule, preserve_positions=True)
         self.__write_log('添加全局规则 [ '+get.ruleName+' ] [ '+get.ps+' ]');
         return public.returnMsg(True,'添加成功!');
     
+    @__policy_mutation
     def remove_rule(self,get):
         rule = self.__get_rule(get.ruleName)
         index = int(get.index)
+        if index < 0 or index >= len(rule):
+            raise ValueError('规则序号不正确')
         ps = rule[index][2]
         del(rule[index])
-        self.__write_rule(get.ruleName, rule)
+        self.__write_rule(get.ruleName, rule, removed_index=index)
         self.__write_log('删除全局规则 [ '+get.ruleName+' ] [ '+ps+' ]');
         return public.returnMsg(True,'删除成功!');
     
+    @__policy_mutation
     def modify_rule(self,get):
         rule = self.__get_rule(get.ruleName)
         index = int(get.index)
         rule[index][1] = get.ruleBody
         rule[index][2] = get.rulePs
-        self.__write_rule(get.ruleName, rule)
+        self.__write_rule(get.ruleName, rule, preserve_positions=True)
         self.__write_log('修改全局规则 [ '+get.ruleName+' ] [ '+get.rulePs+' ]');
         return public.returnMsg(True,'修改成功!');
     
+    @__policy_mutation
     def set_rule_state(self,get):
         rule = self.__get_rule(get.ruleName)
         index = int(get.index)
@@ -2463,7 +2510,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             rule[index][0] = 1;
         else:
             rule[index][0] = 0;
-        self.__write_rule(get.ruleName, rule)
+        self.__write_rule(get.ruleName, rule, preserve_positions=True)
         self.__write_log(self.__state[rule[index][0]] + '全局规则 [ '+get.ruleName+' ] [ '+rule[index][2]+' ]');
         return public.returnMsg(True,'设置成功!');
     
@@ -2602,21 +2649,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             if store:
                 removed = store.clear_exact_ips()
             else:
-                iplist = self.__get_rule('ip_black')
-                if not isinstance(iplist, list):
-                    raise ValueError('无法读取 IP 黑名单')
-                new_list = []
-                for item in iplist:
-                    try:
-                        if len(item) >= 2 and item[0] == item[1]:
-                            removed += 1
-                            continue
-                    except:
-                        pass
-                    new_list.append(item)
-                if removed:
-                    if public.writeFile(self.__path + 'rule/ip_black.json', json.dumps(new_list)) is not True:
-                        raise OSError('IP 黑名单保存失败')
+                raise RuntimeError('封禁存储不可用，未清理')
             self.__reload_panel_nginx()
             self.__verify_runtime_unban('clean_btwaf_drop_ip')
             self.__write_log('解除所有 IP 精确封禁，保留 IP 段规则')
@@ -2781,6 +2814,109 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             'raw': self.__safe_text(raw_line)
         }
 
+    def __legacy_log_budget(self):
+        return dict(partial=False, scanned_lines=0, scanned_bytes=0, scanned_files=0,
+                    deadline=time.monotonic() + self.LEGACY_LOG_MAX_SECONDS,
+                    scope='bounded_recent_logs')
+
+    def __legacy_log_coverage(self, budget):
+        return {key: value for key, value in budget.items() if key != 'deadline'}
+
+    def __bounded_log_rows(self, path, budget):
+        import stat
+        if budget['scanned_files'] >= self.LEGACY_LOG_MAX_FILES:
+            budget['partial'] = True
+            return
+        budget['scanned_files'] += 1
+        try:
+            with open(path, 'rb') as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    budget['partial'] = True
+                    return
+                stream.seek(0, os.SEEK_END)
+                pos, buffer = stream.tell(), b''
+                while pos > 0:
+                    remaining = self.LEGACY_LOG_MAX_BYTES - budget['scanned_bytes']
+                    if (remaining <= 0 or budget['scanned_lines'] >= self.LEGACY_LOG_MAX_LINES
+                            or time.monotonic() > budget['deadline']):
+                        budget['partial'] = True
+                        return
+                    size = min(pos, 65536, remaining)
+                    pos -= size
+                    stream.seek(pos)
+                    block = stream.read(size)
+                    budget['scanned_bytes'] += len(block)
+                    if len(block) != size:
+                        budget['partial'] = True
+                        return
+                    combined = block + buffer
+                    pieces = combined.split(b'\n')
+                    end = pos + len(combined)
+                    buffer = pieces[0]
+                    for piece in reversed(pieces[1:]):
+                        end -= len(piece)
+                        if piece:
+                            if (budget['scanned_lines'] >= self.LEGACY_LOG_MAX_LINES
+                                    or time.monotonic() > budget['deadline']):
+                                budget['partial'] = True
+                                return
+                            budget['scanned_lines'] += 1
+                            yield end, piece.decode('utf-8', 'replace')
+                        end -= 1
+                    if len(buffer) > 65536:
+                        budget['partial'] = True
+                        return
+                if buffer:
+                    if budget['scanned_lines'] >= self.LEGACY_LOG_MAX_LINES:
+                        budget['partial'] = True
+                        return
+                    budget['scanned_lines'] += 1
+                    yield 0, buffer.decode('utf-8', 'replace')
+        except OSError:
+            budget['partial'] = True
+
+    def __bounded_legacy_lines(self, path, budget):
+        for offset, line in self.__bounded_log_rows(path, budget):
+            yield line
+
+    def __bounded_waf_files(self, log_dir, dates, site_name, budget):
+        candidates = []
+        try:
+            # The directory enumeration itself is bounded too.
+            with os.scandir(log_dir) as entries:
+                for number, entry in enumerate(entries):
+                    if number >= 4096 or time.monotonic() > budget['deadline']:
+                        budget['partial'] = True
+                        break
+                    name = entry.name
+                    for date in dates:
+                        suffix = '_' + date + '.log'
+                        if name.endswith(suffix):
+                            site = name[:-len(suffix)]
+                            if (not site_name or site == site_name) and entry.is_file(follow_symlinks=False):
+                                candidates.append((date, site, entry.path))
+                            break
+        except OSError:
+            budget['partial'] = True
+        candidates.sort(reverse=True)
+        if len(candidates) > self.LEGACY_LOG_MAX_FILES:
+            budget['partial'] = True
+        return candidates[:self.LEGACY_LOG_MAX_FILES]
+
+    def __merged_waf_rows(self, candidates, budget):
+        # Sort the bounded sample itself: worker append order need not match event time.
+        sample = []
+        for date, site, path in candidates:
+            for offset, raw in self.__bounded_log_rows(path, budget):
+                try:
+                    row = json.loads(raw)
+                    if type(row) is list and len(row) >= 6 and type(row[0]) is str:
+                        sample.append((row, offset, raw, site, date))
+                except (ValueError, TypeError):
+                    continue
+        sample.sort(key=lambda item: (item[0][0], item[3], item[1]), reverse=True)
+        yield from sample
+
     def get_report_search(self, get):
         """Search WAF request logs and return structured rows for manual review."""
         log_dir = '/www/wwwlogs/free_waf_log/'
@@ -2814,58 +2950,36 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         if not os.path.exists(log_dir):
             return {'rows': [], 'total': 0, 'p': p, 'limit': page_size, 'summary': {'matched': 0}}
 
-        date_set = set(self.__date_list(days))
+        budget = self.__legacy_log_budget()
+        files = self.__bounded_waf_files(log_dir, self.__date_list(days), siteName, budget)
+        records = self.__merged_waf_rows(files, budget)
+        has_more = False
         try:
-            files = sorted(os.listdir(log_dir), reverse=True)
-        except:
-            files = []
-        for fname in files:
-            if not fname.endswith('.log'):
-                continue
-            matched_date = ''
-            for date_str in date_set:
-                if fname.endswith('_' + date_str + '.log'):
-                    matched_date = date_str
+            for row, offset, raw_line, site, matched_date in records:
+                source_text = (' '.join(str(x) for x in row) + ' ' + site).lower()
+                if ip and str(row[1]) != ip:
+                    continue
+                if uri and uri not in str(row[3]).lower():
+                    continue
+                if ruleType and ruleType != str(row[5]).lower():
+                    continue
+                if keyword and (keyword + escape_guard) not in (source_text + escape_guard):
+                    continue
+                total += 1
+                if total <= (p - 1) * page_size:
+                    continue
+                if len(rows) >= page_size:
+                    has_more = True
+                    budget['partial'] = True
                     break
-            if not matched_date:
-                continue
-            site = fname[: fname.rfind('_' + matched_date)]
-            if siteName and site != siteName:
-                continue
-            fpath = os.path.join(log_dir, fname)
-            try:
-                fp = open(fpath, 'r', errors='ignore')
-                line_no = 0
-                for line in fp:
-                    line_no += 1
-                    raw_line = line.strip()
-                    if not raw_line:
-                        continue
-                    try:
-                        row = json.loads(raw_line)
-                    except:
-                        continue
-                    if len(row) < 6:
-                        continue
-                    source_text = (' '.join([str(x) for x in row]) + ' ' + site).lower()
-                    if ip and str(row[1]) != ip:
-                        continue
-                    if uri and uri not in str(row[3]).lower():
-                        continue
-                    if ruleType and ruleType != str(row[5]).lower():
-                        continue
-                    if keyword and (keyword + escape_guard) not in (source_text + escape_guard):
-                        continue
-                    total += 1
-                    if total <= (p - 1) * page_size:
-                        continue
-                    if len(rows) >= page_size:
-                        continue
-                    rows.append(self.__parse_waf_log_row(row, site, matched_date, line_no, raw_line))
-                fp.close()
-            except:
-                pass
-        return {'rows': rows, 'total': total, 'p': p, 'limit': page_size, 'summary': {'matched': total}}
+                item = self.__parse_waf_log_row(row, site, matched_date, 0, raw_line)
+                item['offset'] = offset
+                rows.append(item)
+        finally:
+            records.close()
+        return dict(rows=rows, total=total, p=p, limit=page_size, has_more=has_more,
+                    total_exact=not budget['partial'], coverage=self.__legacy_log_coverage(budget),
+                    summary={'matched': total})
 
     def get_report_http_detail(self, get):
         """Return one structured WAF log row with raw JSON for the detail drawer."""
@@ -2876,28 +2990,56 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             line_no = int(getattr(get, 'line_no', 0))
         except:
             line_no = 0
-        if not siteName or not date_str or line_no < 1:
+        offset = getattr(get, 'offset', None)
+        if (not re.fullmatch(r'[A-Za-z0-9_\-][A-Za-z0-9_.\-]{0,252}', siteName) or '..' in siteName
+                or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', date_str)
+                or offset is None and line_no < 1):
             return public.returnMsg(False, '日志定位参数不完整')
         fpath = os.path.join(log_dir, siteName + '_' + date_str + '.log')
         if not os.path.exists(fpath):
             return public.returnMsg(False, '日志文件不存在')
         try:
-            fp = open(fpath, 'r', errors='ignore')
-            current = 0
-            for line in fp:
-                current += 1
-                if current != line_no:
-                    continue
-                raw_line = line.strip()
-                row = json.loads(raw_line)
-                safe_raw = html.escape(raw_line, quote=True)
-                fp.close()
-                return {
-                    'status': True,
-                    'data': self.__parse_waf_log_row(row, siteName, date_str, line_no, raw_line),
-                    'raw': safe_raw
-                }
-            fp.close()
+            if offset is not None:
+                offset = int(offset)
+                if offset < 0:
+                    raise ValueError('日志偏移不正确')
+                with open(fpath, 'rb') as stream:
+                    if offset >= os.fstat(stream.fileno()).st_size:
+                        raise ValueError('日志已轮转')
+                    if offset:
+                        stream.seek(offset - 1)
+                        if stream.read(1) != b'\n':
+                            raise ValueError('日志位置已变化')
+                    raw = stream.readline(65537)
+                    if len(raw) > 65536:
+                        raise ValueError('日志行超出预算')
+                    raw_line = raw.decode('utf-8', 'replace').strip()
+                    row = json.loads(raw_line)
+                    if type(row) is not list or len(row) < 6:
+                        raise ValueError('日志格式不正确')
+                    return dict(status=True, data=self.__parse_waf_log_row(row, siteName, date_str, 0, raw_line),
+                                raw=html.escape(raw_line, quote=True))
+            if line_no > self.LEGACY_LOG_MAX_LINES:
+                return public.returnMsg(False, '旧行号超出读取预算，请重新查询日志后查看详情')
+            deadline, read_bytes = time.monotonic() + self.LEGACY_LOG_MAX_SECONDS, 0
+            with open(fpath, 'rb') as stream:
+                for current in range(1, line_no + 1):
+                    remaining = self.LEGACY_LOG_MAX_BYTES - read_bytes
+                    if remaining <= 0 or time.monotonic() > deadline:
+                        raise ValueError('日志详情超出读取预算')
+                    raw = stream.readline(min(65537, remaining + 1))
+                    if not raw:
+                        break
+                    read_bytes += len(raw)
+                    if len(raw) > 65536 or read_bytes > self.LEGACY_LOG_MAX_BYTES:
+                        raise ValueError('日志行超出读取预算')
+                    if current == line_no:
+                        raw_line = raw.decode('utf-8', 'replace').strip()
+                        row = json.loads(raw_line)
+                        if type(row) is not list or len(row) < 6:
+                            raise ValueError('日志格式不正确')
+                        return dict(status=True, data=self.__parse_waf_log_row(
+                            row, siteName, date_str, line_no, raw_line), raw=html.escape(raw_line, quote=True))
             return public.returnMsg(False, '日志记录不存在')
         except:
             return public.returnMsg(False, '日志详情读取失败')
@@ -2952,9 +3094,10 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         else:
             active_ips = set(active_data or [])
         records = []
+        budget = self.__legacy_log_budget()
         if os.path.exists(path):
             try:
-                fp = open(path, 'r', errors='ignore')
+                fp = self.__bounded_legacy_lines(path, budget)
                 for line in fp:
                     raw_line = line.strip()
                     if not raw_line:
@@ -2976,6 +3119,8 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             'total': total,
             'p': p,
             'limit': page_size,
+            'coverage': self.__legacy_log_coverage(budget),
+            'total_exact': not budget['partial'],
             'active_ips': sorted(list(active_ips))
         }
 
@@ -2989,6 +3134,8 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             'active_ips': data.get('active_ips', sorted(list(active_data.keys())) if type(active_data) == dict else active_data),
             'records': data.get('rows', []),
             'total': data.get('total', 0),
+            'coverage': data.get('coverage', {}),
+            'total_exact': data.get('total_exact', False),
             'source': path
         }
 
@@ -3022,32 +3169,26 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         today_str = time.strftime('%Y-%m-%d', time.localtime())
         day_ago = time.time() - 86400
         first_seen_ts = 0
+        active_data = self.get_waf_drop_ip(None)
+        active_ips = set(active_data.keys()) if isinstance(active_data, dict) else set(active_data or [])
+        active_count = len(active_ips)
         _geo = None
         _geo_cache = {}
+        _geo_type = None
+        budget = self.__legacy_log_budget()
+        try:
+            _geo_type = self.__local_service('website_statistics').LocalGeography
+        except Exception:
+            pass
         try:
             import maxminddb
             _geo = maxminddb.open_database('/www/server/panel/config/GeoLite2-City.mmdb')
         except:
             pass
         if os.path.exists(log_dir):
-            try:
-                files = sorted(os.listdir(log_dir), reverse=True)
-            except:
-                files = []
-            for fname in files:
-                if not fname.endswith('.log'):
-                    continue
-                matched_date = ''
-                for date_str in dates:
-                    if fname.endswith('_' + date_str + '.log'):
-                        matched_date = date_str
-                        break
-                if not matched_date:
-                    continue
-                site = fname[: fname.rfind('_' + matched_date)]
-                fpath = os.path.join(log_dir, fname)
+            for matched_date, site, fpath in self.__bounded_waf_files(log_dir, dates, '', budget):
                 try:
-                    fp = open(fpath, 'r', errors='ignore')
+                    fp = self.__bounded_legacy_lines(fpath, budget)
                     line_no = 0
                     for line in fp:
                         line_no += 1
@@ -3077,6 +3218,8 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                             region = '未知来源'
                             country_code = ''
                             country_name = ''
+                            gd = None
+                            geo_failed = False
                             if _geo:
                                 try:
                                     gd = _geo.get(ip)
@@ -3095,9 +3238,15 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                                         region_parts = [x for x in [c.get('country',''), c.get('province',''), c.get('city','')] if x]
                                         if region_parts:
                                             region = ' '.join(region_parts)
-                                except:
-                                    pass
-                            _geo_cache[ip] = (region, country_code, country_name)
+                                except Exception:
+                                    geo_failed = True
+                            detail = _geo_type.describe(ip, gd) if _geo_type else dict(location='未知', status='unavailable')
+                            if detail['status'] == 'unknown':
+                                if _geo is None:
+                                    detail['status'] = 'unavailable'
+                                elif geo_failed:
+                                    detail['status'] = 'lookup_error'
+                            _geo_cache[ip] = (region, country_code, country_name, detail)
                         attack_region_counter[region] += 1
                         try:
                             row_ts = time.mktime(time.strptime(str(row[0])[:19], '%Y-%m-%d %H:%M:%S'))
@@ -3127,11 +3276,6 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                     fp.close()
                 except:
                     pass
-        if _geo:
-            try:
-                _geo.close()
-            except:
-                pass
         dynamics = [item[2] for item in sorted(dynamics, reverse=True)]
         trend = [{'date': d, 'count': trend_map.get(d, 0)} for d in sorted(dates)]
         top_sites = [{'site': self.__safe_text(k), 'count': v} for k, v in site_counter.most_common(5)]
@@ -3142,7 +3286,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         country_names = {}
         # Reuse per-IP totals and cached metadata; unknown hits stay in the denominator.
         for ip, count in ip_counter.items():
-            _, code, name = _geo_cache.get(ip, ('', '', ''))
+            _, code, name = _geo_cache.get(ip, ('', '', ''))[:3]
             if code:
                 country_counter[code] += count
                 country_names.setdefault(code, name)
@@ -3158,16 +3302,10 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             'database_available': _geo is not None,
             'period_days': 7
         }
-        active_data = self.get_waf_drop_ip(None)
-        if type(active_data) == dict:
-            active_ips = set(active_data.keys())
-        else:
-            active_ips = set(active_data or [])
-        active_count = len(active_ips)
         blocked_map = {}
         if os.path.exists(drop_path):
             try:
-                fp = open(drop_path, 'r', errors='ignore')
+                fp = self.__bounded_legacy_lines(drop_path, budget)
                 for line in fp:
                     raw_line = line.strip()
                     if not raw_line:
@@ -3214,9 +3352,30 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                     'active': True
                 }
         blocked_ips = sorted(blocked_map.values(), key=lambda x: (0 if x.get('active') else 1, -int(x.get('count_24h', 0)), x.get('ip', '')))[:10]
-        for item in blocked_ips:
-            if '_last_ts' in item:
-                del(item['_last_ts'])
+        try:
+            for item in blocked_ips:
+                item.pop('_last_ts', None)
+                ip = item['ip']
+                if ip in _geo_cache:
+                    detail = _geo_cache[ip][3]
+                else:
+                    detail = _geo_type.describe(ip, None) if _geo_type else dict(location='未知', status='unavailable')
+                    if detail['status'] == 'unknown':
+                        if _geo:
+                            try:
+                                detail = _geo_type.describe(ip, _geo.get(ip))
+                            except Exception:
+                                detail = dict(location='未知', status='lookup_error')
+                        else:
+                            detail['status'] = 'unavailable'
+                item['location'] = detail['location']
+                item['location_status'] = detail['status']
+        finally:
+            if _geo:
+                try:
+                    _geo.close()
+                except Exception:
+                    pass
         protection_days = len([x for x in trend if x.get('count', 0) > 0])
         if not protection_days and first_seen_ts:
             protection_days = max(1, int((time.time() - first_seen_ts) / 86400) + 1)
@@ -3230,6 +3389,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         return {
             'summary': summary,
             'trend': trend,
+            'coverage': self.__legacy_log_coverage(budget),
             'top_sites': top_sites,
             'today_top_sites': today_top_sites,
             'dynamics': dynamics,
@@ -3268,96 +3428,45 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         dates = self.__date_list(days)
         items = []
         summary = {'high': 0, 'medium': 0, 'low': 0, 'total': 0}
-
-        if os.path.exists(log_dir):
-            try:
-                files = sorted(os.listdir(log_dir), reverse=True)
-            except:
-                files = []
-            for fname in files:
-                if len(items) >= limit:
+        budget = self.__legacy_log_budget()
+        records = self.__merged_waf_rows(self.__bounded_waf_files(log_dir, dates, '', budget), budget)
+        try:
+            for row, offset, raw, site, date in records:
+                level, level_text = self.__notification_level(row[5])
+                items.append(dict(time=self.__safe_text(row[0]), level=level, level_text=level_text,
+                                  site=self.__safe_text(site), ip=self.__safe_text(row[1]),
+                                  uri=self.__safe_text(row[3]), rule_type=self.__safe_text(row[5]),
+                                  message=self.__safe_text('请求触发 WAF 规则：' + str(row[5]))))
+                if len(items) > limit:
+                    budget['partial'] = True
                     break
-                matched_date = ''
-                for date_str in dates:
-                    if fname.endswith('_' + date_str + '.log'):
-                        matched_date = date_str
-                        break
-                if not matched_date:
-                    continue
-                site = fname[: fname.rfind('_' + matched_date)]
-                fpath = os.path.join(log_dir, fname)
+        finally:
+            records.close()
+        if os.path.exists(drop_path):
+            for offset, raw in self.__bounded_log_rows(drop_path, budget):
                 try:
-                    fp = open(fpath, 'r', errors='ignore')
-                    for line in fp:
-                        if len(items) >= limit:
-                            break
-                        raw_line = line.strip()
-                        if not raw_line:
-                            continue
-                        try:
-                            row = json.loads(raw_line)
-                        except:
-                            continue
-                        if len(row) < 6:
-                            continue
-                        level, level_text = self.__notification_level(row[5])
-                        summary[level] += 1
-                        summary['total'] += 1
-                        items.append({
-                            'time': self.__safe_text(row[0]),
-                            'level': level,
-                            'level_text': level_text,
-                            'site': self.__safe_text(site),
-                            'ip': self.__safe_text(row[1]),
-                            'uri': self.__safe_text(row[3]),
-                            'rule_type': self.__safe_text(row[5]),
-                            'message': self.__safe_text('请求触发 WAF 规则：' + str(row[5]))
-                        })
-                    fp.close()
-                except:
-                    pass
-
-        if os.path.exists(drop_path) and len(items) < limit:
-            try:
-                fp = open(drop_path, 'r', errors='ignore')
-                for line in fp:
-                    if len(items) >= limit:
-                        break
-                    raw_line = line.strip()
-                    if not raw_line:
+                    row = json.loads(raw)
+                    if type(row) is not list or len(row) < 6:
                         continue
-                    try:
-                        row = json.loads(raw_line)
-                    except:
+                    text = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(int(float(row[0]))))
+                    if text[:10] not in dates:
                         continue
-                    while len(row) < 6:
-                        row.append('')
-                    try:
-                        ts = int(float(row[0]))
-                        time_text = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))
-                    except:
-                        time_text = ''
-                    summary['high'] += 1
-                    summary['total'] += 1
-                    items.append({
-                        'time': self.__safe_text(time_text),
-                        'level': 'high',
-                        'level_text': '高',
-                        'site': self.__safe_text(row[2]),
-                        'ip': self.__safe_text(row[1]),
-                        'uri': self.__safe_text(row[3]),
-                        'rule_type': self.__safe_text(row[5]),
-                        'message': self.__safe_text('封禁记录：' + str(row[5]))
-                    })
-                fp.close()
-            except:
-                pass
-
+                    items.append(dict(time=self.__safe_text(text), level='high', level_text='高',
+                                      site=self.__safe_text(row[2]), ip=self.__safe_text(row[1]),
+                                      uri=self.__safe_text(row[3]), rule_type=self.__safe_text(row[5]),
+                                      message=self.__safe_text('封禁记录：' + str(row[5]))))
+                except (ValueError, TypeError, OverflowError):
+                    continue
         items = sorted(items, key=lambda x: x.get('time', ''), reverse=True)[:limit]
+        for item in items:
+            summary[item['level']] += 1
+            summary['total'] += 1
         return {
             'status': True,
             'checked_at': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
             'summary': summary,
+            'summary_scope': 'returned_items',
+            'coverage': self.__legacy_log_coverage(budget),
             'items': items
         }
 
@@ -3494,25 +3603,11 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         site_counter = collections.Counter()
         ip_counter = collections.Counter()
         uri_counter = collections.Counter()
+        budget = self.__legacy_log_budget()
         if os.path.exists(log_dir):
-            try:
-                files = sorted(os.listdir(log_dir), reverse=True)
-            except:
-                files = []
-            for fname in files:
-                if not fname.endswith('.log'):
-                    continue
-                matched_date = ''
-                for date_str in date_set:
-                    if fname.endswith('_' + date_str + '.log'):
-                        matched_date = date_str
-                        break
-                if not matched_date:
-                    continue
-                site = fname[: fname.rfind('_' + matched_date)]
-                fpath = os.path.join(log_dir, fname)
+            for matched_date, site, fpath in self.__bounded_waf_files(log_dir, date_set, '', budget):
                 try:
-                    fp = open(fpath, 'r', errors='ignore')
+                    fp = self.__bounded_legacy_lines(fpath, budget)
                     for line in fp:
                         raw_line = line.strip()
                         if not raw_line:
@@ -3543,6 +3638,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         return {
             'status': True,
             'checked_at': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
+            'coverage': self.__legacy_log_coverage(budget),
             'summary': {
                 'days': days,
                 'total_hits': total_hits,
@@ -3568,7 +3664,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                           or not re.fullmatch(r'[\w.\[\]:-]+', site_name)):
             return public.returnMsg(False, '站点筛选参数不正确')
         params = SimpleNamespace(days=days, line_limit=line_limit, siteName=site_name)
-        key = json.dumps(['website-statistics-v2', time.strftime('%Y-%m-%d'), site_name, days, line_limit], ensure_ascii=False)
+        key = json.dumps(['website-statistics-v3-geography', time.strftime('%Y-%m-%d'), site_name, days, line_limit], ensure_ascii=False)
         force = str(getattr(get, 'force', '')).lower() in ('1', 'true')
         result = website_reports.request(key, lambda: self.__build_website_statistics_summary(params), force=force)
         if 'site_options' not in result:
@@ -3616,41 +3712,24 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         log_dir = '/www/wwwlogs/free_waf_log/'
         ip_counts  = collections.Counter()
         ip_details = {}
-        today = datetime.date.today()
-        for i in range(days):
-            d = today - datetime.timedelta(days=i)
-            date_str = d.strftime('%Y-%m-%d')
-            try:
-                for fname in os.listdir(log_dir):
-                    if not fname.endswith('_' + date_str + '.log'):
+        budget = self.__legacy_log_budget()
+        for date, site, fpath in self.__bounded_waf_files(log_dir, self.__date_list(days), '', budget):
+            for offset, line in self.__bounded_log_rows(fpath, budget):
+                try:
+                    row = json.loads(line)
+                    if type(row) is not list or len(row) < 6:
                         continue
-                    site = fname[: fname.rfind('_' + date_str)]
-                    fpath = os.path.join(log_dir, fname)
-                    try:
-                        with open(fpath, 'r', errors='ignore') as fp:
-                            for line in fp:
-                                line = line.strip()
-                                if not line:
-                                    continue
-                                try:
-                                    row = json.loads(line)
-                                    if len(row) < 6:
-                                        continue
-                                    ip        = row[1]
-                                    rule_type = row[5]
-                                    ip_counts[ip] += 1
-                                    if ip not in ip_details:
-                                        ip_details[ip] = {'count': 0, 'types': {}, 'last_time': '', 'sites': set()}
-                                    ip_details[ip]['count']    += 1
-                                    ip_details[ip]['last_time']  = row[0]
-                                    ip_details[ip]['sites'].add(site)
-                                    ip_details[ip]['types'][rule_type] = ip_details[ip]['types'].get(rule_type, 0) + 1
-                                except:
-                                    pass
-                    except:
-                        pass
-            except:
-                pass
+                    ip, rule_type = str(row[1]), str(row[5])
+                    ip_counts[ip] += 1
+                    if ip not in ip_details:
+                        ip_details[ip] = {'count': 0, 'types': {}, 'last_time': '', 'sites': set()}
+                    detail = ip_details[ip]
+                    detail['count'] += 1
+                    detail['last_time'] = max(detail['last_time'], str(row[0]))
+                    detail['sites'].add(site)
+                    detail['types'][rule_type] = detail['types'].get(rule_type, 0) + 1
+                except (ValueError, TypeError):
+                    continue
         store = self.__ban_store()
         if store:
             banned_set = set(store.active_exact_ips())
@@ -3698,6 +3777,8 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         if _geo:
             try: _geo.close()
             except: pass
+        if str(getattr(get, 'include_coverage', '')) == '1':
+            return dict(rows=result, coverage=self.__legacy_log_coverage(budget))
         return result
 
     def get_uri_stats(self, get):
@@ -3714,44 +3795,26 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         log_dir = '/www/wwwlogs/free_waf_log/'
         uri_counts = collections.Counter()
         uri_details = {}
-        today = datetime.date.today()
-        for i in range(days):
-            d = today - datetime.timedelta(days=i)
-            date_str = d.strftime('%Y-%m-%d')
-            try:
-                for fname in os.listdir(log_dir):
-                    if not fname.endswith('_' + date_str + '.log'):
+        budget = self.__legacy_log_budget()
+        for date, site, fpath in self.__bounded_waf_files(log_dir, self.__date_list(days), '', budget):
+            for offset, line in self.__bounded_log_rows(fpath, budget):
+                try:
+                    row = json.loads(line)
+                    if type(row) is not list or len(row) < 6:
                         continue
-                    site = fname[: fname.rfind('_' + date_str)]
-                    fpath = os.path.join(log_dir, fname)
-                    try:
-                        with open(fpath, 'r', errors='ignore') as fp:
-                            for line in fp:
-                                line = line.strip()
-                                if not line:
-                                    continue
-                                try:
-                                    row = json.loads(line)
-                                    if len(row) < 6:
-                                        continue
-                                    uri = str(row[3]).strip()
-                                    if not uri:
-                                        continue
-                                    rule_type = str(row[5]).strip() or 'unknown'
-                                    uri_counts[uri] += 1
-                                    if uri not in uri_details:
-                                        uri_details[uri] = {'count': 0, 'types': {}, 'last_time': '', 'sites': set()}
-                                    uri_details[uri]['count'] += 1
-                                    if row[0] > uri_details[uri]['last_time']:
-                                        uri_details[uri]['last_time'] = row[0]
-                                    uri_details[uri]['sites'].add(site)
-                                    uri_details[uri]['types'][rule_type] = uri_details[uri]['types'].get(rule_type, 0) + 1
-                                except:
-                                    pass
-                    except:
-                        pass
-            except:
-                pass
+                    uri, rule_type = str(row[3]).strip(), str(row[5]).strip() or 'unknown'
+                    if not uri:
+                        continue
+                    uri_counts[uri] += 1
+                    if uri not in uri_details:
+                        uri_details[uri] = {'count': 0, 'types': {}, 'last_time': '', 'sites': set()}
+                    detail = uri_details[uri]
+                    detail['count'] += 1
+                    detail['last_time'] = max(detail['last_time'], str(row[0]))
+                    detail['sites'].add(site)
+                    detail['types'][rule_type] = detail['types'].get(rule_type, 0) + 1
+                except (ValueError, TypeError):
+                    continue
         result = []
         for uri, count in uri_counts.most_common(100):
             detail = uri_details[uri]
@@ -3762,6 +3825,8 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                 'types': detail['types'],
                 'sites': sorted(list(detail['sites']))
             })
+        if str(getattr(get, 'include_coverage', '')) == '1':
+            return dict(rows=result, coverage=self.__legacy_log_coverage(budget))
         return result
 
     def add_permanent_ban(self, get):
@@ -3773,23 +3838,17 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                 return public.returnMsg(False, 'IP 格式错误')
         except:
             return public.returnMsg(False, 'IP 格式错误')
-        store = self.__ban_store()
-        if store:
-            try:
+        try:
+            store = self.__ban_store()
+            if store:
                 added = store.add_temp_ban(ip, TEMP_BAN_SECONDS, reason='manual_temp')
                 if not added:
                     return public.returnMsg(False, ip + ' 已在黑名单中')
-                public.serviceReload()
-            except:
-                return public.returnMsg(False, '写入封禁列表失败')
-        else:
-            iplist = self.__get_rule('ip_black') or []
-            for item in iplist:
-                if len(item) >= 3 and item[0] == ipn and item[1] == ipn and item[2] > int(__import__("time").time()):
-                    return public.returnMsg(False, ip + ' 已在黑名单中')
-            import time as _t
-            iplist.insert(0, [ipn, ipn, int(_t.time()) + TEMP_BAN_SECONDS])
-            self.__write_rule('ip_black', iplist)
+                self.__reload_panel_nginx()
+            else:
+                raise RuntimeError('封禁存储不可用')
+        except Exception:
+            return public.returnMsg(False, '封禁写入或生效未确认，可能已部分处理，请检查后重试')
         self.__write_drop_ip_entry(ip, drop_time=TEMP_BAN_SECONDS, reason='manual_temp')
         # 同时通知 nginx shared memory
         try:
@@ -3840,9 +3899,14 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         return data;
 
             
+    def __total_path(self):
+        migrated = os.path.join(self.__path, '.statistics', 'total.json')
+        # A present but damaged new snapshot must never resurrect stale totals.
+        return migrated if os.path.lexists(migrated) else self.__path + 'total.json'
+
     def get_total(self,get):
         try:
-            total = json.loads(public.readFile(self.__path + 'total.json'))
+            total = json.loads(public.readFile(self.__total_path()))
             if not isinstance(total, dict) or not isinstance(total.get('sites'), dict):
                 raise ValueError('invalid totals')
         except:
@@ -4131,15 +4195,289 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         
 
     def __get_rule(self,ruleName):
+        self.__rule_name(ruleName)
         path = self.__path + 'rule/' + ruleName + '.json';
-        rules = public.readFile(path)
+        rules = self.__read_policy(path)
         if not rules: return False
         return json.loads(rules)
+
+    def __read_policy(self, path):
+        reads = getattr(self, '_free_waf_main__policy_reads', None)
+        if reads is None:
+            return public.readFile(path)
+        if path not in reads:
+            reads[path] = public.readFile(path)
+        return reads[path]
     
-    def __write_rule(self,ruleName,rule):
-        path = self.__path + 'rule/' + ruleName + '.json';
-        public.writeFile(path,json.dumps(rule))
-        public.serviceReload();
+    def __rule_name(self, name):
+        if name not in ('url_white', 'url_black', 'user_agent', 'user_agent_white', 'header',
+                        'cookie', 'args', 'post', 'url', 'ip_black', 'ip_white', 'cn',
+                        'scan_black', 'head_white'):
+            raise ValueError('不支持的规则文件')
+
+    def __validate_rule(self, name, rules):
+        self.__rule_name(name)
+        def text(value):
+            return type(value) is str and 0 < len(value.encode('utf-8')) <= 8192 and '\x00' not in value
+        if name == 'scan_black':
+            if (type(rules) is not dict or set(rules) != {'header', 'cookie', 'args'}
+                    or any(type(v) is not str or len(v.encode('utf-8')) > 8192 or '\x00' in v for v in rules.values())):
+                raise ValueError('扫描器规则格式不正确')
+            return
+        if type(rules) is not list or len(rules) > 10000:
+            raise ValueError('规则必须为有界列表')
+        for row in rules:
+            if name in ('url_white', 'url_black', 'head_white'):
+                valid = text(row)
+            elif name in ('ip_black', 'ip_white', 'cn'):
+                valid = (type(row) is list and len(row) in (2, 3)
+                         and all(type(ip) is list and len(ip) == 4
+                                 and all(type(n) is int and 0 <= n <= 255 for n in ip) for ip in row[:2])
+                         and row[0] <= row[1]
+                         and (len(row) == 2 or type(row[2]) is int and row[2] > 0))
+            else:
+                valid = (type(row) is list and len(row) == 4 and type(row[0]) is int
+                         and row[0] in (0, 1) and text(row[1]) and type(row[2]) is str
+                         and len(row[2].encode('utf-8')) <= 8192 and type(row[3]) is int and row[3] in (0, 1))
+            if not valid:
+                raise ValueError('规则内容格式不正确：' + name)
+
+    def __atomic_policy_text(self, path, text, expected=None, ownership=None):
+        import tempfile
+        import stat
+        parent = os.path.dirname(path)
+        self.__no_link_path(parent)
+        previous = os.lstat(path) if os.path.lexists(path) else None
+        if previous is not None and not stat.S_ISREG(previous.st_mode):
+            raise ValueError('配置目标不是普通文件')
+        fd, staged = tempfile.mkstemp(prefix='.policy-', dir=parent)
+        os.close(fd)
+        try:
+            if public.writeFile(staged, text) is False or public.readFile(staged) != text:
+                raise OSError('配置写入核验失败')
+            os.chmod(staged, stat.S_IMODE(previous.st_mode) if previous else 0o600)
+            if previous and hasattr(os, 'chown'):
+                os.chown(staged, previous.st_uid, previous.st_gid)
+            with open(staged, 'r+b') as stream:
+                os.fsync(stream.fileno())
+            if public.readFile(path) != (expected if expected is not None else False):
+                raise RuntimeError('发布前配置发生同期修改')
+            os.replace(staged, path)
+            if ownership is not None:
+                ownership.add(path)
+            if public.readFile(path) != text:
+                raise OSError('配置发布核验失败')
+        finally:
+            if os.path.exists(staged):
+                os.unlink(staged)
+
+    def __policy_exception_restore(self, actual, migration, current_rules, originals, site_published):
+        import copy
+        restored = copy.deepcopy(actual)
+        before, after = migration['before'], migration['after']
+        for site, conf in restored.items():
+            values = conf.get('disable_rule', {})
+            if type(values) is not dict:
+                raise ValueError('同期站点例外格式不正确')
+            for name, remap in migration['maps'].items():
+                old_values = before.get(site, {}).get('disable_rule', {})
+                new_values = after.get(site, {}).get('disable_rule', {})
+                value = values.get(name)
+                baseline = new_values if site_published else old_values
+                if site in before and value == baseline.get(name):
+                    if name in old_values:
+                        values[name] = old_values[name]
+                    else:
+                        values.pop(name, None)
+                    continue
+                if value is None:
+                    continue
+                if type(value) is not list or any(type(i) is not int or i < 0 for i in value):
+                    raise ValueError('同期站点例外序号不正确')
+                rule_path = self.__path + 'rule/' + name + '.json'
+                if current_rules[rule_path] != originals[rule_path]:
+                    reverse = {target: source for source, target in remap.items()}
+                    values[name] = sorted({reverse[i] for i in value if i in reverse})
+        return restored
+
+    def __policy_exception_forward(self, actual, migration, current_rules, originals, site_published):
+        import copy
+        forwarded = copy.deepcopy(actual)
+        if site_published:
+            return forwarded
+        for site, conf in forwarded.items():
+            for name, remap in migration['maps'].items():
+                values = conf.get('disable_rule', {})
+                if name not in values:
+                    continue
+                old_values = migration['before'].get(site, {}).get('disable_rule', {})
+                rule_path = self.__path + 'rule/' + name + '.json'
+                if ((site in migration['before'] and values[name] == old_values.get(name))
+                        or current_rules[rule_path] == originals[rule_path]):
+                    values[name] = sorted({remap[i] for i in values[name] if i in remap})
+        return forwarded
+
+    def __publish_policy_files(self, changes, expected=None, migration=None):
+        originals, applied, published = dict(expected or {}), [], set()
+        site_path = self.__path + 'site.json'
+        for path in set(changes) | set(originals):
+            self.__no_link_path(os.path.dirname(path))
+            if os.path.lexists(path):
+                self.__no_link_path(path)
+                if path not in originals:
+                    originals[path] = self.__read_policy(path)
+                if type(originals[path]) is not str:
+                    raise OSError('无法读取旧配置')
+            else:
+                originals.setdefault(path, None)
+                if originals[path] is False:
+                    originals[path] = None
+            if public.readFile(path) != (originals[path] if originals[path] is not None else False):
+                raise RuntimeError('候选构造后配置已被其他操作修改')
+        recovery = self.__path + '.policy-recovery'
+        self.__no_link_path(os.path.dirname(recovery))
+        os.makedirs(recovery, mode=0o700, exist_ok=True)
+        self.__no_link_path(recovery)
+        pending = recovery + '/pending.json'
+        if os.path.lexists(pending):
+            raise RuntimeError('上次策略发布尚待人工恢复')
+        journal = json.dumps({'format_version': 1, 'originals': originals, 'candidates': changes})
+        self.__atomic_policy_text(pending, journal)
+        try:
+            for path, candidate in changes.items():
+                if public.readFile(path) != (originals[path] if originals[path] is not None else False):
+                    raise RuntimeError('配置已被其他操作修改')
+                # Track attempts separately from successful replacement proofs.
+                applied.append(path)
+                self.__atomic_policy_text(path, candidate, expected=originals[path], ownership=published)
+            if self.__checked_nginx_reload() is False:
+                raise RuntimeError('Nginx 生效核验失败')
+            os.replace(pending, recovery + '/last.json')
+        except Exception as failure:
+            current = {path: public.readFile(path) for path in originals}
+            restore_plan, restored_paths = {}, []
+            recovery_started = False
+            try:
+                for path in changes:
+                    value = current[path]
+                    original = originals[path] if originals[path] is not None else False
+                    if value != original and value != changes[path]:
+                        if not migration or path != site_path:
+                            raise RuntimeError('已发布文件被同期修改')
+                for path in applied:
+                    original = originals[path] if originals[path] is not None else False
+                    if current[path] != original:
+                        restore_plan[path] = originals[path]
+                if migration:
+                    actual_site = json.loads(current[site_path])
+                    restored_site = self.__policy_exception_restore(actual_site,
+                                                                   migration, current, originals,
+                                                                   site_path in published)
+                    # Preserve candidate-only exceptions before the lossy reverse mapping.
+                    candidate_site = self.__policy_exception_forward(actual_site, migration, current,
+                                                                     originals, site_path in published)
+                    restore_plan[site_path] = json.dumps(restored_site)
+                # Restore rule tables first, exceptions last; compensate as a group on IO failure.
+                order = [p for p in restore_plan if p != site_path]
+                if site_path in restore_plan:
+                    order.append(site_path)
+                recovery_started = True
+                for path in order:
+                    restore = restore_plan[path]
+                    if restore is None:
+                        if public.readFile(path) != current[path]:
+                            raise RuntimeError('恢复前发生同期修改')
+                        os.unlink(path)
+                    elif restore != current[path]:
+                        self.__atomic_policy_text(path, restore, expected=current[path])
+                    restored_paths.append(path)
+                if restored_paths and self.__checked_nginx_reload() is False:
+                    raise RuntimeError('恢复后的重载未确认')
+                os.replace(pending, recovery + '/last.json')
+            except Exception as restore_failure:
+                # A partial rollback must not leave old offsets paired with new rule tables.
+                # Do not overwrite externally modified files; retain the journal and block retries.
+                try:
+                    if not recovery_started:
+                        raise RuntimeError('恢复规划有冲突，不发布补偿候选')
+                    coherent = dict(changes)
+                    if migration:
+                        coherent[site_path] = json.dumps(candidate_site)
+                    compensation_expected = {}
+                    for path in coherent:
+                        actual = public.readFile(path)
+                        owned = (current.get(path), restore_plan.get(path), changes.get(path))
+                        if actual not in owned:
+                            raise RuntimeError('恢复期间有外部变更')
+                        compensation_expected[path] = actual
+                    for path, candidate in coherent.items():
+                        expected = compensation_expected[path]
+                        if public.readFile(path) != expected:
+                            raise RuntimeError('补偿前发生同期修改')
+                        if expected != candidate:
+                            self.__atomic_policy_text(path, candidate, expected=expected)
+                except Exception:
+                    pass
+                raise RuntimeError('恢复未完整确认，已保留策略快照并阻止重复提交；需要人工核查') from restore_failure
+            raise RuntimeError('配置保存或生效失败，已恢复原文件') from failure
+
+    def __publish_rules(self, changes, preserve_positions=False, removed_index=None):
+        import copy
+        with self.__endpoint_transaction():
+            for name, rules in changes.items():
+                if name == 'ip_black':
+                    raise ValueError('IP 黑名单须使用统一封禁存储')
+                self.__validate_rule(name, rules)
+            files = {self.__path + 'rule/' + name + '.json': json.dumps(rules) for name, rules in changes.items()}
+            expected = {path: self.__read_policy(path) for path in files}
+            site_path = self.__path + 'site.json'
+            site_raw = self.__read_policy(site_path)
+            expected[site_path] = site_raw
+            sites = json.loads(site_raw) if site_raw else {}
+            if type(sites) is not dict:
+                raise ValueError('站点配置格式不正确')
+            migrated = copy.deepcopy(sites)
+            maps = {}
+            if not preserve_positions:
+                for name, rules in changes.items():
+                    if name not in ('post', 'args', 'cookie', 'header', 'user_agent', 'url'):
+                        continue
+                    old = self.__get_rule(name) or []
+                    positions = {}
+                    for index, row in enumerate(rules):
+                        positions.setdefault(row[1], []).append(index)
+                    remap, occurrences = {}, {}
+                    for index, row in enumerate(old):
+                        if type(row) is not list or len(row) < 2 or type(row[1]) is not str:
+                            raise ValueError('旧规则内容不正确')
+                        occurrence = occurrences.get(row[1], 0)
+                        occurrences[row[1]] = occurrence + 1
+                        targets = positions.get(row[1], [])
+                        if occurrence < len(targets):
+                            remap[index] = targets[occurrence]
+                    if removed_index is not None:
+                        remap = {i: i if i < removed_index else i-1 for i in range(len(old))
+                                 if i != removed_index}
+                    elif (len(occurrences) != len(old) or len(positions) != len(rules)):
+                        raise ValueError('同类重复表达式无法确定导入身份，请先逐条整理重复规则')
+                    maps[name] = remap
+                    for conf in migrated.values():
+                        if type(conf) is not dict or type(conf.get('disable_rule', {})) is not dict:
+                            raise ValueError('站点例外格式不正确')
+                        disabled = conf.get('disable_rule', {}).get(name)
+                        if disabled is None:
+                            continue
+                        if type(disabled) is not list or any(type(i) is not int for i in disabled):
+                            raise ValueError('站点例外序号不正确')
+                        conf['disable_rule'][name] = sorted({remap[i] for i in disabled if i in remap})
+            if migrated != sites:
+                files[site_path] = json.dumps(migrated)
+            self.__publish_policy_files(files, expected=expected,
+                                        migration={'before': sites, 'after': migrated, 'maps': maps} if maps else None)
+
+    def __write_rule(self,ruleName,rule, preserve_positions=False, removed_index=None):
+        self.__publish_rules({ruleName: rule}, preserve_positions=preserve_positions, removed_index=removed_index)
+        return True
     
     @__site_config_locked
     def __check_site(self,site_config):
@@ -4282,19 +4620,27 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         return public.returnMsg(False, '旧版国内 IP 库联网同步已停用：未下载未经验证的数据，现有本地规则保持不变。')
         
     def __remove_log_file(self,siteName):
-        total = json.loads(public.readFile(self.__path + 'total.json'))
-        if siteName in total['sites']:
-            del(total['sites'][siteName])
-            self.__write_total(total)
+        def remove_site(total):
+            total['sites'].pop(siteName, None)
+        return self.__write_total(remove_site)
+
+    def __write_total(self, mutate):
+        path = self.__total_path()
+        # Read under the same permanent lock used by the Lua counter flush.
+        with self.__ban_store_module().BanStore(path)._transaction():
+            original = public.readFile(path)
+            total = json.loads(original)
+            mutate(total)
+            candidate = json.dumps(total)
+            if candidate != original:
+                self.__atomic_policy_text(path, candidate, expected=original)
         return True
-            
-    def __write_total(self,total):
-        return public.writeFile(self.__path + 'total.json',json.dumps(total))
 
     
     def __write_config(self,config):
-        public.writeFile(self.__path + 'config.json',json.dumps(config))
-        public.serviceReload();
+        with self.__endpoint_transaction():
+            self.__publish_policy_files({self.__path + 'config.json': json.dumps(config)})
+        return True
     
     @__site_config_locked
     def __write_site_config(self,site_config):

@@ -34,7 +34,8 @@ class RealIntegrationRuntimeTest(unittest.TestCase):
             (runtime / 'site.json').write_text(json.dumps({'example.invalid': {'open': True,
                 'cc': dict(config['cc']), 'retry': 6, 'retry_time': 60, 'retry_cycle': 60,
                 'disable_php_path': [], 'disable_path': [], 'disable_ext': [],
-                'disable_upload_ext': [], 'url_rule': [], 'url_tell': []}}))
+                'disable_upload_ext': [], 'url_rule': [['^/fixture-post$', 'forbidden-fixture']],
+                'url_tell': []}}))
             (runtime / 'rule/scan_black.json').write_text(json.dumps({'cookie': [], 'header': [], 'args': []}))
             (runtime / 'rule/cn.json').write_text('[]')
             static = root / 'static'
@@ -59,7 +60,8 @@ class RealIntegrationRuntimeTest(unittest.TestCase):
                 'worker_processes 1; events { worker_connections 32; } http {\n'
                 'keepalive_timeout 0; keepalive_requests 1;\n' + lua_path + managed +
                 'server { listen 127.0.0.1:' + str(port) + '; server_name example.invalid; access_log off;\n'
-                'location / { root ' + str(static) + '; } } }\n')
+                'location / { root ' + str(static) + '; }\n'
+                'location = /fixture-post { content_by_lua_block { ngx.say("normal post completed") } } } }\n')
             args = [binary, '-p', str(root) + '/', '-c', str(conf)]
             diagnostics = (root / 'startup.log').open('wb')
             self.addCleanup(diagnostics.close)
@@ -100,6 +102,28 @@ class RealIntegrationRuntimeTest(unittest.TestCase):
                     self.assertEqual(response.read(), b'normal access handler completed')
                 finally:
                     connection.close()
+                for kind in ('no-length', 'chunked', 'json'):
+                    connection = http.client.HTTPConnection('127.0.0.1', port, timeout=1)
+                    try:
+                        if kind == 'no-length':
+                            connection.putrequest('POST', '/fixture-post', skip_host=True)
+                            connection.putheader('Host', 'example.invalid')
+                            connection.putheader('Content-Type', 'application/x-www-form-urlencoded')
+                            connection.endheaders()
+                        elif kind == 'chunked':
+                            connection.request('POST', '/fixture-post', body=iter([b'normal=1']),
+                                               headers={'Host': 'example.invalid',
+                                                        'Content-Type': 'application/x-www-form-urlencoded'},
+                                               encode_chunked=True)
+                        else:
+                            connection.request('POST', '/fixture-post', body=b'{"normal":1}',
+                                               headers={'Host': 'example.invalid', 'Content-Type': 'application/json'})
+                        response = connection.getresponse()
+                        diagnostics = (root / 'error.log').read_text(errors='replace')[-4000:]
+                        self.assertEqual(response.status, 200, kind + '\n' + diagnostics)
+                        self.assertEqual(response.read().strip(), b'normal post completed', kind)
+                    finally:
+                        connection.close()
                 connection = http.client.HTTPConnection('127.0.0.1', port, timeout=1)
                 try:
                     connection.request('GET', '/_gpt_firewall_health/invalid')

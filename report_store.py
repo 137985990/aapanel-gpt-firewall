@@ -5,10 +5,11 @@ import os
 import tempfile
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-REPORT_STORE_VERSION = 2
+REPORT_STORE_VERSION = 3
 
 try:
     import fcntl
@@ -68,7 +69,9 @@ class BackgroundReports:
             with path.open("r", encoding="utf-8") as stream:
                 item = json.load(stream)
             if (item.get("version") == 1 and isinstance(item.get("report"), dict)
-                    and isinstance(item.get("generated_at"), (int, float))):
+                    and isinstance(item.get("generated_at"), (int, float))
+                    and isinstance(item.get("started_at", item["generated_at"]), (int, float))
+                    and isinstance(item.get("refresh_revision", ""), str)):
                 return item
         except (OSError, ValueError, TypeError, AttributeError):
             pass
@@ -83,11 +86,15 @@ class BackgroundReports:
             try:
                 if force:
                     self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-                    self._save(self._path(key).with_suffix(".refresh"), {"requested_at": now})
+                    self._save(self._path(key).with_suffix(".refresh"),
+                               {"requested_at": now, "revision": uuid.uuid4().hex})
                 snapshot = self._load(self._path(key))
                 result = snapshot["report"] if snapshot else {}
-                fresh = (snapshot is not None and 0 <= now - snapshot["generated_at"] < self.ttl
-                         and snapshot["generated_at"] >= self._requested_at(key))
+                requested_at, revision = self._refresh_identity(key)
+                sampled_at = snapshot.get("started_at", snapshot["generated_at"]) if snapshot else 0
+                fresh = (snapshot is not None and 0 <= now - sampled_at < self.ttl
+                         and (revision or sampled_at >= requested_at)
+                         and snapshot.get("refresh_revision", "") == revision)
                 if key not in self._pending:
                     guard = self._claim_job(key)
                     shared_loading = guard is None
@@ -122,12 +129,13 @@ class BackgroundReports:
             result["error"] = "统计生成失败，请点击刷新重试。"
         return result
 
-    def _requested_at(self, key):
+    def _refresh_identity(self, key):
         try:
             with self._path(key).with_suffix(".refresh").open(encoding="utf-8") as stream:
-                return float(json.load(stream).get("requested_at", 0))
+                marker = json.load(stream)
+                return float(marker.get("requested_at", 0)), str(marker.get("revision", ""))
         except (OSError, ValueError, TypeError, AttributeError):
-            return 0
+            return 0, ""
 
     def _claim_job(self, key, blocking=False):
         if fcntl is None:
@@ -150,6 +158,8 @@ class BackgroundReports:
             os.close(guard)
 
     def _refresh(self, key, build, requested_at, guard):
+        completed = False
+        built_revision = None
         try:
             if guard is None:
                 guard = self._claim_job(key, blocking=True)
@@ -160,15 +170,30 @@ class BackgroundReports:
                 if fcntl is not None:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
                 path = self._path(key)
-                existing = self._load(path)
-                if existing and existing.get("generated_at", 0) >= requested_at:
-                    return
-                report = build()
-                if not isinstance(report, dict) or report.get("status") is False:
-                    raise ValueError("invalid statistics report")
-                snapshot = {"version": 1, "generated_at": time.time(), "report": report}
-                self._save(path, snapshot)
-                self._prune(path)
+                while True:
+                    with self._lock:
+                        refresh_at, revision = self._refresh_identity(key)
+                        existing = self._load(path)
+                        satisfied = built_revision is not None and built_revision == revision
+                        if (satisfied or (existing
+                                and existing.get("started_at", existing["generated_at"]) >= max(requested_at, refresh_at)
+                                and existing.get("refresh_revision", "") == revision)):
+                            # Retire the job under the request lock so a last-moment
+                            # force cannot observe pending and lose its follow-up.
+                            self._release_job(guard)
+                            guard = None
+                            self._pending.discard(key)
+                            completed = True
+                            return
+                        started_at = time.time()
+                    report = build()
+                    if not isinstance(report, dict) or report.get("status") is False:
+                        raise ValueError("invalid statistics report")
+                    snapshot = {"version": 1, "started_at": started_at, "refresh_revision": revision,
+                                "generated_at": time.time(), "report": report}
+                    self._save(path, snapshot)
+                    self._prune(path)
+                    built_revision = revision
         except Exception:
             logging.getLogger(__name__).exception("WAF statistics refresh failed")
             with self._lock:
@@ -177,8 +202,9 @@ class BackgroundReports:
                     self._errors.pop(next(iter(self._errors)))
         finally:
             self._release_job(guard)
-            with self._lock:
-                self._pending.discard(key)
+            if not completed:
+                with self._lock:
+                    self._pending.discard(key)
 
     def _save(self, path, snapshot):
         temporary = None

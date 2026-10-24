@@ -89,7 +89,7 @@ class OfflineInstallerTest(unittest.TestCase):
         for name in ("free_waf_main.py", "ban_store.py", "report_store.py", "website_statistics.py", "update_service.py"):
             self.write(self.plugin / name, "# imported backend; prior version unavailable\n")
         self.write(self.plugin / "index.html", "<html>already imported UI</html>\n")
-        self.write_json(self.plugin / "info.json", {"name": "free_waf", "versions": "0.1.7"})
+        self.write_json(self.plugin / "info.json", {"name": "free_waf", "versions": "0.1.8"})
         self.write_json(self.plugin / "rule.json", ["scanner_signature"])
         self.write(self.runtime / "init.lua", OLD_LUA)
         self.write(self.runtime / "waf.lua", "run_btwaf()\n")
@@ -171,7 +171,8 @@ class OfflineInstallerTest(unittest.TestCase):
         paths = [p for p in self.runtime.rglob("*") if p.is_file() and p.name != "init.lua"]
         paths += [self.include, self.conf, self.root / "www/wwwlogs/free_waf_log/history.log"]
         return {str(p.relative_to(self.root)): (p.read_bytes(), p.stat().st_mtime_ns, stat.S_IMODE(p.stat().st_mode))
-                for p in paths if p.is_file() and ".gpt-firewall-" not in str(p)}
+                for p in paths if p.is_file() and ".gpt-firewall-" not in str(p)
+                and '.statistics' not in p.parts and p.name != 'ip_black.json.lock'}
 
     def assert_failed_without_runtime_change(self, result, before):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -191,7 +192,7 @@ class OfflineInstallerTest(unittest.TestCase):
         self.assertEqual((self.plugin / "free_waf_main.py").read_bytes(), backend)
         status = self.status()
         self.assertEqual(status["status"], "success")
-        self.assertEqual(status["version"], "0.1.7")
+        self.assertEqual(status["version"], "0.1.8")
         self.assertEqual(status["plugin_name"], "free_waf")
         self.assertTrue(status["waf_active"])
         self.assertTrue(status["runtime_changed"])
@@ -281,7 +282,7 @@ class OfflineInstallerTest(unittest.TestCase):
                 self.assertFalse(self.calls())
 
     def test_wrong_package_identity_is_rejected(self):
-        self.write_json(self.plugin / "info.json", {"name": "gpt_firewall", "versions": "0.1.7"})
+        self.write_json(self.plugin / "info.json", {"name": "gpt_firewall", "versions": "0.1.8"})
         self.assert_failed_without_runtime_change(self.run_installer(), self.state_snapshot())
 
     def test_wrong_package_version_is_rejected(self):
@@ -459,14 +460,15 @@ class OfflineInstallerTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.state_snapshot(), before)
 
-    def test_identical_init_does_not_backup_rewrite_or_reload(self):
+    def test_identical_init_prepares_storage_without_rewrite_or_reload(self):
         self.write(self.runtime / "init.lua", NEW_LUA)
         before = (self.runtime / "init.lua").stat().st_mtime_ns
         result = self.run_installer()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(self.status()["runtime_changed"])
         self.assertEqual((self.runtime / "init.lua").stat().st_mtime_ns, before)
-        self.assertFalse(list(self.runtime.glob(".gpt-firewall-backup.*")))
+        self.assertTrue(list(self.runtime.glob(".gpt-firewall-backup.*/storage-migration.json")))
+        self.assertTrue((self.runtime / '.statistics/total.json').is_file())
         self.assertFalse(any("-s reload" in call for call in self.calls()))
 
     def test_candidate_nginx_test_failure_rolls_back_and_reloads_old_runtime(self):
@@ -557,7 +559,8 @@ class OfflineInstallerTest(unittest.TestCase):
         result = self.run_installer()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         for directory in [self.plugin, *[p for p in self.plugin.rglob("*") if p.is_dir()]]:
-            self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o755)
+            public_directories = [self.plugin, self.plugin / 'html', self.plugin / 'docs', self.plugin / 'docs/images']
+            self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o755 if directory in public_directories else 0o700)
         self.assertEqual(stat.S_IMODE((self.plugin / "install-status.json").stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(original.stat().st_mode), original_mode)
         self.assertEqual((original.stat().st_uid, original.stat().st_gid), original_owner)

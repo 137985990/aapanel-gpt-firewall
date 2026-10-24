@@ -1,3 +1,4 @@
+import ast
 import re
 import unittest
 from pathlib import Path
@@ -10,13 +11,11 @@ class BackendPolicyTest(unittest.TestCase):
         self.frontend = (self.plugin_dir / "index.html").read_text(encoding="utf-8", errors="replace")
 
     def _function_body(self, name):
-        match = re.search(
-            r"^\s+def\s+" + re.escape(name) + r"\s*\([^)]*\):(.*?)(?=^\s+def\s+|\Z)",
-            self.backend,
-            re.S | re.M,
-        )
-        self.assertIsNotNone(match, name + " function not found")
-        return match.group(1)
+        tree = ast.parse(self.backend)
+        node = next((node for cls in tree.body if isinstance(cls, ast.ClassDef)
+                     for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == name), None)
+        self.assertIsNotNone(node, name + " function not found")
+        return '\n'.join(self.backend.splitlines()[node.lineno:node.end_lineno])
 
     def test_ip_stats_uses_ban_store_for_temporary_bans(self):
         body = self._function_body("get_ip_stats")
@@ -47,7 +46,6 @@ class BackendPolicyTest(unittest.TestCase):
         for body in [search_body, detail_body]:
             with self.subTest(body=body[:40]):
                 self.assertIn("free_waf_log", body)
-                self.assertIn("json.loads", body)
                 self.assertIn("escape", body)
                 for unsafe in [
                     "__write_rule",
@@ -67,7 +65,9 @@ class BackendPolicyTest(unittest.TestCase):
         self.assertIn("siteName", search_body)
         self.assertIn("ruleType", search_body)
         self.assertIn("keyword", search_body)
-        self.assertIn("line_no", search_body)
+        self.assertIn("json.loads", self._function_body("__merged_waf_rows"))
+        self.assertIn("json.loads", detail_body)
+        self.assertIn("offset", search_body)
         self.assertIn("raw", detail_body)
 
     def test_report_dashboard_summary_is_read_only_and_aggregates_official_report_data(self):
@@ -139,7 +139,7 @@ class BackendPolicyTest(unittest.TestCase):
         recent_window_body = self._function_body("__iter_recent_window_rows")
         self.assertIn("os.SEEK_END", recent_window_body)
         self.assertNotIn("__read_recent_lines", recent_window_body)
-        self.assertIn('website-statistics-v2', endpoint)
+        self.assertIn('website-statistics-v3-geography', endpoint)
         self.assertNotIn("for line in self.__read_recent_lines(path, line_limit):", body)
         self.assertNotIn("for line in self.__iter_log_lines(path):", body)
         self.assertNotIn("for line in self.__read_recent_lines(path, recent_access_limit):", body)
@@ -300,7 +300,7 @@ class BackendPolicyTest(unittest.TestCase):
     def test_add_rule_creates_missing_rule_files_as_empty_lists(self):
         body = self._function_body("add_rule")
         self.assertIn("if not rule: rule = []", body)
-        self.assertIn("__write_rule(get.ruleName, rule)", body)
+        self.assertIn("__write_rule(get.ruleName, rule, preserve_positions=True)", body)
 
     def test_frontend_methods_exist_in_backend(self):
         defs = set(re.findall(r"^\s+def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", self.backend, re.M))
@@ -374,8 +374,9 @@ class BackendPolicyTest(unittest.TestCase):
             "MANUAL_MAX_BAN_SECONDS",
             "store.add_temp_ban(get.start_ip, ban_seconds",
             "__write_drop_ip_entry(get.start_ip, drop_time=ban_seconds",
-            "iplist.insert(0, ipn + [int(_t.time()) + ban_seconds])",
-            "iplist.insert(0, ipn)",
+            "store.add_temp_ban(get.start_ip, ban_seconds",
+            "return [ipn] + rules",
+            "store.mutate_rules(add_range)",
         ]:
             with self.subTest(token=token):
                 self.assertIn(token, body)

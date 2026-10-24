@@ -1,13 +1,12 @@
 """Fixed-source updates; no scheduler, frontend paths, or arbitrary commands."""
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import hashlib
 import io
 import json
 import os
 from pathlib import Path, PurePosixPath
 import re
-import shlex
 import signal
 import ssl
 import stat
@@ -27,7 +26,7 @@ except ImportError:
     fcntl = None
 
 
-PLUGIN_VERSION = '0.1.7'
+PLUGIN_VERSION = '0.1.8'
 REPOSITORY = '137985990/aapanel-gpt-firewall'
 API_URL = 'https://api.github.com/repos/' + REPOSITORY + '/releases'
 DOWNLOAD_URL = 'https://github.com/' + REPOSITORY + '/releases/download/'
@@ -65,6 +64,7 @@ INSTALLER_REASONS = {
     'config_incomplete': '既有防护配置缺少必要字段。',
     'response_template': '既有响应模板配置不完整。',
     'scan_rules': '既有扫描器规则结构不兼容。',
+    'storage_permissions': '运行数据存储权限准备未完成，请检查本机迁移记录，未改防护规则。',
     'preflight_failed': '兼容性检查未通过，请检查本机安装状态。',
     'nginx_test_failed': '宝塔 Nginx 配置检查失败，未确认升级生效。',
     'nginx_reload_failed': '宝塔 Nginx 平滑重载失败，请核对回退结果。',
@@ -82,6 +82,102 @@ class UpdateError(Exception):
     def __init__(self, code, message):
         super().__init__(message)
         self.code = code
+
+
+def nginx_directives(body):
+    # Keep in sync with the standalone installer; never tokenize Lua as shell.
+    long_lua = re.compile(r'\[(=*)\[')
+
+    def skip_lua(position):
+        depth = 1
+        while position < len(body):
+            char = body[position]
+            comment = body.startswith('--', position)
+            start = position + 2 if comment else position
+            long_string = long_lua.match(body, start)
+            if long_string:
+                closing = ']' + long_string.group(1) + ']'
+                end = body.find(closing, start + len(long_string.group(0)))
+                if end < 0:
+                    raise ValueError('unfinished_lua_string')
+                position = end + len(closing)
+                continue
+            if comment:
+                end = body.find('\n', start)
+                position = len(body) if end < 0 else end + 1
+                continue
+            if char in ('"', "'"):
+                quote = char
+                position += 1
+                while position < len(body) and body[position] != quote:
+                    position += 2 if body[position] == '\\' else 1
+                if position >= len(body):
+                    raise ValueError('unfinished_lua_quote')
+            elif char == '{':
+                depth += 1
+            elif char == '}':
+                depth -= 1
+                if depth == 0:
+                    return position + 1
+            position += 1
+        raise ValueError('unfinished_lua_block')
+
+    statements, current = [], []
+    token, quote, started, position = [], None, False, 0
+    while position < len(body):
+        char = body[position]
+        if char == '\\':
+            if position + 1 >= len(body):
+                raise ValueError('unfinished_nginx_escape')
+            escaped = body[position + 1]
+            token.append({'t': '\t', 'r': '\r', 'n': '\n'}.get(
+                escaped, escaped if escaped in ('"', "'", '\\') else '\\' + escaped))
+            started = True
+            position += 2
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            else:
+                token.append(char)
+            position += 1
+            continue
+        if char in ('"', "'") and not started:
+            quote, started = char, True
+            position += 1
+            continue
+        if char not in ' \t\r\n;{}#' or char == '#' and started:
+            token.append(char)
+            started = True
+            position += 1
+            continue
+        if char == '{' and token and token[-1] == '$':
+            end = body.find('}', position + 1)
+            if end < 0:
+                raise ValueError('unfinished_nginx_variable')
+            token.append(body[position:end + 1])
+            position = end + 1
+            continue
+        if started:
+            current.append(''.join(token))
+            token, started = [], False
+        if char == '#':
+            end = body.find('\n', position)
+            position = len(body) if end < 0 else end + 1
+            continue
+        if char in ';{}':
+            if char == ';' and current:
+                statements.append(current)
+            if char == '{' and current and current[0].endswith('_by_lua_block'):
+                statements.append(current + ['{'])
+                position = skip_lua(position + 1)
+                current = []
+                continue
+            current = []
+        position += 1
+    if quote or started or current:
+        raise ValueError('unfinished_nginx_directive')
+    return statements
 
 
 def parse_version(value):
@@ -260,7 +356,8 @@ class UpdateService:
             raise UpdateError('schema', '本地更新状态结构异常，请人工检查。')
         return data
 
-    def _atomic_write(self, path, data, *, metadata=None, mode=0o600, preserve_times=True):
+    def _atomic_write(self, path, data, *, metadata=None, mode=0o600, preserve_times=True,
+                      ownership=None, expected_write=None):
         path = Path(path)
         self._mkdir(path.parent)
         self._safe(path, missing=True)
@@ -279,6 +376,12 @@ class UpdateService:
             if metadata is not None and preserve_times:
                 os.utime(temporary, ns=(metadata['atime_ns'], metadata['mtime_ns']))
             self._safe(path, missing=True)
+            if ownership is not None:
+                info = os.stat(temporary, follow_symlinks=False)
+                ownership.update(dev=info.st_dev, ino=info.st_ino,
+                                 sha256=hashlib.sha256(data).hexdigest())
+            if expected_write is not None and not self._owns_write(path, expected_write):
+                raise UpdateError('concurrent', '发布或恢复准备期间文件发生变化，已保留同期修改。')
             os.replace(temporary, path)
             if os.name == 'posix':
                 directory = os.open(str(path.parent), os.O_RDONLY | os.O_DIRECTORY)
@@ -323,6 +426,81 @@ class UpdateService:
         if not self._test_mode and (fcntl is None or os.name != 'posix' or
                                     self.plugin != PRODUCTION_PLUGIN or os.geteuid() != 0):
             raise UpdateError('environment', '更新只支持具有文件锁的现有 root 面板环境。')
+
+    @contextmanager
+    def _install_lock(self, task_id):
+        path = self.plugin / '.gpt-firewall-install.lock'
+        self._safe(path, directory=True, missing=True)
+        try:
+            path.mkdir(mode=0o700)
+        except FileExistsError:
+            raise UpdateError('busy', '已有安装任务或遗留安装锁，未替换代码。') from None
+        owner = dict(task_id=task_id, token=uuid.uuid4().hex + uuid.uuid4().hex, pid=os.getpid())
+        descriptor = None
+        completed = False
+        try:
+            self._save(path / 'owner.json', owner)
+            descriptor = os.open(str(path / 'owner.json'), os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+            self._install_owner = dict(owner, fd=descriptor)
+            yield
+            completed = True
+        finally:
+            self._install_owner = None
+            try:
+                if descriptor is not None and completed:
+                    info = os.fstat(descriptor)
+                    current = (path / 'owner.json').lstat()
+                    if ((info.st_dev, info.st_ino) != (current.st_dev, current.st_ino)
+                            or self._json(path / 'owner.json') != owner):
+                        raise UpdateError('locking', '安装锁身份发生变化，保留现场供人工恢复。')
+                    if os.name == 'nt':
+                        os.close(descriptor)
+                        descriptor = None
+                    (path / 'owner.json').unlink()
+                    path.rmdir()
+                # Retain the lock if initialization or final persistence failed.
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+
+    def _owns_write(self, target, ownership):
+        if not isinstance(ownership, dict):
+            return False
+        if ownership == {'existed': False}:
+            self._safe(target, missing=True)
+            try:
+                target.lstat()
+            except FileNotFoundError:
+                return True
+            return False
+        try:
+            _, info, digest = self._file_snapshot(target)
+        except (OSError, UpdateError):
+            return False
+        return (ownership.get('dev'), ownership.get('ino'), ownership.get('sha256')) == (
+            info.st_dev, info.st_ino, digest)
+
+    def _file_snapshot(self, path):
+        self._safe(path)
+        descriptor = os.open(str(path), os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+                             | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NONBLOCK', 0))
+        with os.fdopen(descriptor, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise UpdateError('path', '受管文件不再是独占普通文件。')
+            data = stream.read(MAX_FILE + 1)
+            if len(data) > MAX_FILE:
+                raise UpdateError('size', '既有文件超过安全大小上限。')
+            digest = hashlib.sha256(data).hexdigest()
+            after = os.fstat(stream.fileno())
+            current = path.lstat()
+            # Hash and identity belong to one descriptor; recheck its pathname last.
+            if ((info.st_size, info.st_mtime_ns, info.st_ctime_ns) !=
+                    (after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                    or (after.st_dev, after.st_ino) != (current.st_dev, current.st_ino)
+                    or not stat.S_ISREG(current.st_mode) or current.st_nlink != 1):
+                raise UpdateError('concurrent', '读取校验期间文件被修改或替换，已停止覆盖。')
+            return data, info, digest
 
     def _current(self):
         info = self._json(self.plugin / 'info.json')
@@ -626,8 +804,8 @@ class UpdateService:
         return result
 
     @staticmethod
-    def _metadata(path):
-        value = path.stat()
+    def _metadata(path, value=None):
+        value = path.stat() if value is None else value
         return dict(mode=stat.S_IMODE(value.st_mode), uid=value.st_uid, gid=value.st_gid,
                     atime_ns=value.st_atime_ns, mtime_ns=value.st_mtime_ns)
 
@@ -636,18 +814,21 @@ class UpdateService:
         for name in MANAGED_FILES:
             path = self.plugin / name
             self._safe(path, missing=True)
-            entry = dict(existed=path.exists())
+            entry = dict(existed=path.exists(), write={'existed': False})
             if entry['existed']:
-                entry.update(metadata=self._metadata(path))
-                data = self._read(path)
-                entry['sha256'] = hashlib.sha256(data).hexdigest()
+                data, info, digest = self._file_snapshot(path)
+                entry.update(metadata=self._metadata(path, info))
+                entry['sha256'] = digest
+                entry['write'] = dict(dev=info.st_dev, ino=info.st_ino, sha256=entry['sha256'])
                 self._atomic_write(directory / 'plugin' / name, data)
             manifest[name] = entry
         path = self.runtime / 'init.lua'
         self._safe(path)
-        manifest['runtime'] = dict(metadata=self._metadata(path))
-        data = self._read(path)
-        manifest['runtime']['sha256'] = hashlib.sha256(data).hexdigest()
+        data, info, digest = self._file_snapshot(path)
+        manifest['runtime'] = dict(metadata=self._metadata(path, info))
+        manifest['runtime']['sha256'] = digest
+        manifest['runtime']['write'] = dict(dev=info.st_dev, ino=info.st_ino,
+                                         sha256=manifest['runtime']['sha256'])
         self._atomic_write(directory / 'runtime/init.lua', data)
         self._save(directory / 'manifest.json', manifest)
         return manifest
@@ -655,7 +836,7 @@ class UpdateService:
     def _rollback(self, backup, manifest, installer_attempted, touched, conflicts):
         errors = []
         conflicts = list(conflicts)
-        for name, candidate_hash in touched.items():
+        for name, ownership in touched.items():
             try:
                 entry, target = manifest[name], self.plugin / name
                 self._safe(target, missing=True)
@@ -663,18 +844,24 @@ class UpdateService:
                 original_hash = entry.get('sha256')
                 if current_hash == original_hash:
                     continue
-                if current_hash != candidate_hash:
+                if not target.exists() or not self._owns_write(target, ownership):
                     conflicts.append(name)
                     continue
                 if entry['existed']:
                     data = self._read(backup / 'plugin' / name)
                     if hashlib.sha256(data).hexdigest() != entry['sha256']:
                         raise UpdateError('backup', '备份摘要不一致。')
-                    self._atomic_write(target, data, metadata=entry['metadata'])
+                    self._atomic_write(target, data, metadata=entry['metadata'], expected_write=ownership)
                 elif target.exists():
+                    if not self._owns_write(target, ownership):
+                        conflicts.append(name)
+                        continue
                     target.unlink()
-            except Exception:
-                errors.append('code:' + name)
+            except Exception as error:
+                if isinstance(error, UpdateError) and error.code == 'concurrent':
+                    conflicts.append(name)
+                else:
+                    errors.append('code:' + name)
         reload_needed = False
         runtime_restored = False
         # Only the installer owns runtime writes; do not undo unrelated operator repairs.
@@ -687,17 +874,29 @@ class UpdateService:
                 current_hash = hashlib.sha256(self._read(target)).hexdigest()
                 if current_hash == manifest['runtime']['sha256']:
                     runtime_restored = True
-                elif current_hash == touched.get('init.lua'):
-                    self._atomic_write(target, data, metadata=manifest['runtime']['metadata'])
-                    reload_needed = runtime_restored = True
                 else:
+                    try:
+                        proof = self._json(self.plugin / 'install-status.json')
+                    except Exception:
+                        proof = {}
+                    ownership = proof.get('runtime_write')
+                    if (proof.get('task_id') == self._install_owner['task_id']
+                            and proof.get('runtime_changed') is True and self._owns_write(target, ownership)):
+                        self._atomic_write(target, data, metadata=manifest['runtime']['metadata'],
+                                           expected_write=ownership)
+                        reload_needed = runtime_restored = True
+                    else:
+                        conflicts.append('runtime')
+            except Exception as error:
+                if isinstance(error, UpdateError) and error.code in ('concurrent', 'path'):
                     conflicts.append('runtime')
-            except Exception:
-                errors.append('runtime')
+                else:
+                    errors.append('runtime')
             try:
                 status_path = self.plugin / 'install-status.json'
                 report = self._json(status_path) if status_path.exists() else {}
-                reload_needed = reload_needed or report.get('runtime_changed') is True
+                reload_needed = reload_needed or (report.get('task_id') == self._install_owner['task_id']
+                                                  and report.get('runtime_changed') is True)
             except Exception:
                 pass
         if reload_needed and runtime_restored:
@@ -709,10 +908,10 @@ class UpdateService:
                     conflict=bool(conflicts), conflicts=sorted(set(conflicts)))
 
     @staticmethod
-    def _command(arguments, timeout=30, capture=False):
+    def _command(arguments, timeout=30, capture=False, **options):
         process = subprocess.Popen(arguments, stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL, shell=False, start_new_session=True)
+                                   stderr=subprocess.DEVNULL, shell=False, start_new_session=True, **options)
         try:
             output, _ = process.communicate(timeout=timeout)
         except BaseException:
@@ -729,7 +928,16 @@ class UpdateService:
     def _run_installer(self, plugin):
         self._production()
         self._safe(plugin / 'install.sh')
-        code, _ = self._command(['/bin/bash', str(plugin / 'install.sh'), 'install'], timeout=180)
+        owner = self._install_owner
+        environment = os.environ.copy()
+        environment.update(GPT_FIREWALL_INSTALL_TASK=owner['task_id'],
+                           GPT_FIREWALL_INSTALL_TOKEN=owner['token'],
+                           GPT_FIREWALL_INSTALL_FD=str(owner['fd']))
+        arguments = ['/bin/bash', str(plugin / 'install.sh'), 'install']
+        if self._test_mode:
+            environment['GPT_FIREWALL_TEST_ROOT'] = str(self.plugin.parents[4])
+            arguments.append('--test-mode')
+        code, _ = self._command(arguments, timeout=180, env=environment, pass_fds=(owner['fd'],))
         return code
 
     def _restore_nginx(self):
@@ -743,8 +951,8 @@ class UpdateService:
         code, output = self._command([str(nginx), '-T'] + options, capture=True)
         if code:
             raise UpdateError('nginx', '不能确认恢复后的 Nginx 引用状态。')
-        tokens = shlex.split(output.decode('utf-8'), comments=True)
-        hooks = [tokens[i + 1].rstrip(';') for i, token in enumerate(tokens[:-1]) if token == 'init_by_lua_file']
+        rows = nginx_directives(output.decode('utf-8'))
+        hooks = [row[1] for row in rows if len(row) == 2 and row[0] == 'init_by_lua_file']
         if '/www/server/free_waf/init.lua' not in hooks:
             return
         if self._command([str(nginx), '-s', 'reload'] + options)[0] != 0:
@@ -756,13 +964,14 @@ class UpdateService:
             self._production()
             if not isinstance(job_id, str) or not re.fullmatch(r'[0-9a-f]{32}', job_id):
                 raise UpdateError('job', '更新任务编号无效。')
-            with self._lock(blocking=True):
+            with self._lock(blocking=True), ExitStack() as transaction:
                 job = self._job()
                 if not job or job['id'] != job_id or job['state'] != 'queued':
                     raise UpdateError('job', '任务不存在、已执行或需要人工恢复。')
                 backup, manifest, changes, installer_attempted = None, None, False, False
                 touched, conflicts = {}, []
                 try:
+                    transaction.enter_context(self._install_lock(job_id))
                     self._phase(job, 'verify', '正在核对固定来源、版本与下载资源。')
                     if parse_version(job['target_version']) <= parse_version(self._current()):
                         raise UpdateError('version', '既有版本已改变，禁止重复安装或降级。')
@@ -803,9 +1012,15 @@ class UpdateService:
                         if current_hash != entry.get('sha256'):
                             conflicts.append(name)
                             raise UpdateError('concurrent', '受管代码在更新期间发生变化，已停止覆盖。')
-                        touched[name] = hashlib.sha256(data).hexdigest()
-                        self._atomic_write(target, data, metadata=entry.get('metadata'), preserve_times=False,
-                                           mode=0o755 if name == 'install.sh' else 0o644)
+                        touched[name] = {}
+                        try:
+                            self._atomic_write(target, data, metadata=entry.get('metadata'), preserve_times=False,
+                                               mode=0o755 if name == 'install.sh' else 0o644,
+                                               ownership=touched[name], expected_write=entry['write'])
+                        except UpdateError as error:
+                            if error.code == 'concurrent':
+                                conflicts.append(name)
+                            raise
                     self._phase(job, 'install', '正在执行包内离线兼容安装器。')
                     status_path = self.plugin / 'install-status.json'
                     previous_stat = status_path.stat().st_mtime_ns if status_path.exists() else None
@@ -819,6 +1034,7 @@ class UpdateService:
                     try:
                         report = self._json(status_path)
                         fresh_report = (self._installer_identity(report, job['target_version'])
+                                        and report.get('task_id') == job_id
                                         and status_path.stat().st_mtime_ns != previous_stat)
                     except Exception:
                         raise UpdateError('installer', '安装器没有写入可校验的最新状态。')

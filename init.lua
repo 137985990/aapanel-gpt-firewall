@@ -45,6 +45,7 @@ end
 local config = json.decode(read_file_body(cpath .. 'config.json'))
 local site_config = json.decode(read_file_body(cpath .. 'site.json'))
 local repeat_ban_cache = {}
+local total_log_state = {}
 local other_html
 
 function repeat_ban_policy(site)
@@ -160,7 +161,55 @@ function repeat_ban_snapshot(force)
 	return snapshot
 end
 
-function repeat_ban_lock()
+function runtime_file_stat(owner,path)
+	local ffi = owner.ffi
+	if not repeat_ban_cache.metadata_ready then
+		-- Only the stable Linux x64/arm64 stat prefix is read; reserve its full tail.
+		local prefix = ffi.arch == 'x64'
+			and 'unsigned long dev,ino,nlink; unsigned int mode,uid,gid;'
+			or 'unsigned long dev,ino; unsigned int mode,nlink,uid,gid;'
+		local declared = pcall(ffi.cdef,'struct gpt_fw_stat { ' .. prefix .. [[ unsigned char tail[256]; };
+			int gpt_fw_fstat(int fd, void *buf) __asm__("fstat");
+			int gpt_fw_fchmod(int fd, unsigned int mode) __asm__("fchmod");
+			int gpt_fw_fchown(int fd, unsigned int uid, unsigned int gid) __asm__("fchown");
+			long gpt_fw_write(int fd, const void *buf, unsigned long count) __asm__("write");
+			int gpt_fw_fsync(int fd) __asm__("fsync");
+		]])
+		if not declared then return nil end
+		repeat_ban_cache.metadata_ready = true
+	end
+	local fd,opened = path,false
+	if type(path) == 'string' then
+		fd = ffi.C.open(path,657408) -- O_RDONLY|O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC
+		if fd < 0 then return nil,ffi.errno() end
+		opened = true
+	end
+	local buffer = ffi.new('struct gpt_fw_stat[1]')
+	local ok = ffi.C.gpt_fw_fstat(fd,buffer) == 0
+	if opened then ffi.C.close(fd) end
+	if not ok or math.floor(tonumber(buffer[0].mode)/4096) ~= 8 then return nil end
+	local row = buffer[0]
+	return {dev=tostring(row.dev),ino=tostring(row.ino),nlink=tonumber(row.nlink),
+		mode=tonumber(row.mode)%4096,uid=tonumber(row.uid),gid=tonumber(row.gid)}
+end
+
+function runtime_lock_metadata(owner,path)
+	local metadata,err = runtime_file_stat(owner,path)
+	if not metadata then return err == 2 end
+	local current = runtime_file_stat(owner,owner.fd)
+	if not current or current.nlink ~= 1 then return false end
+	local mode = 384 + (math.floor(metadata.mode/16)%2 == 1 and 48 or 0)
+		+ (math.floor(metadata.mode/2)%2 == 1 and 6 or 0)
+	local c = owner.ffi.C
+	if (current.uid ~= metadata.uid or current.gid ~= metadata.gid)
+		and c.gpt_fw_fchown(owner.fd,metadata.uid,metadata.gid) ~= 0 then return false end
+	if current.mode ~= mode and c.gpt_fw_fchmod(owner.fd,mode) ~= 0 then return false end
+	local verified,named = runtime_file_stat(owner,owner.fd),runtime_file_stat(owner,path .. '.lock')
+	return verified and named and verified.uid == metadata.uid and verified.gid == metadata.gid
+		and verified.mode == mode and verified.dev == named.dev and verified.ino == named.ino
+end
+
+function repeat_ban_lock(path)
 	local ffi = repeat_ban_cache.lock_ffi
 	if ffi == nil then
 		local available,module = pcall(require,'ffi')
@@ -179,7 +228,7 @@ function repeat_ban_lock()
 	local ok,locked = pcall(function()
 		-- Linux x64/arm64: O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC, mode 0600.
 		-- Open after worker fork on every acquisition; never unlink this inode.
-		fd = ffi.C.open(cpath .. '.repeat-bans.lock',655426,ffi.new('unsigned int',384))
+		fd = ffi.C.open(path or (cpath .. '.repeat-bans.lock'),655426,ffi.new('unsigned int',384))
 		if fd < 0 then fd=nil; return false end
 		return ffi.C.flock(fd,6) == 0 -- LOCK_EX|LOCK_NB
 	end)
@@ -187,7 +236,12 @@ function repeat_ban_lock()
 		if fd then pcall(function() ffi.C.close(fd) end) end
 		return nil,'lock_failed'
 	end
-	return {fd=fd,ffi=ffi}
+	local owner = {fd=fd,ffi=ffi}
+	if path then
+		local checked,valid = pcall(runtime_lock_metadata,owner,string.sub(path,1,-6))
+		if not checked or not valid then repeat_ban_unlock(owner); return nil,'lock_metadata' end
+	end
+	return owner
 end
 
 function repeat_ban_unlock(owner)
@@ -195,6 +249,59 @@ function repeat_ban_unlock(owner)
 		pcall(function() owner.ffi.C.close(owner.fd) end)
 		owner.fd=nil
 	end
+end
+
+function runtime_atomic_write(path, body, owner)
+	if type(owner) ~= 'table' or not owner.fd then return false end
+	local temporary = path .. '.' .. ngx.md5(body .. tostring(ngx.now()) .. tostring(ngx.worker.pid())) .. '.tmp'
+	local fd,created
+	local verified,result = pcall(function()
+		local metadata,err = runtime_file_stat(owner,path)
+		if not metadata and err ~= 2 then return false end
+		-- O_EXCL prevents following/reusing a stale or attacker-chosen temporary inode.
+		fd = owner.ffi.C.open(temporary,655553,owner.ffi.new('unsigned int',384))
+		if fd < 0 then fd=nil; return false end
+		created = true
+		local current = runtime_file_stat(owner,fd)
+		if not current then return false end
+		local c = owner.ffi.C
+		if metadata then
+			if (current.uid ~= metadata.uid or current.gid ~= metadata.gid)
+				and c.gpt_fw_fchown(fd,metadata.uid,metadata.gid) ~= 0 then return false end
+		end
+		local offset = 0
+		while offset < #body do
+			local count = tonumber(c.gpt_fw_write(fd,string.sub(body,offset+1),#body-offset))
+			if not count or count <= 0 then return false end
+			offset = offset+count
+		end
+		if metadata then
+			if c.gpt_fw_fchmod(fd,metadata.mode) ~= 0 then return false end
+			current = runtime_file_stat(owner,fd)
+			if not current or current.uid ~= metadata.uid or current.gid ~= metadata.gid or current.mode ~= metadata.mode then return false end
+		end
+		if c.gpt_fw_fsync(fd) ~= 0 then return false end
+		local closing = fd; fd=nil
+		if c.close(closing) ~= 0 then return false end
+		if read_file_body(temporary) ~= body then return false end
+		local latest = runtime_file_stat(owner,path)
+		if metadata and (not latest or latest.dev ~= metadata.dev or latest.ino ~= metadata.ino
+			or latest.mode ~= metadata.mode or latest.uid ~= metadata.uid or latest.gid ~= metadata.gid) then return false end
+		if not metadata and latest then return false end
+		return not not os.rename(temporary,path)
+	end)
+	if fd then pcall(function() owner.ffi.C.close(fd) end) end
+	if not verified or not result then if created then os.remove(temporary) end; return false end
+	return true
+end
+
+function with_ip_black_lock(action)
+	-- Shared with BanStore: rule/ip_black.json.lock is never renamed/unlinked.
+	local owner = repeat_ban_lock(jpath .. 'ip_black.json.lock')
+	if not owner then return false end
+	local ok,result = pcall(action,owner)
+	repeat_ban_unlock(owner)
+	return ok,result
 end
 
 function repeat_ban_write(bans, owner)
@@ -783,23 +890,114 @@ function registration_guard(current_server_name, client_ip, current_method, curr
 	return true
 end
 
+function total_log_path()
+	local path = cpath .. '.statistics/total.json'
+	local fp,err,code = io.open(path,'rb')
+	if fp then fp:close(); return path end
+	-- Only an absent migrated file/directory permits the legacy compatibility path.
+	if code == 2 then return cpath .. 'total.json' end
+	return nil
+end
+
+function total_log_warning()
+	pcall(function()
+		if ngx.shared.free_waf:safe_add('statistics:v1:warning',true,60) then
+			ngx.log(ngx.WARN,'GPT Firewall statistics deferred; pending counters retained')
+		end
+	end)
+end
+
+function total_log_schedule()
+	if total_log_state.scheduled then return true end
+	local ok = ngx.timer.at(1,total_log_flush)
+	total_log_state.scheduled = not not ok
+	return not not ok
+end
+
+function total_log_worker_init()
+	if total_log_state.worker_started then return true end
+	-- Optional worker hook or first ordinary request adopts deltas left by reload.
+	local ok,scheduled = pcall(total_log_schedule)
+	if not ok or not scheduled then total_log_warning(); return false end
+	total_log_state.worker_started = true
+	return true
+end
+
+function total_log_flush(premature)
+	total_log_state.scheduled = false
+	if premature then return end
+	local owner
+	local ok,saved = pcall(function()
+		local path = total_log_path()
+		if not path then return false end
+		owner = repeat_ban_lock(path .. '.lock')
+		if not owner then return false end
+		local shared,pending = ngx.shared.free_waf,{}
+		for _,key in ipairs(shared:get_keys(0)) do
+			if string.sub(key,1,20) == 'statistics:v1:count:' then
+				local count = shared:get(key)
+				if type(count) == 'number' and count > 0 then pending[#pending+1] = {key,count} end
+			end
+		end
+		if #pending == 0 then return true end
+		local fp,err,code = io.open(path,'rb')
+		local total = {}
+		if fp then
+			local body = fp:read('*a')
+			fp:close()
+			total = json.decode(body)
+		elseif code ~= 2 then return false end
+		if type(total) ~= 'table' then return false end
+		total.sites,total.rules = total.sites or {},total.rules or {}
+		if type(total.sites) ~= 'table' or type(total.rules) ~= 'table' then return false end
+		local function increment(value,delta)
+			value = value or 0
+			assert(type(value) == 'number' and value >= 0 and value < math.huge and value == math.floor(value))
+			return value+delta
+		end
+		for _,entry in ipairs(pending) do
+			local identity = json.decode(string.sub(entry[1],21))
+			local site,name,count = identity[1],identity[2],entry[2]
+			if type(site) ~= 'string' or type(name) ~= 'string' then return false end
+			total.sites[site] = total.sites[site] or {}
+			if type(total.sites[site]) ~= 'table' then return false end
+			total.total = increment(total.total,count)
+			total.rules[name] = increment(total.rules[name],count)
+			total.sites[site][name] = increment(total.sites[site][name],count)
+		end
+		if not runtime_atomic_write(path,json.encode(total),owner) then return false end
+		-- Subtract only the committed snapshot, preserving increments during IO.
+		for _,entry in ipairs(pending) do shared:incr(entry[1],-entry[2]) end
+		return true
+	end)
+	repeat_ban_unlock(owner)
+	if not ok or not saved then total_log_warning() end
+	-- Retry pending deltas without another request, but stop when idle.
+	local checked = pcall(function()
+		local shared = ngx.shared.free_waf
+		for _,key in ipairs(shared:get_keys(0)) do
+			if string.sub(key,1,20) == 'statistics:v1:count:' and (shared:get(key) or 0) > 0 then
+				if not total_log_schedule() then total_log_warning() end
+				break
+			end
+		end
+	end)
+	if not checked then total_log_warning() end
+end
+
 function inc_log(name,rule)
-	local total_path = cpath .. 'total.json'
-	local tbody = read_file_body(total_path)
-	if not tbody then return false end
-	local total = json.decode(tbody)
-	if not total['sites'] then total['sites'] = {} end
-	if not total['sites'][server_name] then total['sites'][server_name] = {} end
-	if not total['sites'][server_name][name] then total['sites'][server_name][name] = 0 end
-	if not total['rules'] then total['rules'] = {} end
-	if not total['rules'][name] then total['rules'][name] = 0 end
-	if not total['total'] then total['total'] = 0 end
-	total['total'] = total['total'] + 1
-	total['sites'][server_name][name] = total['sites'][server_name][name] + 1
-	total['rules'][name] = total['rules'][name] + 1
-	local total_log = json.encode(total)
-	if not total_log then return false end
-	write_file(total_path,total_log)
+	local ok,result = pcall(function()
+		local shared = ngx.shared.free_waf
+		local key = 'statistics:v1:count:' .. json.encode({server_name,name})
+		-- safe_add never evicts security state to make room for statistics.
+		local added,err = shared:safe_add(key,0)
+		if not added and err ~= 'exists' then return false end
+		local count = shared:incr(key,1)
+		if not count then return false end
+		return total_log_schedule()
+	end)
+	if not ok or not result then total_log_warning(); return false end
+	return true
 end
 
 function write_to_file(logstr)
@@ -1114,6 +1312,7 @@ function add_ip_black_exact(client_ip, seconds)
 	seconds = tonumber(seconds) or AUTO_BAN_SECONDS
 	if seconds > MAX_AUTO_BAN_SECONDS then seconds = MAX_AUTO_BAN_SECONDS end
 	if seconds <= 0 then seconds = AUTO_BAN_SECONDS end
+	local ok,result = with_ip_black_lock(function(owner)
 	local ipn = arrip(client_ip)
 	local current_rules = read_file('ip_black')
 	local now = os.time()
@@ -1136,9 +1335,11 @@ function add_ip_black_exact(client_ip, seconds)
 		end
 	end
 	table.insert(new_rules, 1, {ipn, ipn, now + seconds})
-	write_file(jpath .. 'ip_black.json', encode_json_array(new_rules))
+	if not runtime_atomic_write(jpath .. 'ip_black.json', encode_json_array(new_rules),owner) then return false end
 	ip_black_rules = new_rules
 	return true
+	end)
+	return ok and result or false
 end
 
 function ip_white()
@@ -1375,16 +1576,24 @@ end
 
 function url_rule_ex()
 	if site_config[server_name] == nil then return false end
-	if method == "POST" and not request_args then
-		content_length=tonumber(request_header['content-length'])
-		max_len = 64 * 1024
-		request_args = nil
-		if content_length < max_len then
+	local rules = site_config[server_name]['url_rule']
+	if type(rules) ~= 'table' or #rules == 0 then return false end
+	if method == "POST" and not request_args and not is_json_request() then
+		local length_header = request_header['content-length']
+		local content_length = tonumber(length_header)
+		local max_len = 64 * 1024
+		if content_length and content_length >= 0 and content_length < max_len then
 			ngx.req.read_body()
-			request_args = ngx.req.get_post_args()
+			if not ngx.req.get_body_file() then request_args = ngx.req.get_post_args() end
+		elseif length_header == nil then
+			ngx.req.read_body()
+			local body = ngx.req.get_body_data()
+			if type(body) == 'string' and #body < max_len and not ngx.req.get_body_file() then
+				request_args = ngx.req.get_post_args()
+			end
 		end
 	end
-	for _,rule in ipairs(site_config[server_name]['url_rule'])
+	for _,rule in ipairs(rules)
 	do
 		if ngx_match(uri,rule[1],"isjo") then
 			if is_ngx_match(rule[2],uri_request_args,false) then
@@ -1693,6 +1902,7 @@ function remove_btwaf_drop_ip()
 end
 
 function clean_btwaf_drop_ip()
+	local ok,result = with_ip_black_lock(function(owner)
 	if registration_state_ambiguous() then return get_return_state(false,'旧版注册封禁归属不明确，未清理；请等待到期或按作用域排查') end
 	local data = get_btwaf_drop_ip()
 	local drop_map = {}
@@ -1733,7 +1943,7 @@ function clean_btwaf_drop_ip()
 			table.insert(new_rules, rule)
 		end
 	end
-	if changed and not write_file(jpath .. 'ip_black.json', encode_json_array(new_rules)) then
+	if changed and not runtime_atomic_write(jpath .. 'ip_black.json', encode_json_array(new_rules),owner) then
 		return get_return_state(false,'写入IP黑名单失败，未清理运行时封禁')
 	end
 	if not repeat_ban_clear(drop_map,nil,true) then return get_return_state(false,'升级封禁清理失败，未确认清理运行时封禁') end
@@ -1745,6 +1955,9 @@ function clean_btwaf_drop_ip()
 	clear_registration_state(drop_map)
 	clear_endpoint_state(endpoint_map)
 	return get_return_state(true,'已解封所有封锁IP')
+	end)
+	if not ok then return get_return_state(false,'IP黑名单存储忙或不可用，未确认清理') end
+	return result
 end
 
 function get_permanent_ban_ips()
@@ -1771,6 +1984,7 @@ function remove_permanent_ban_ip()
 	if not target_ip or not is_ipaddr(target_ip) then
 		return get_return_state(false, 'IP格式错误')
 	end
+	local ok,result = with_ip_black_lock(function(owner)
 	local ipn = arrip(target_ip)
 	local rules = read_file('ip_black')
 	local new_rules = {}
@@ -1791,10 +2005,15 @@ function remove_permanent_ban_ip()
 		return get_return_state(false, target_ip .. ' 不在封禁列表中')
 	end
 	if not repeat_ban_clear({[target_ip]=true}) then return get_return_state(false,'升级封禁清理失败，未确认解封') end
-	write_file(jpath .. 'ip_black.json', encode_json_array(new_rules))
+	if not runtime_atomic_write(jpath .. 'ip_black.json', encode_json_array(new_rules),owner) then
+		return get_return_state(false,'写入IP黑名单失败，未确认解封')
+	end
 	ip_black_rules = new_rules
 	ngx.shared.free_waf_drop_ip:delete(target_ip)
 	return get_return_state(true, target_ip .. ' 已从封禁列表移除')
+	end)
+	if not ok then return get_return_state(false,'IP黑名单存储忙或不可用，未确认解封') end
+	return result
 end
 
 function min_route()
@@ -1802,7 +2021,7 @@ function min_route()
 	if ngx.var.server_name == 'gpt-firewall-health.invalid' then
 		local nonce = string.match(uri or '', '^/_gpt_firewall_health/([0-9a-f]+)$')
 		if nonce and #nonce == 32 then
-			return_message(200, {product='aapanel GPT Firewall', version='0.1.7',
+			return_message(200, {product='aapanel GPT Firewall', version='0.1.8',
 				nonce=nonce, worker_pid=ngx.worker.pid()})
 		else
 			ngx.exit(404)
@@ -1901,6 +2120,7 @@ function run_btwaf()
 	retry_time = config['retry_time']
 	retry_cycle = config['retry_cycle']
 	min_route()
+	total_log_worker_init()
 
 	if not config['open'] or not is_site_config('open') then return false end
 	site_cc = is_site_config('cc')

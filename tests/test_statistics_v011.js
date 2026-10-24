@@ -122,9 +122,9 @@ function report(extra = {}) {
 }
 
 if (require.main === module) {
-  test('statistics has exactly seven subpages and honest labels', () => {
+  test('statistics has exactly eight subpages and honest labels', () => {
     assert.deepEqual([...html.matchAll(/class="website_stats_tab[^\"]*"[^>]*data-stats-page="([^"]+)"/g)].map(m => m[1]),
-      ['overview', 'sites', 'spiders', 'clients', 'access', 'errors', 'settings']);
+      ['overview', 'sites', 'spiders', 'clients', 'access', 'errors', 'settings', 'geography']);
     for (const label of ['独立 IP', '响应体流量', '疑似蜘蛛', 'HTTP 错误请求', 'Nginx 诊断日志', '自然日', 'UA']) assert.ok(html.includes(label), label);
   });
   test('schema 2 renders a real safe chart, coverage, window and separate UA distributions', () => {
@@ -164,7 +164,7 @@ if (require.main === module) {
   test('subpages, literal sample filters and pagination never rescan', () => {
     const h = harness(); h.navigate('statistics'); h.stats().at(-1).resolve(report());
     const reads = h.stats().length;
-    for (const page of ['sites', 'spiders', 'clients', 'access', 'errors', 'settings']) {
+    for (const page of ['sites', 'spiders', 'clients', 'access', 'errors', 'settings', 'geography']) {
       h.fire('.website_stats_tab', 'click', { 'data-stats-page': page });
       assert.equal(h.waf._statistics_page, page);
     }

@@ -959,7 +959,7 @@ class FrontendUiContractTest(unittest.TestCase):
 
         self.assertEqual(
             re.findall(r'class="website_stats_tab[^"]*"[^>]*data-stats-page="([^"]+)"', self.frontend),
-            ["overview", "sites", "spiders", "clients", "access", "errors", "settings"],
+            ["overview", "sites", "spiders", "clients", "access", "errors", "settings", "geography"],
         )
         bodies = {name: self._object_function_body(name) for name in [
             "get_website_statistics_summary", "render_website_statistics", "render_statistics_report",

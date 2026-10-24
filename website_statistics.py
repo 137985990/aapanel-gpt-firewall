@@ -20,7 +20,7 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 
 
-PLUGIN_VERSION = "0.1.7"
+PLUGIN_VERSION = "0.1.8"
 
 _DEFAULT_BUDGETS = {
     "max_bytes": 32 * 1024 * 1024, "max_seconds": 10.0,
@@ -215,6 +215,184 @@ def _integer(value, default, minimum, maximum):
         return max(minimum, min(maximum, int(value)))
     except (TypeError, ValueError, OverflowError):
         return default
+
+
+_COUNTRY_CODES = frozenset((
+    'AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ '
+    'CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET '
+    'FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU '
+    'ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY '
+    'MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ '
+    'OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ '
+    'TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW'
+).split())
+
+
+def _geo_text(value):
+    return re.sub(r'[\x00-\x1f\x7f]', '', value).strip()[:128] if isinstance(value, str) else ''
+
+
+def _geo_name(value):
+    if not isinstance(value, dict):
+        return ''
+    names = value.get('names')
+    names = names if isinstance(names, dict) else {}
+    return _geo_text(names.get('zh-CN')) or _geo_text(names.get('en'))
+
+
+class LocalGeography:
+    """Bounded local lookups only; missing databases never trigger downloads."""
+
+    def __init__(self, reader=None, max_lookups=10000, max_seconds=1.5):
+        self.reader = reader
+        self.cache = {}
+        self.max_lookups = _integer(max_lookups, 10000, 1, 10000)
+        self.deadline = time.monotonic() + max(0.01, min(1.5, float(max_seconds)))
+        if self.reader is None:
+            try:
+                import maxminddb
+                self.reader = maxminddb.open_database('/www/server/panel/config/GeoLite2-City.mmdb')
+            except Exception:
+                pass
+        self.available = self.reader is not None
+
+    @staticmethod
+    def describe(ip, record):
+        result = dict(country_code='', country_name='', region_code='', region_name='',
+                      city_name='', location='未知', status='unknown')
+        try:
+            address = ipaddress.ip_address(ip)
+            address = getattr(address, 'ipv4_mapped', None) or address
+        except ValueError:
+            result['status'] = 'invalid'
+            return result
+        if not address.is_global or address.is_multicast:
+            result.update(status='private', location='内网或保留地址')
+            return result
+        country = record.get('country') if isinstance(record, dict) else None
+        if not isinstance(country, dict):
+            return result
+        code = country.get('iso_code') or country.get('en_short_code')
+        if not isinstance(code, str) or not re.fullmatch(r'[A-Za-z]{2}', code) or code.upper() not in _COUNTRY_CODES:
+            return result
+        code = code.upper()
+        subdivisions = record.get('subdivisions')
+        subdivision = subdivisions[0] if isinstance(subdivisions, list) and subdivisions else {}
+        if not isinstance(subdivision, dict):
+            subdivision = {}
+        country_name = _geo_name(country) or _geo_text(country.get('country')) or code
+        region_name = _geo_name(subdivision) or _geo_text(country.get('province'))
+        region_code = _geo_text(subdivision.get('iso_code'))
+        city_name = _geo_name(record.get('city')) or _geo_text(country.get('city'))
+        parts = list(dict.fromkeys(part for part in (country_name, region_name, city_name) if part))
+        result.update(country_code=code, country_name=country_name, region_code=region_code,
+                      region_name=region_name, city_name=city_name, location=' '.join(parts), status='located')
+        return result
+
+    def lookup(self, ip):
+        try:
+            address = ipaddress.ip_address(ip)
+            ip = str(getattr(address, 'ipv4_mapped', None) or address)
+        except ValueError:
+            return self.describe(ip, None)
+        if ip in self.cache:
+            return self.cache[ip]
+        result = self.describe(ip, None)
+        if result['status'] == 'private':
+            return result
+        if not self.available:
+            result['status'] = 'unavailable'
+            return result
+        if len(self.cache) >= self.max_lookups or time.monotonic() >= self.deadline:
+            result['status'] = 'limited'
+            return result
+        try:
+            result = self.describe(ip, self.reader.get(ip))
+        except Exception:
+            result['status'] = 'lookup_error'
+        self.cache[ip] = result
+        return result
+
+    def close(self):
+        reader, self.reader = self.reader, None
+        if reader is not None:
+            try:
+                reader.close()
+            except Exception:
+                pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
+def _geo_counts():
+    return dict(clients=0, requests=0, bytes=0, errors=0)
+
+
+def _visitor_geography(report, activity):
+    """Classify every counted IP, retaining unlocated traffic in the denominator."""
+    geo = dict(schema_version=1, site=report['siteName'], database_available=False,
+               lookup_complete=True, partial=False, reasons=[], countries=[], regions=[], cities=[],
+               totals=_geo_counts(), located=_geo_counts(), unlocated=_geo_counts(), private=_geo_counts(),
+               regions_truncated=False, cities_truncated=False)
+    groups = ({}, {}, {})
+
+    def add_counts(target, item):
+        target['clients'] += 1
+        for field in ('requests', 'bytes', 'errors'):
+            target[field] += item[field]
+
+    def add_group(group, key, metadata, item):
+        target = group.setdefault(key, dict(metadata, **_geo_counts(), _days=0))
+        add_counts(target, item)
+        target['_days'] |= item['days']
+        return target
+
+    with LocalGeography() as locator:
+        geo['database_available'] = locator.available
+        if not locator.available:
+            geo['reasons'].append('database_unavailable')
+        for ip, item in activity.items():
+            location = locator.lookup(ip)
+            add_counts(geo['totals'], item)
+            if location['status'] != 'located':
+                add_counts(geo['unlocated'], item)
+                if location['status'] == 'private':
+                    add_counts(geo['private'], item)
+                reason = {'limited': 'lookup_budget', 'lookup_error': 'lookup_error'}.get(location['status'])
+                if reason and reason not in geo['reasons']:
+                    geo['reasons'].append(reason)
+                continue
+            add_counts(geo['located'], item)
+            code, name = location['country_code'], location['country_name']
+            country = add_group(groups[0], code, dict(code=code, name=name), item)
+            if 'trend' not in country:
+                country['trend'] = [dict(row, requests=0, clients=0, bytes=0, errors=0) for row in report['trend']]
+            for index, bucket in item['buckets'].items():
+                target = country['trend'][index]
+                target['clients'] += 1
+                for field in ('requests', 'bytes', 'errors'):
+                    target[field] += bucket[field]
+            metadata = dict(country_code=code, country_name=name,
+                            region_code=location['region_code'], region_name=location['region_name'])
+            region_key = (code, location['region_code'], location['region_name'])
+            add_group(groups[1], region_key, metadata, item)
+            add_group(groups[2], region_key + (location['city_name'],),
+                      dict(metadata, city_name=location['city_name']), item)
+    for dimension, group, limit in zip(('countries', 'regions', 'cities'), groups, (249, 200, 500)):
+        for row in group.values():
+            row['active_days'] = bin(row.pop('_days')).count('1')
+        ordered = sorted(group.values(), key=lambda row: (-row['clients'], -row['requests'], -row['bytes'],
+                         row.get('code', row.get('country_code', '')), row.get('region_name', ''), row.get('city_name', '')))
+        geo[dimension] = ordered[:limit]
+        if dimension != 'countries':
+            geo[dimension + '_truncated'] = len(ordered) > limit
+    geo['lookup_complete'] = not geo['reasons']
+    geo['partial'] = not geo['lookup_complete']
+    return geo
 
 
 def _valid_log_date(value):
@@ -548,6 +726,7 @@ class StatisticsService:
     def _aggregate(self, report, now, start, system_timezone, budget):
         summary = report["summary"]
         sites, client_sites = {}, {}
+        geography_activity = {}
         counters = {key: Counter() for key in ("clients", "spiders", "status_codes", "top_uris",
                                                "referers", "browsers", "operating_systems", "devices")}
         access_heap, error_heap, diagnostic_heap = [], [], []
@@ -605,6 +784,15 @@ class StatisticsService:
                 item_to_update["errors"] += errors
             item["clients"].add(ip)
             bucket_clients[index].add(ip)
+            activity = geography_activity.setdefault(ip, dict(requests=0, bytes=0, errors=0, days=0, buckets={}))
+            moment = dt.datetime.fromtimestamp(row['time_ts']).astimezone() if system_timezone else \
+                dt.datetime.fromtimestamp(row['time_ts'], now.tzinfo)
+            activity['days'] |= 1 << max(0, (moment.date() - start.date()).days)
+            activity_bucket = activity['buckets'].setdefault(index, dict(requests=0, bytes=0, errors=0))
+            for aggregate in (activity, activity_bucket):
+                aggregate['requests'] += 1
+                aggregate['bytes'] += size
+                aggregate['errors'] += errors
             client_sites.setdefault(ip, set()).add(site)
             counters["clients"][ip] += 1
             counters["status_codes"][str(status)] += 1
@@ -635,6 +823,7 @@ class StatisticsService:
         common = [row for row in report["clients"] if len(client_sites[row["ip"]]) > 1 or report["siteName"]]
         report["common_clients"] = [dict(row, sites=", ".join(sorted(client_sites[row["ip"]])))
                                     for row in (common or report["clients"])[:30]]
+        report['geography'] = _visitor_geography(report, geography_activity)
         for key, heap in (("recent_access", access_heap), ("recent_errors", error_heap),
                           ("server_errors", diagnostic_heap)):
             report[key] = [item[2] for item in sorted(heap, reverse=True)]
@@ -657,6 +846,7 @@ class StatisticsService:
             {"key": "站点筛选", "value": report["siteName"] or "全部站点"},
             {"key": "指标口径", "value": "独立 IP 不等于 UV；发送字节不含响应头和上传；UA 分类未验证真伪"},
             {"key": "请求耗时", "value": "combined 未采集耗时，不提供推测值"},
+            {"key": "访客地域", "value": "本地 IP 库近似网络出口；独立 IP 不等于人数，包含机器人和 API 请求；不采集停留时长"},
             {"key": "覆盖说明", "value": coverage["notice"]},
         ]
 
