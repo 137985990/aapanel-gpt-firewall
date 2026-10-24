@@ -7,8 +7,8 @@
 	"versions":"0.1.8",
 	"shell":"free_waf.sh",
 	"checks":"/www/server/panel/plugin/free_waf",
-	"author":"民国三年一场雨",
-	"home":"民国三年一场雨",
+	"author":"明国三年一场雨",
+	"home":"明国三年一场雨",
 	"date":"2026-10-23",
 	"default":false,
 	"display":0

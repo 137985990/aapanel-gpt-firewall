@@ -54,8 +54,18 @@ class BrandingTest(unittest.TestCase):
         self.assertEqual(info['name'], 'free_waf')
         self.assertEqual(info['checks'], '/www/server/panel/plugin/free_waf')
         self.assertEqual(info['shell'], 'free_waf.sh')
-        self.assertEqual(info['author'], '民国三年一场雨')
+        self.assertEqual(info['author'], '明国三年一场雨')
+        self.assertEqual(info['home'], '明国三年一场雨')
         self.assertEqual(info['versions'], '0.1.8')
+
+    def test_public_documents_use_correct_original_author_name(self):
+        for name in ('README.md', 'NOTICE.md'):
+            with self.subTest(document=name):
+                body = (ROOT / name).read_text(encoding='utf-8')
+                self.assertIn('**明国三年一场雨**', body)
+                self.assertNotIn('\u6c11国三年一场雨', body)
+                self.assertNotIn('署名字面差异', body)
+                self.assertNotIn('元数据中的', body)
 
     def test_management_heading_and_export_names_use_new_brand(self):
         body = (ROOT / 'index.html').read_text(encoding='utf-8')
