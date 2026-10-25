@@ -83,4 +83,5 @@ test('layout contains a real map canvas, separate ranking, expansion and recover
   assert.doesNotMatch(html, /\.waf-map:before\s*\{/);
   assert.match(html, /\/static\/js\/echarts\.min\.js/);
   assert.match(html, /\/static\/vite\/data\/world\.json/);
+  assert.match(html, /import\('\/static\/panel-platform\/assets\/world\.js'\)/);
 });

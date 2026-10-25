@@ -1,13 +1,15 @@
 import builtins
 import json
 import os
+import sqlite3
 import tempfile
 import types
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from test_panel_performance import load_backend
+from tests.test_branding import LogQuery
+from tests.test_panel_performance import load_backend
 
 
 FAMILIES = ['url_white', 'url_black', 'user_agent', 'user_agent_white',
@@ -44,6 +46,441 @@ class ReviewBackendRegressionTest(unittest.TestCase):
 
     def bundle(self, rules):
         return self.backend.import_rule_bundle(types.SimpleNamespace(pdata=json.dumps({'rules': rules})))
+
+    def domestic_domain_fixture(self):
+        self.save('config.json', {
+            'compatibility_profile': 'bt-free-waf-8.4', 'open': True,
+            'site_aliases': {'removed.example': 'fixture.example'},
+            'operator_setting': {'keep': True}})
+        self.save('domains.json', [{'name': 'fixture.example', 'domains': ['removed.example']}])
+        rows = {
+            'sites': [{'id': 7, 'name': 'fixture.example'}],
+            'domain': [{'pid': 7, 'name': 'new.example'}, {'pid': 7, 'name': 'new.example'}],
+            'binding': [{'pid': 7, 'domain': 'bound.example'}]}
+        self.public.M = lambda table: types.SimpleNamespace(
+            field=lambda fields: types.SimpleNamespace(select=lambda: rows[table]))
+        return rows
+
+    def site_read_fixture(self):
+        rows = self.domestic_domain_fixture()
+        logs = self.root / 'logs'
+        logs.mkdir()
+        (self.root / '.policy-recovery').mkdir()
+        config = self.read('config.json')
+        config.update(logs_path=str(logs), log_save=0, retry=5, retry_time=120,
+                      retry_cycle=60, cc=dict(open=False, cycle=60, limit=10, endtime=120))
+        for name in ('get', 'post', 'cookie', 'user-agent', 'scan'):
+            config[name] = {'open': False}
+        self.save('config.json', config)
+        self.save('site.json', {
+            'fixture.example': {'open': False, 'url_white': [], 'operator_note': 'keep'},
+            'orphan.example': {'open': False, 'url_white': []}})
+        self.save('total.json', {'rules': {}, 'total': 7,
+                                'sites': {'fixture.example': {'args': 7}, 'orphan.example': {'post': 2}}})
+        day = self.backend.get_site_config.__globals__['time'].strftime('%Y-%m-%d')
+        (logs / ('fixture.example_' + day + '.log')).write_bytes(b'x' * 832)
+        (logs / 'fixture.example_2000-01-01.log').write_bytes(b'keep old log')
+        for name in ('site.json', 'config.json', 'domains.json'):
+            body = json.dumps(self.read(name), indent=2).replace('\n', '\r\n') + '\r\n'
+            (self.root / name).write_bytes(body.encode('utf-8'))
+        return rows
+
+    def test_site_read_list_and_detail_preserve_all_files_and_do_not_clean_logs(self):
+        self.site_read_fixture()
+        before = {str(path.relative_to(self.root)): path.read_bytes()
+                  for path in self.root.rglob('*') if path.is_file()}
+        remove_site = Mock()
+        with patch.object(os, 'mkdir') as mkdir, patch.object(os, 'remove', wraps=os.remove) as remove, \
+                patch.object(os, 'unlink', wraps=os.unlink) as unlink, \
+                patch.object(self.backend, '_free_waf_main__remove_log_file', remove_site):
+            listing = self.backend.get_site_config(types.SimpleNamespace(read=True))
+            detail = self.backend.get_site_config_byname(types.SimpleNamespace(siteName='fixture.example'))
+        after = {str(path.relative_to(self.root)): path.read_bytes()
+                 for path in self.root.rglob('*') if path.is_file()}
+        self.assertEqual(after, before)
+        self.assertEqual(detail['log_size'], 832)
+        self.assertFalse(detail['registration_guard']['open'])
+        self.assertEqual(detail['cdn_trusted_proxy'], [])
+        self.assertIn('top', detail)
+        self.assertEqual(next(row for row in listing if row['siteName'] == 'fixture.example')['total'][1]['value'], 7)
+        mkdir.assert_not_called()
+        remove.assert_not_called()
+        unlink.assert_not_called()
+        remove_site.assert_not_called()
+        self.backend._free_waf_main__checked_nginx_reload.assert_not_called()
+        self.public.serviceReload.assert_not_called()
+
+    def test_site_read_keeps_sites_missing_from_panel_database(self):
+        self.site_read_fixture()
+        with patch.object(os, 'mkdir'), patch.object(self.backend, '_free_waf_main__remove_log_file') as remove:
+            sites = self.backend.get_site_config(None)
+        self.assertIn('orphan.example', sites)
+        self.assertIn('orphan.example', self.read('site.json'))
+        remove.assert_not_called()
+
+    def test_site_read_missing_log_directory_is_not_created(self):
+        self.site_read_fixture()
+        config = self.read('config.json')
+        config['logs_path'] = str(self.root / 'absent-logs')
+        self.save('config.json', config)
+        with patch.object(os, 'mkdir') as mkdir, \
+                patch.object(self.backend, '_free_waf_main__write_site_config') as save, \
+                patch.object(self.backend, '_free_waf_main__remove_log_file'):
+            try:
+                detail = self.backend.get_site_config_byname(types.SimpleNamespace(siteName='fixture.example'))
+            except FileNotFoundError:
+                self.fail('site read must tolerate an absent log directory without creating it')
+        self.assertEqual(detail['log_size'], 0)
+        mkdir.assert_not_called()
+        save.assert_not_called()
+
+    def test_site_read_new_defaults_are_persisted_only_by_explicit_write(self):
+        rows = self.site_read_fixture()
+        rows['sites'].append({'id': 8, 'name': 'new-site.example'})
+        before = (self.root / 'site.json').read_bytes()
+        with patch.object(os, 'mkdir'), patch.object(self.backend, '_free_waf_main__remove_log_file'):
+            sites = self.backend.get_site_config(None)
+            self.assertEqual((self.root / 'site.json').read_bytes(), before)
+            self.assertIn('new-site.example', sites)
+            self.assertFalse(sites['new-site.example']['registration_guard']['open'])
+            self.backend._free_waf_main__checked_nginx_reload.assert_not_called()
+            result = self.backend.add_site_rule(types.SimpleNamespace(
+                siteName='new-site.example', ruleName='url_white', ruleValue='^/fixture$'))
+        self.assertTrue(result['status'])
+        saved = self.read('site.json')
+        self.assertEqual(saved['new-site.example']['url_white'], ['^/fixture$'])
+        self.assertIn('orphan.example', saved)
+        self.backend._free_waf_main__checked_nginx_reload.assert_called_once_with()
+
+    def test_site_read_display_fields_never_persist_on_either_save_path(self):
+        self.domestic_domain_fixture()
+        for profile in ('bt-free-waf-8.4', None):
+            with self.subTest(profile=profile):
+                config = self.read('config.json')
+                config['compatibility_profile'] = profile
+                self.save('config.json', config)
+                candidate = {'fixture.example': dict(open=False, url_white=['^/keep$'],
+                    operator_note='keep', top={'secret': 'not site config'}, siteName='fixture.example',
+                    log_size=832, total=[{'value': 7}])}
+                original = json.loads(json.dumps(candidate))
+                self.backend._free_waf_main__write_site_config(candidate)
+                self.assertEqual(self.read('site.json'), {'fixture.example': {
+                    'open': False, 'url_white': ['^/keep$'], 'operator_note': 'keep'}})
+                self.assertEqual(candidate, original)
+
+    def test_cn_domain_refresh_updates_aliases_and_removes_stale_owners_once(self):
+        self.domestic_domain_fixture()
+        original_site = (self.root / 'site.json').read_bytes()
+        result = self.backend._free_waf_main__write_site_domains()
+        expected = [{'name': 'fixture.example', 'domains': ['bound.example', 'new.example']}]
+        self.assertEqual(result, expected)
+        self.assertEqual(self.read('domains.json'), expected)
+        self.assertEqual(self.read('config.json')['site_aliases'],
+                         {'bound.example': 'fixture.example', 'new.example': 'fixture.example'})
+        self.assertEqual(self.read('config.json')['operator_setting'], {'keep': True})
+        self.assertEqual((self.root / 'site.json').read_bytes(), original_site)
+        self.backend._free_waf_main__checked_nginx_reload.assert_called_once_with()
+        self.backend._free_waf_main__write_site_domains()
+        self.backend._free_waf_main__checked_nginx_reload.assert_called_once_with()
+        self.public.serviceReload.assert_not_called()
+
+    def test_cn_domain_site_save_reloads_only_the_complete_three_file_snapshot(self):
+        self.domestic_domain_fixture()
+        candidate = {'fixture.example': {'disable_rule': {'post': [1]}, 'open': True}}
+        observed = []
+
+        def reload():
+            observed.append({name: self.read(name) for name in ('site.json', 'domains.json', 'config.json')})
+            return True
+
+        self.backend._free_waf_main__checked_nginx_reload.side_effect = reload
+        self.backend._free_waf_main__write_site_config(candidate)
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(observed[0]['site.json'], candidate)
+        self.assertEqual(observed[0]['config.json']['site_aliases'],
+                         {'bound.example': 'fixture.example', 'new.example': 'fixture.example'})
+        self.assertEqual(observed[0]['domains.json'][0]['domains'], ['bound.example', 'new.example'])
+        self.public.serviceReload.assert_not_called()
+
+    def test_cn_domain_unchanged_formatted_snapshots_do_not_write_or_reload(self):
+        self.domestic_domain_fixture()
+        config = self.read('config.json')
+        config['site_aliases'] = {'bound.example': 'fixture.example', 'new.example': 'fixture.example'}
+        self.save('config.json', config)
+        self.save('domains.json', [{'name': 'fixture.example', 'domains': ['bound.example', 'new.example']}])
+        names = ('site.json', 'domains.json', 'config.json')
+        originals = {}
+        for name in names:
+            body = b'\xef\xbb\xbf' + (json.dumps(self.read(name), indent=2).replace('\n', '\r\n') + '\r\n').encode('utf-8')
+            (self.root / name).write_bytes(body)
+            originals[name] = body
+        self.backend._free_waf_main__write_site_domains()
+        self.backend._free_waf_main__write_site_config(json.loads(originals['site.json']))
+        self.assertEqual({name: (self.root / name).read_bytes() for name in names}, originals)
+        self.backend._free_waf_main__checked_nginx_reload.assert_not_called()
+        self.public.serviceReload.assert_not_called()
+
+    def test_cn_domain_failed_refresh_removes_new_snapshot_and_restores_alias_bytes(self):
+        self.domestic_domain_fixture()
+        (self.root / 'domains.json').unlink()
+        original_config = (self.root / 'config.json').read_bytes()
+        original_site = (self.root / 'site.json').read_bytes()
+        checked = self.backend._free_waf_main__checked_nginx_reload
+        checked.side_effect = [False, True]
+        with self.assertRaisesRegex(RuntimeError, '已恢复'):
+            self.backend._free_waf_main__write_site_domains()
+        self.assertFalse((self.root / 'domains.json').exists())
+        self.assertEqual((self.root / 'config.json').read_bytes(), original_config)
+        self.assertEqual((self.root / 'site.json').read_bytes(), original_site)
+        self.assertEqual(checked.call_count, 2)
+        self.assertFalse((self.root / '.policy-recovery/pending.json').exists())
+
+    def test_cn_domain_reload_failure_restores_all_snapshot_bytes(self):
+        self.domestic_domain_fixture()
+        names = ('site.json', 'domains.json', 'config.json')
+        originals = {}
+        for name in names:
+            body = (json.dumps(self.read(name), indent=2).replace('\n', '\r\n') + '\r\n').encode('utf-8')
+            (self.root / name).write_bytes(body)
+            originals[name] = body
+        checked = self.backend._free_waf_main__checked_nginx_reload
+        checked.side_effect = [False, True]
+        with self.assertRaisesRegex(RuntimeError, '已恢复'):
+            self.backend._free_waf_main__write_site_config({'fixture.example': {'open': True}})
+        self.assertEqual({name: (self.root / name).read_bytes() for name in names}, originals)
+        self.assertEqual(checked.call_count, 2)
+        self.assertFalse((self.root / '.policy-recovery/pending.json').exists())
+        self.public.serviceReload.assert_not_called()
+
+    def test_cn_domain_partial_write_failure_restores_group_before_reload(self):
+        self.domestic_domain_fixture()
+        names = ('site.json', 'domains.json', 'config.json')
+        originals = {name: (self.root / name).read_bytes() for name in names}
+        atomic = self.backend._free_waf_main__atomic_policy_text
+        failed = []
+
+        def write(path, text, expected=None, ownership=None):
+            if Path(path).name == 'domains.json' and not failed:
+                failed.append(path)
+                raise OSError('fixture domain disk failure')
+            return atomic(path, text, expected=expected, ownership=ownership)
+
+        def reload():
+            self.assertEqual({name: (self.root / name).read_bytes() for name in names}, originals)
+            return True
+
+        self.backend._free_waf_main__checked_nginx_reload.side_effect = reload
+        with patch.object(self.backend, '_free_waf_main__atomic_policy_text', side_effect=write):
+            with self.assertRaisesRegex(RuntimeError, '已恢复'):
+                self.backend._free_waf_main__write_site_config({'fixture.example': {'open': True}})
+        self.assertTrue(failed)
+        self.assertEqual({name: (self.root / name).read_bytes() for name in names}, originals)
+        self.assertFalse((self.root / '.policy-recovery/pending.json').exists())
+        self.public.serviceReload.assert_not_called()
+
+    def test_cn_domain_conflicting_owners_are_rejected_before_any_snapshot_write(self):
+        rows = self.domestic_domain_fixture()
+        rows['sites'].append({'id': 8, 'name': 'other.example'})
+        self.save('site.json', {'fixture.example': {}, 'other.example': {}})
+        names = ('site.json', 'domains.json', 'config.json')
+        originals = {name: (self.root / name).read_bytes() for name in names}
+        for alias in ('new.example', 'fixture.example'):
+            with self.subTest(alias=alias):
+                rows['binding'] = [{'pid': 8, 'domain': alias}]
+                with self.assertRaises(ValueError):
+                    self.backend._free_waf_main__write_site_domains()
+                self.assertEqual({name: (self.root / name).read_bytes() for name in names}, originals)
+        self.backend._free_waf_main__checked_nginx_reload.assert_not_called()
+        self.public.serviceReload.assert_not_called()
+
+    def test_cn_domain_reload_conflict_keeps_operator_edit_and_blocks_retries(self):
+        self.domestic_domain_fixture()
+
+        def reload():
+            config = self.read('config.json')
+            config['operator_note'] = 'keep'
+            self.save('config.json', config)
+            return False
+
+        self.backend._free_waf_main__checked_nginx_reload.side_effect = reload
+        with self.assertRaisesRegex(RuntimeError, '恢复未'):
+            self.backend._free_waf_main__write_site_config({'fixture.example': {'open': True}})
+        self.assertEqual(self.read('config.json')['operator_note'], 'keep')
+        self.assertTrue((self.root / '.policy-recovery/pending.json').exists())
+        before = {name: (self.root / name).read_bytes() for name in ('site.json', 'domains.json', 'config.json')}
+        with self.assertRaises(RuntimeError):
+            self.backend._free_waf_main__write_site_domains()
+        self.assertEqual({name: (self.root / name).read_bytes() for name in before}, before)
+        self.backend._free_waf_main__checked_nginx_reload.assert_called_once_with()
+        self.public.serviceReload.assert_not_called()
+
+    def test_cn_domain_failed_rollback_keeps_coherent_candidates_and_pending_record(self):
+        self.domestic_domain_fixture()
+        original = (self.root / 'config.json').read_bytes()
+        atomic = self.backend._free_waf_main__atomic_policy_text
+
+        def write(path, text, expected=None, ownership=None):
+            body = text if isinstance(text, bytes) else text.encode('utf-8')
+            if Path(path).name == 'config.json' and body == original:
+                raise OSError('fixture alias rollback failure')
+            return atomic(path, text, expected=expected, ownership=ownership)
+
+        self.backend._free_waf_main__checked_nginx_reload.return_value = False
+        candidate = {'fixture.example': {'open': True}}
+        with patch.object(self.backend, '_free_waf_main__atomic_policy_text', side_effect=write):
+            with self.assertRaisesRegex(RuntimeError, '恢复未'):
+                self.backend._free_waf_main__write_site_config(candidate)
+        self.assertEqual(self.read('site.json'), candidate)
+        self.assertEqual(self.read('config.json')['site_aliases'],
+                         {'bound.example': 'fixture.example', 'new.example': 'fixture.example'})
+        self.assertEqual(self.read('domains.json')[0]['domains'], ['bound.example', 'new.example'])
+        self.assertTrue((self.root / '.policy-recovery/pending.json').exists())
+        self.backend._free_waf_main__checked_nginx_reload.assert_called_once_with()
+        self.public.serviceReload.assert_not_called()
+
+    def test_cn_domain_legacy_refresh_does_not_add_aliases_or_reload(self):
+        self.domestic_domain_fixture()
+        self.save('config.json', {'open': True})
+        self.backend._free_waf_main__write_site_domains()
+        self.assertEqual(self.read('config.json'), {'open': True})
+        self.backend._free_waf_main__checked_nginx_reload.assert_not_called()
+        self.public.serviceReload.assert_not_called()
+
+    def test_cn_audit_log_types_share_count_and_pagination_parameters(self):
+        connection = sqlite3.connect(':memory:')
+        self.addCleanup(connection.close)
+        connection.execute('CREATE TABLE logs (id INTEGER PRIMARY KEY, type TEXT, log TEXT, addtime TEXT)')
+        categories = ('GPT Firewall', 'Nginx free firewall', 'Nginx免费防火墙')
+        for index in range(27):
+            connection.execute('INSERT INTO logs(type,log,addtime) VALUES (?,?,?)',
+                               (categories[index % 3], str(index), '2026-10-25 12:00:00'))
+        connection.execute('INSERT INTO logs(type,log,addtime) VALUES (?,?,?)',
+                           ('unrelated', 'not ours', '2026-10-25 12:00:00'))
+        queries, pages = [], []
+
+        def query(table):
+            self.assertEqual(table, 'logs')
+            item = LogQuery(connection)
+            queries.append(item)
+            return item
+
+        class Page:
+            def GetPage(self, info, style):
+                pages.append(dict(info))
+                self.SHIFT, self.ROW = (info['p'] - 1) * info['row'], info['row']
+                return str(info['count'])
+
+        class Args(dict):
+            def __getattr__(self, name):
+                try:
+                    return self[name]
+                except KeyError:
+                    raise AttributeError(name) from None
+
+        self.public.M = query
+        with patch.dict('sys.modules', {'page': types.SimpleNamespace(Page=Page)}):
+            results = [self.backend.get_gl_logs(Args(tojs='free_waf.get_gl_table_page'))]
+            results.extend(self.backend.get_gl_logs(Args(p=str(page), tojs='free_waf.get_gl_table_page'))
+                           for page in (2, 3))
+        self.assertEqual([page['count'] for page in pages], [27, 27, 27])
+        self.assertEqual([page['p'] for page in pages], [1, 2, 3])
+        self.assertTrue(all(page['row'] == 12 and page['return_js'] == 'free_waf.get_gl_table_page'
+                            for page in pages))
+        self.assertEqual([len(result['data']) for result in results], [12, 12, 3])
+        self.assertEqual([row['log'] for result in results for row in result['data']],
+                         [str(index) for index in reversed(range(27))])
+        for query in queries:
+            self.assertEqual(query.expression, 'type IN (?,?,?)')
+            self.assertEqual(query.parameters, categories)
+
+    def test_cn_site_save_uses_one_checked_reload_and_no_host_reload(self):
+        self.backend.get_site_config = lambda get: self.read('site.json')
+        self.backend._free_waf_main__write_site_domains = Mock()
+        result = self.backend.set_site_retry(types.SimpleNamespace(
+            siteName='fixture.example', retry='5', retry_cycle='60', retry_time='120'))
+        self.assertTrue(result['status'])
+        self.assertEqual(self.read('site.json')['fixture.example']['retry'], 5)
+        self.backend._free_waf_main__checked_nginx_reload.assert_called_once_with()
+        self.backend._free_waf_main__write_site_domains.assert_called_once_with()
+        self.public.serviceReload.assert_not_called()
+
+    def test_cn_site_save_reverts_exact_bytes_after_checked_reload_failure(self):
+        original = b'{\r\n  "fixture.example": {"open": false}\r\n}\r\n'
+        candidate = {'fixture.example': {'open': True}}
+        self.backend._free_waf_main__write_site_domains = Mock()
+        for failure in (RuntimeError('fixture reload failure'), False):
+            with self.subTest(failure=failure):
+                (self.root / 'site.json').write_bytes(original)
+                snapshots = []
+
+                def reload():
+                    snapshots.append((self.root / 'site.json').read_bytes())
+                    if len(snapshots) == 1:
+                        if isinstance(failure, Exception):
+                            raise failure
+                        return failure
+                    return True
+
+                checked = self.backend._free_waf_main__checked_nginx_reload
+                checked.reset_mock()
+                checked.side_effect = reload
+                with self.assertRaisesRegex(RuntimeError, '已恢复'):
+                    self.backend._free_waf_main__write_site_config(candidate)
+                self.assertEqual(snapshots, [json.dumps(candidate).encode('utf-8'), original])
+                self.assertEqual((self.root / 'site.json').read_bytes(), original)
+                self.assertEqual(checked.call_count, 2)
+                self.public.serviceReload.assert_not_called()
+
+    def test_cn_site_save_reports_unconfirmed_rollback_reload(self):
+        original = (self.root / 'site.json').read_bytes()
+        self.backend._free_waf_main__write_site_domains = Mock()
+        checked = self.backend._free_waf_main__checked_nginx_reload
+        checked.side_effect = [RuntimeError('fixture reload failure'), False]
+        with self.assertRaisesRegex(RuntimeError, '恢复未确认'):
+            self.backend._free_waf_main__write_site_config({'fixture.example': {'open': True}})
+        self.assertEqual((self.root / 'site.json').read_bytes(), original)
+        self.assertEqual(checked.call_count, 2)
+        self.public.serviceReload.assert_not_called()
+
+    def test_cn_site_save_keeps_concurrent_edit_when_checked_reload_fails(self):
+        self.backend._free_waf_main__write_site_domains = Mock()
+        candidate = {'fixture.example': {'open': True}}
+
+        def reload():
+            current = self.read('site.json')
+            current['fixture.example']['operator_note'] = 'keep'
+            self.save('site.json', current)
+            raise RuntimeError('fixture reload failure')
+
+        checked = self.backend._free_waf_main__checked_nginx_reload
+        checked.side_effect = reload
+        with self.assertRaisesRegex(RuntimeError, '恢复未确认'):
+            self.backend._free_waf_main__write_site_config(candidate)
+        self.assertEqual(self.read('site.json'), {'fixture.example': {'open': True, 'operator_note': 'keep'}})
+        checked.assert_called_once_with()
+        self.public.serviceReload.assert_not_called()
+
+    def test_cn_site_save_failed_restore_does_not_reload_candidate(self):
+        self.backend._free_waf_main__write_site_domains = Mock()
+        candidate = {'fixture.example': {'open': True}}
+        writer = self.backend._free_waf_main__write_repeat_site_config
+        calls = []
+
+        def write(body, expected=None):
+            calls.append(body)
+            if len(calls) > 1:
+                raise OSError('fixture rollback disk failure')
+            return writer(body, expected=expected)
+
+        checked = self.backend._free_waf_main__checked_nginx_reload
+        checked.side_effect = RuntimeError('fixture reload failure')
+        with patch.object(self.backend, '_free_waf_main__write_repeat_site_config', side_effect=write):
+            with self.assertRaisesRegex(RuntimeError, '恢复未确认'):
+                self.backend._free_waf_main__write_site_config(candidate)
+        self.assertEqual(self.read('site.json'), candidate)
+        self.assertEqual(len(calls), 2)
+        checked.assert_called_once_with()
+        self.public.serviceReload.assert_not_called()
 
     def test_remove_preserves_the_same_disabled_rule(self):
         self.save('rule/post.json', [[1, p, p, 0] for p in ('A', 'B', 'C')])
@@ -329,7 +766,7 @@ class ReviewBackendRegressionTest(unittest.TestCase):
         values = list(range(15, 30)) + list(range(15))
         events = [[base+n, '192.0.2.1', 'fixture.example', '/event-%d' % n, 60, 'post'] for n in values]
         drop = self.root / 'drop.log'
-        drop.write_text(''.join(json.dumps(row)+'\n' for row in events), encoding='utf-8')
+        drop.write_bytes(''.join(json.dumps(row)+'\n' for row in events).encode('utf-8'))
         original_open = builtins.open
         def opened(path, *args, **kwargs):
             return original_open(drop if str(path) == '/www/server/free_waf/drop_ip.log' else path, *args, **kwargs)
@@ -382,7 +819,7 @@ class ReviewBackendRegressionTest(unittest.TestCase):
         logs = self.root / 'logs'
         logs.mkdir(exist_ok=True)
         for name, rows in files.items():
-            (logs / name).write_text(''.join(json.dumps(row) + '\n' for row in rows), encoding='utf-8', newline='')
+            (logs / name).write_bytes(''.join(json.dumps(row) + '\n' for row in rows).encode('utf-8'))
         prefix = '/www/wwwlogs/free_waf_log/'
         real_open, real_exists, real_listdir, real_scandir = builtins.open, os.path.exists, os.listdir, os.scandir
         def mapped(path):
@@ -415,7 +852,7 @@ class ReviewBackendRegressionTest(unittest.TestCase):
     def test_reverse_reader_offsets_survive_multiple_blocks_and_unicode(self):
         path = self.root / 'large.log'
         data = ('x' * 200 + '\u4e2d\u6587\n') * 1000 + 'last'
-        path.write_text(data, encoding='utf-8', newline='')
+        path.write_bytes(data.encode('utf-8'))
         budget = self.backend._free_waf_main__legacy_log_budget()
         rows = list(self.backend._free_waf_main__bounded_log_rows(str(path), budget))
         blob = path.read_bytes()

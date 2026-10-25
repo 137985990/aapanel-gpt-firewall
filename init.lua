@@ -342,7 +342,7 @@ end
 
 function repeat_ban_event(site, client_ip, seconds, reason, path)
 	local policy = repeat_ban_policy(site)
-	local reasons = {cc=true,registration_abuse_verify=true,registration_abuse_register=true,endpoint_limit=true,['404_flood']=true}
+	local reasons = {cc=true,registration_abuse_verify=true,registration_abuse_register=true,['404_flood']=true}
 	if not policy or not reasons[reason] then return false end
 	client_ip = endpoint_normalize_ip(client_ip)
 	if not client_ip or type(site) ~= 'string' or #site > 253 or type(seconds) ~= 'number' or seconds < 1 or seconds > 28800 then return false end
@@ -511,13 +511,16 @@ function trim_string(value)
 	return string.gsub(value, "^%s*(.-)%s*$", "%1")
 end
 
-function first_client_ip_from_header(header_value)
+function first_client_ip_from_header(header_value, order)
 	if type(header_value) == "table" then header_value = header_value[1] end
-	if not header_value or header_value == "" then return nil end
-	for _,part in ipairs(split_bylog(header_value, ','))
+	if type(header_value) ~= 'string' or header_value == "" then return nil end
+	local parts = split_bylog(header_value, ',')
+	local first, last, step = 1, #parts, 1
+	if order == 'last' then first, last, step = #parts, 1, -1 end
+	for index = first, last, step
 	do
-		local candidate = trim_string(part)
-		if is_ipaddr(candidate) and not compare_ip_block(candidate) then
+		local candidate = trim_string(parts[index])
+		if string.match(candidate, '^%d+%.%d+%.%d+%.%d+$') and is_ipaddr(candidate) and not compare_ip_block(candidate) then
 			return candidate
 		end
 	end
@@ -560,7 +563,7 @@ function get_client_ip()
 			do
 				if request_header[v] ~= nil and request_header[v] ~= "" then
 					local header_tmp = request_header[v]
-					local candidate = first_client_ip_from_header(header_tmp)
+					local candidate = first_client_ip_from_header(header_tmp, site_config[server_name]['cdn_header_order'])
 					if candidate then
 						client_ip = candidate
 						break
@@ -1072,12 +1075,7 @@ function endpoint_normalize_ip(value)
 	return table.concat(a,':') .. (best_start and '::' or '') .. table.concat(b,':')
 end
 
-function endpoint_state_key(kind, site, rule, client_ip)
-	-- Policy revisions do not inherit counters or bans from an edited rule.
-	local revision = ngx.md5(json.encode({rule.path,rule.match,rule.method,rule.action,rule.window_seconds,rule.max_requests,rule.ban_seconds}))
-	return 'endpoint:v1:' .. kind .. ':' .. #site .. ':' .. site .. ':' .. rule.id .. '.' .. revision .. ':' .. client_ip
-end
-
+-- Decode only retired keys so existing precise unban operations can clear them.
 function endpoint_state_ip(key, include_counters)
 	if type(key) ~= 'string' then return nil end
 	local kind,length,rest = string.match(key, '^endpoint:v1:([^:]+):(%d+):(.*)$')
@@ -1090,48 +1088,7 @@ function endpoint_state_ip(key, include_counters)
 	return endpoint_normalize_ip(client_ip)
 end
 
-function endpoint_valid_rule(rule)
-	if type(rule) ~= 'table' or rule.enabled ~= true then return false end
-	if type(rule.id) ~= 'string' or #rule.id ~= 32 or not string.match(rule.id,'^[0-9a-f]+$') then return false end
-	if rule.action ~= 'observe' and rule.action ~= 'reject' and rule.action ~= 'ban' then return false end
-	if rule.match ~= 'exact' and rule.match ~= 'prefix' then return false end
-	if type(rule.path) ~= 'string' or #rule.path < 1 or #rule.path > 512 or string.sub(rule.path,1,1) ~= '/' then return false end
-	if string.find(rule.path,'[%c%%?#\\]') or string.find(rule.path,'//',1,true) then return false end
-	for component in string.gmatch(rule.path,'[^/]+') do if component=='.' or component=='..' then return false end end
-	local methods = {ALL=true,GET=true,POST=true,PUT=true,PATCH=true,DELETE=true,HEAD=true,OPTIONS=true}
-	if not methods[rule.method] then return false end
-	for _,item in ipairs({{'window_seconds',3600},{'max_requests',100000},{'ban_seconds',28800}}) do
-		local n=rule[item[1]]
-		if type(n)~='number' or n~=n or n<1 or n>item[2] or n~=math.floor(n) then return false end
-	end
-	return true
-end
-
-function endpoint_path_matches(rule, path, request_method)
-	if rule.method ~= 'ALL' and rule.method ~= request_method then return false end
-	if path==rule.path then return true end
-	if rule.match~='prefix' then return false end
-	if rule.path=='/' then return true end
-	local prefix=rule.path
-	if string.sub(prefix,-1)~='/' then prefix=prefix..'/' end
-	return string.sub(path,1,#prefix)==prefix
-end
-
-function endpoint_record_event(rule, site, client_ip, path, count, retry_after)
-	if config.log ~= true or (site_config[site] and site_config[site].log == false) then return false end
-	local key=endpoint_state_key('event',site,rule,client_ip)
-	if not ngx.shared.free_waf:safe_add(key,true,rule.window_seconds) then return false end
-	local entry={timestamp=ngx.localtime(),site=site,ip=client_ip,path=string.sub(path,1,512),method=method,
-		rule_id=rule.id,rule_name=string.sub(tostring(rule.name or ''),1,240),action=rule.action,
-		count=count,limit=rule.max_requests,window_seconds=rule.window_seconds,retry_after=retry_after}
-	local fp=io.open(config.logs_path..'/endpoint_'..ngx.today()..'.jsonl','ab')
-	if not fp then return false end
-	local written=fp:write(json.encode(entry)..'\n')
-	fp:close()
-	return not not written
-end
-
-function endpoint_limit_response(retry_after)
+function rate_limit_response(retry_after)
 	ngx.header['Retry-After']=tostring(math.max(1,math.ceil(retry_after)))
 	ngx.header.content_type='application/json; charset=utf-8'
 	ngx.header['Cache-Control']='no-store'
@@ -1139,43 +1096,6 @@ function endpoint_limit_response(retry_after)
 	ngx.say(json.encode({error={type='rate_limit_exceeded',message='请求过于频繁，请稍后重试。'}}))
 	ngx.exit(429)
 	return true
-end
-
-function endpoint_policy_guard()
-	local site=site_config[server_name]
-	if type(site)~='table' or type(site.endpoint_limits)~='table' then return false end
-	if type(server_name)~='string' or #server_name>253 then return false end
-	local client_ip=endpoint_normalize_ip(ip)
-	local path=ngx.var.uri
-	if not client_ip or type(path)~='string' then return false end
-	local shared=ngx.shared.free_waf
-	for index,rule in ipairs(site.endpoint_limits) do
-		if index>50 then break end
-		if endpoint_valid_rule(rule) and endpoint_path_matches(rule,path,method) then
-			local now=ngx.time()
-			local ban_key=endpoint_state_key('ban',server_name,rule,client_ip)
-			local banned_until=shared:get(ban_key)
-			if type(banned_until)=='number' and banned_until>now then return endpoint_limit_response(banned_until-now) end
-			local count_key=endpoint_state_key('count',server_name,rule,client_ip)
-			shared:safe_add(count_key,0,rule.window_seconds)
-			local count=shared:incr(count_key,1)
-			if count and count>rule.max_requests then
-				local wait=rule.window_seconds
-				if rule.action=='ban' then
-					wait=rule.ban_seconds
-					local created,err = shared:safe_add(ban_key,now+wait,wait)
-					if not created and err ~= 'exists' then return false end
-					if created then
-						write_drop_ip_entry(client_ip,server_name,path,wait,'endpoint_limit')
-						repeat_ban_event(server_name,client_ip,wait,'endpoint_limit',path)
-					end
-				end
-				endpoint_record_event(rule,server_name,client_ip,path,count,wait)
-				if rule.action~='observe' then return endpoint_limit_response(wait) end
-			end
-		end
-	end
-	return false
 end
 
 function clear_endpoint_state(target_ips)
@@ -1265,7 +1185,7 @@ end
 function security_verification()
 	-- Retired predictable arithmetic/URL-script challenge; never grant an IP bypass.
 	local wait=tonumber(cycle) or 60
-	return endpoint_limit_response(math.max(1,math.min(wait,3600)))
+	return rate_limit_response(math.max(1,math.min(wait,3600)))
 end
 
 function scan_black()
@@ -1645,6 +1565,7 @@ function is_ngx_match(rules,sbody,rule_name)
 	if type(sbody) == "string" then
 		sbody = {sbody}
 	end
+	if type(sbody) ~= "table" then return false end
 	
 	if type(rules) == "string" then
 		rules = {rules}
@@ -1653,6 +1574,9 @@ function is_ngx_match(rules,sbody,rule_name)
 	for k,body in pairs(sbody)
 	do
 		if continue_key(k) then
+			local values = {body}
+			-- Repeated GET parameters are one-level value arrays, not nested bodies.
+			if rule_name == 'args' and type(body) == 'table' then values = body end
 			for i,rule in ipairs(rules)
 			do
 				if site_config[server_name] and rule_name then
@@ -1670,9 +1594,9 @@ function is_ngx_match(rules,sbody,rule_name)
 				end
 				
 				if body and rule ~="" then
-					if type(body) == "string" then
-						if ngx_match(ngx.unescape_uri(body),rule,"isjo") then
-							error_rule = rule .. ' >> ' .. k .. ':' .. body
+					for _,value in ipairs(values) do
+						if type(value) == "string" and ngx_match(ngx.unescape_uri(value),rule,"isjo") then
+							error_rule = rule .. ' >> ' .. k .. ':' .. value
 							return true
 						end
 					end
@@ -1847,21 +1771,7 @@ function get_btwaf_drop_ip()
 	local scopes = registration_guard_scopes()
 	for _,key in ipairs(shared:get_keys(0))
 	do
-		local client_ip = endpoint_state_ip(key, false)
-		if client_ip then
-			local length,rest=string.match(key,'^endpoint:v1:ban:(%d+):(.*)$')
-			local site=string.sub(rest,1,tonumber(length))
-			local current=site_config[site]
-			local active=false
-			local deadline=shared:get(key)
-			if type(deadline)=='number' and deadline>ngx.time() and type(current)=='table' and type(current.endpoint_limits)=='table' then
-				for index,rule in ipairs(current.endpoint_limits) do
-					if index>50 then break end
-					if endpoint_valid_rule(rule) and rule.action=='ban' and key==endpoint_state_key('ban',site,rule,client_ip) then active=true; break end
-				end
-			end
-			if not active then client_ip=nil end
-		else client_ip=registration_state_ip(key,false,scopes) end
+		local client_ip=registration_state_ip(key,false,scopes)
 		if client_ip and shared:get(key) and not seen[client_ip] then
 			seen[client_ip] = true
 			table.insert(data, client_ip)
@@ -2021,7 +1931,7 @@ function min_route()
 	if ngx.var.server_name == 'gpt-firewall-health.invalid' then
 		local nonce = string.match(uri or '', '^/_gpt_firewall_health/([0-9a-f]+)$')
 		if nonce and #nonce == 32 then
-			return_message(200, {product='aapanel GPT Firewall', version='0.1.8',
+			return_message(200, {product='aapanel GPT Firewall', version='0.1.9',
 				nonce=nonce, worker_pid=ngx.worker.pid()})
 		else
 			ngx.exit(404)
@@ -2105,6 +2015,12 @@ end
 
 function run_btwaf()
 	server_name = ngx.var.server_name
+	if config['compatibility_profile'] == 'bt-free-waf-8.4' and type(config['site_aliases']) == 'table' then
+		local canonical = config['site_aliases'][server_name]
+		if type(canonical) == 'string' and canonical ~= '' and type(site_config[canonical]) == 'table' then
+			server_name = canonical
+		end
+	end
 	error_rule = nil
 	request_header = ngx.req.get_headers()
 	method = ngx.req.get_method()
@@ -2144,7 +2060,6 @@ function run_btwaf()
 	if user_agent_white() then return true end
 
 	if url_white() then return true end
-	endpoint_policy_guard()
 	ban_empty_ua()
 	url_black()
 	drop_abroad()

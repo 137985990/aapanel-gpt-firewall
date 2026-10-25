@@ -1,12 +1,10 @@
+import ast
 import copy
-import datetime
+import hashlib
 import json
 import os
-import subprocess
-import sys
 from pathlib import Path
 import tempfile
-import threading
 import types
 import unittest
 from unittest.mock import Mock, patch
@@ -14,444 +12,267 @@ from unittest.mock import Mock, patch
 from tests.test_panel_performance import load_backend
 
 
-class EndpointPolicyTest(unittest.TestCase):
-    def setUp(self):
-        self.config = {'fixture.example': {'open': True, 'cc': {'limit': 10}},
-                       'other.example': {'open': False}}
-        self.public = types.SimpleNamespace(
-            returnMsg=lambda status, msg: dict(status=status, msg=msg),
-            readFile=Mock(side_effect=lambda path: json.dumps(self.config)),
-            writeFile=Mock(side_effect=self.persist),
-            httpGet=Mock(side_effect=AssertionError('network')),
-            httpPost=Mock(side_effect=AssertionError('network')),
-            serviceReload=Mock(side_effect=AssertionError('read reloaded runtime')),
-        )
-        self.backend = load_backend(self.public)
-        self.directory = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directory.cleanup)
-        self.backend._free_waf_main__path = self.directory.name + os.sep
-        self.backend._free_waf_main__update_request_is_post = Mock(return_value=True)
-        self.backend._free_waf_main__write_site_config = Mock(side_effect=AssertionError('unchecked legacy writer'))
-        self.backend._free_waf_main__checked_nginx_reload = Mock()
-        self.backend.get_site_config = Mock(side_effect=AssertionError('legacy getter migrates/prunes logs'))
-
-    def persist(self, path, content):
-        self.config = json.loads(content)
-        return True
-
-    def rule(self, **changes):
-        data = dict(name='Login', match='exact', path='/api/login', method='POST',
-                    window_seconds=60, max_requests=10, ban_seconds=60)
-        data.update(changes)
-        return data
-
-    def call(self, method, **args):
-        function = getattr(self.backend, method, None)
-        self.assertTrue(callable(function), method + ' API missing')
-        return function(types.SimpleNamespace(**args))
-
-    def save(self, rule=None, site='fixture.example', **args):
-        return self.call('save_endpoint_policy', siteName=site,
-                         policy=json.dumps(self.rule() if rule is None else rule), **args)
-
-    def test_absent_rules_read_as_empty_without_migrating_or_writing(self):
-        before = copy.deepcopy(self.config)
-        self.assertEqual(self.call('get_endpoint_policies', siteName='fixture.example'),
-                         dict(status=True, siteName='fixture.example', rules=[]))
-        self.assertEqual(self.config, before)
-        self.backend._free_waf_main__write_site_config.assert_not_called()
-        self.public.serviceReload.assert_not_called()
-
-    def test_create_defaults_disabled_observe_and_server_uuid(self):
-        result = self.save()
-        self.assertTrue(result['status'])
-        self.assertEqual(result['siteName'], 'fixture.example')
-        rule = result['rules'][0]
-        self.assertRegex(rule['id'], r'^[0-9a-f]{12}4[0-9a-f]{3}[89ab][0-9a-f]{15}$')
-        self.assertIs(rule['enabled'], False)
-        self.assertEqual(rule['action'], 'observe')
-        self.assertEqual(self.config['fixture.example']['cc'], {'limit': 10})
-        self.assertEqual(self.config['other.example'], {'open': False})
-
-    def test_update_keeps_identity_and_replaces_only_selected_rule(self):
-        first = self.save()['rules'][0]
-        second = self.save(self.rule(path='/next'))['rules'][1]
-        result = self.save(self.rule(id=first['id'], enabled=True, action='ban', max_requests=2))
-        self.assertTrue(result['status'])
-        self.assertEqual([r['id'] for r in result['rules']], [first['id'], second['id']])
-        self.assertEqual(result['rules'][0]['max_requests'], 2)
-
-    def test_unknown_or_cross_site_id_cannot_create_a_rule(self):
-        existing = self.save()['rules'][0]
-        for site, ident in [('fixture.example', 'a' * 32), ('other.example', existing['id'])]:
-            with self.subTest(site=site):
-                self.assertFalse(self.save(self.rule(id=ident), site=site)['status'])
-        self.assertNotIn('endpoint_limits', self.config['other.example'])
-
-    def test_mutations_require_post_before_reading_arguments_or_config(self):
-        self.backend._free_waf_main__update_request_is_post.return_value = False
-        self.assertFalse(self.save()['status'])
-        self.assertFalse(self.call('delete_endpoint_policy')['status'])
-        self.public.readFile.assert_not_called()
-        self.backend._free_waf_main__write_site_config.assert_not_called()
-
-    def test_missing_or_unknown_sites_fail_without_creating_site_config(self):
-        for site in ('', 'missing.example', '../site.json', 'fixture.example/path', None):
-            with self.subTest(site=site):
-                self.assertFalse(self.save(site=site)['status'])
-                self.assertFalse(self.call('get_endpoint_policies', siteName=site)['status'])
-        self.backend._free_waf_main__write_site_config.assert_not_called()
-
-    def test_schema_rejects_unknown_fields_wrong_types_and_invalid_bounds(self):
-        invalid = [dict(enabled=1), dict(enabled='false'), dict(action='drop'), dict(match='regex'),
-                   dict(method='get'), dict(name=''), dict(name='x' * 129), dict(name='bad\nname'),
-                   dict(path=3), dict(id=''), dict(open=True), dict(siteName='other.example'),
-                   dict(window_seconds=0), dict(window_seconds=3601), dict(window_seconds=True),
-                   dict(window_seconds='60'), dict(max_requests=0), dict(max_requests=100001),
-                   dict(max_requests=1.5), dict(ban_seconds=0), dict(ban_seconds=28801),
-                   dict(ban_seconds=False)]
-        for changes in invalid:
-            with self.subTest(changes=changes):
-                self.assertFalse(self.save(self.rule(**changes))['status'])
-        self.backend._free_waf_main__write_site_config.assert_not_called()
-
-    def test_rejects_nonobject_json_missing_fields_and_frontend_paths(self):
-        for policy in ('[]', 'null', '{', 'true', '"/frontend/path"', '{}'):
-            with self.subTest(policy=policy):
-                self.assertFalse(self.call('save_endpoint_policy', siteName='fixture.example', policy=policy)['status'])
-        incomplete = self.rule()
-        del incomplete['path']
-        self.assertFalse(self.save(incomplete)['status'])
-
-    def test_path_rejects_queries_controls_encoding_dot_segments_and_regex_syntax(self):
-        for path in ('api', '/api?secret=x', '/api#fragment', '/a\nb', '/a\x00b', '/a\\b',
-                     '/a/../b', '/./a', '/a/.', '/a/..', '//api', '/a//b', '/%2fapi',
-                     '/%252e%252e', '/a%20b', '/a%ZZ', '/api.*', '/(api)', '/' + 'x' * 512):
-            with self.subTest(path=path):
-                self.assertFalse(self.save(self.rule(path=path))['status'])
-
-    def test_all_enum_values_and_inclusive_numeric_bounds(self):
-        for method in ('ALL', 'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'):
-            self.assertTrue(self.save(self.rule(method=method, match='prefix', path='/api/',
-                                               window_seconds=1, max_requests=1, ban_seconds=1))['status'])
-        self.assertTrue(self.save(self.rule(path='/', window_seconds=3600,
-                                           max_requests=100000, ban_seconds=28800))['status'])
-
-    def test_limit_fifty_allows_edit_and_delete_but_not_fifty_first(self):
-        for _ in range(50):
-            result = self.save()
-            self.assertTrue(result['status'])
-        self.assertFalse(self.save()['status'])
-        ident = result['rules'][0]['id']
-        self.assertTrue(self.save(self.rule(id=ident, action='reject'))['status'])
-        result = self.call('delete_endpoint_policy', siteName='fixture.example', id=ident)
-        self.assertTrue(result['status'])
-        self.assertEqual(len(result['rules']), 49)
-        self.assertTrue(self.save()['status'])
-
-    def test_delete_requires_valid_existing_id_in_selected_site(self):
-        ident = self.save()['rules'][0]['id']
-        for args in ({}, {'id': '../file'}, {'id': 'a' * 32}, {'id': ident, 'siteName': 'other.example'}):
-            data = dict(siteName='fixture.example')
-            data.update(args)
-            self.assertFalse(self.call('delete_endpoint_policy', **data)['status'])
-        result = self.call('delete_endpoint_policy', siteName='fixture.example', id=ident)
-        self.assertEqual(result, dict(status=True, siteName='fixture.example', rules=[]))
-
-    def test_invalid_stored_schema_is_not_silently_overwritten(self):
-        self.config['fixture.example']['endpoint_limits'] = {'bad': 'data'}
-        self.assertFalse(self.save()['status'])
-        self.assertFalse(self.call('get_endpoint_policies', siteName='fixture.example')['status'])
-        self.backend._free_waf_main__write_site_config.assert_not_called()
-
-    def test_writer_failure_never_reports_success(self):
-        for failure in (OSError('disk full'), False):
-            writer = self.public.writeFile
-            writer.side_effect = failure if isinstance(failure, Exception) else None
-            writer.return_value = False
-            self.assertFalse(self.save()['status'])
-
-    def test_save_reload_failure_restores_original_config_and_reports_failure(self):
-        before = copy.deepcopy(self.config)
-        self.backend._free_waf_main__checked_nginx_reload.side_effect = [RuntimeError('reload failed'), None]
-        self.assertFalse(self.save()['status'])
-        self.assertEqual(self.config, before)
-        self.assertEqual(self.backend._free_waf_main__checked_nginx_reload.call_count, 2)
-
-    def test_delete_reload_failure_restores_rule_and_reports_failure(self):
-        ident = self.save()['rules'][0]['id']
-        before = copy.deepcopy(self.config)
-        self.backend._free_waf_main__checked_nginx_reload.side_effect = [RuntimeError('reload failed'), None]
-        self.assertFalse(self.call('delete_endpoint_policy', siteName='fixture.example', id=ident)['status'])
-        self.assertEqual(self.config, before)
-
-    def test_partial_file_write_failure_also_attempts_rollback(self):
-        before = copy.deepcopy(self.config)
-        def partial_write(path, content):
-            self.persist(path, content)
-            return self.public.writeFile.call_count > 1
-        self.public.writeFile.side_effect = partial_write
-        self.assertFalse(self.save()['status'])
-        self.assertEqual(self.config, before)
-
-    def test_checked_reload_uses_only_fixed_argv_and_never_unchecked_service_reload(self):
-        del self.backend._free_waf_main__checked_nginx_reload
-        with patch('subprocess.run', return_value=types.SimpleNamespace(returncode=0)) as run:
-            self.assertTrue(self.save()['status'])
-        self.assertEqual([call.args[0] for call in run.call_args_list], [
-            ['/www/server/nginx/sbin/nginx', '-t'],
-            ['/www/server/nginx/sbin/nginx', '-s', 'reload']])
-        self.public.serviceReload.assert_not_called()
-
-    def test_successful_write_without_persisted_content_does_not_report_success(self):
-        before = copy.deepcopy(self.config)
-        self.public.writeFile.side_effect = None
-        self.public.writeFile.return_value = True
-        self.assertFalse(self.save()['status'])
-        self.assertEqual(self.config, before)
-
-    def test_false_reload_result_is_also_a_failure(self):
-        before = copy.deepcopy(self.config)
-        self.backend._free_waf_main__checked_nginx_reload.side_effect = [False, None]
-        self.assertFalse(self.save()['status'])
-        self.assertEqual(self.config, before)
-
-    def test_edit_without_optional_defaults_preserves_enabled_action(self):
-        rule = self.save(self.rule(enabled=True, action='ban'))['rules'][0]
-        result = self.save(self.rule(id=rule['id'], max_requests=2))
-        self.assertTrue(result['status'])
-        self.assertIs(result['rules'][0]['enabled'], True)
-        self.assertEqual(result['rules'][0]['action'], 'ban')
-
-    def test_unicode_control_path_characters_are_rejected(self):
-        self.assertFalse(self.save(self.rule(path='/api\u0085login'))['status'])
-
-    def test_rollback_preserves_unrelated_concurrent_settings(self):
-        def reload_with_concurrent_setting():
-            if self.backend._free_waf_main__checked_nginx_reload.call_count == 1:
-                self.config['other.example']['open'] = True
-                self.config['fixture.example']['cc']['limit'] = 20
-                raise RuntimeError('reload failed')
-        self.backend._free_waf_main__checked_nginx_reload.side_effect = reload_with_concurrent_setting
-        self.assertFalse(self.save()['status'])
-        self.assertNotIn('endpoint_limits', self.config['fixture.example'])
-        self.assertTrue(self.config['other.example']['open'])
-        self.assertEqual(self.config['fixture.example']['cc']['limit'], 20)
-
-    def test_rollback_restores_exact_original_bytes_without_concurrent_edits(self):
-        original = json.dumps(self.config, indent=2) + '\n'
-        storage = [original]
-        self.public.readFile.side_effect = lambda path: storage[0]
-        def write(path, content):
-            storage[0] = content
-            return True
-        self.public.writeFile.side_effect = write
-        self.backend._free_waf_main__checked_nginx_reload.side_effect = [RuntimeError('reload'), None]
-        self.assertFalse(self.save()['status'])
-        self.assertEqual(storage[0], original)
-
-    def test_overlapping_saves_cannot_both_succeed_and_lose_a_site_policy(self):
-        entered, release = threading.Event(), threading.Event()
-        results = []
-        def paused_write(path, content):
-            if threading.current_thread().name == 'first-policy-save':
-                entered.set()
-                if not release.wait(5):
-                    raise TimeoutError('test write was not released')
-            return self.persist(path, content)
-        self.public.writeFile.side_effect = paused_write
-        first = threading.Thread(target=lambda: results.append(self.save()), name='first-policy-save')
-        first.start()
-        try:
-            self.assertTrue(entered.wait(5))
-            conflicting = self.save(site='other.example')
-        finally:
-            release.set()
-            first.join(5)
-        self.assertFalse(first.is_alive())
-        self.assertTrue(results[0]['status'])
-        self.assertFalse(conflicting['status'])
-        self.assertTrue(self.save(site='other.example')['status'])
-        self.assertEqual(len(self.config['fixture.example']['endpoint_limits']), 1)
-        self.assertEqual(len(self.config['other.example']['endpoint_limits']), 1)
-
-    def test_transaction_rejects_link_lock_before_reading_configuration(self):
-        target = Path(self.directory.name) / 'other-lock'
-        target.write_bytes(b'private')
-        try:
-            (Path(self.directory.name) / '.endpoint-policy.lock').symlink_to(target)
-        except OSError as error:
-            self.skipTest('symlink unavailable: ' + str(error))
-        self.assertFalse(self.save()['status'])
-        self.public.readFile.assert_not_called()
-        self.public.writeFile.assert_not_called()
-        self.assertEqual(target.read_bytes(), b'private')
-
-    @unittest.skipUnless(os.name == 'posix', 'production cross-process lock requires POSIX')
-    def test_another_panel_process_prevents_policy_mutation(self):
-        path = str(Path(self.directory.name) / '.endpoint-policy.lock')
-        code = ('import fcntl,sys; f=open(sys.argv[1],"a+"); '
-                'fcntl.flock(f,fcntl.LOCK_EX); print("locked",flush=True); sys.stdin.read(1)')
-        process = subprocess.Popen([sys.executable, '-I', '-c', code, path],
-                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        try:
-            self.assertEqual(process.stdout.readline().strip(), b'locked')
-            self.assertFalse(self.save()['status'])
-            self.public.readFile.assert_not_called()
-            self.public.writeFile.assert_not_called()
-        finally:
-            process.communicate(input=b'x', timeout=5)
-        self.assertTrue(self.save()['status'])
+ROOT = Path(__file__).resolve().parents[1]
+REMOVED_APIS = ('get_endpoint_policies', 'save_endpoint_policy',
+                'delete_endpoint_policy', 'get_endpoint_policy_events')
+REMOVED_HELPERS = ('__endpoint_id', '__endpoint_path', '__endpoint_rule', '__endpoint_site',
+                   '__endpoint_event', '__write_endpoint_policies',
+                   '__save_endpoint_policy_locked', '__delete_endpoint_policy_locked')
 
 
-class EndpointEventsTest(unittest.TestCase):
+class EndpointPolicyRemovalTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
-        self.public = types.SimpleNamespace(returnMsg=lambda status, msg: dict(status=status, msg=msg))
+        self.path = self.root / 'site.json'
+        self.logs = self.root / 'logs'
+        self.logs.mkdir()
+        self.history = {
+            self.logs / 'endpoint_2020-01-01.jsonl': b'{"action":"ban","rule_id":"historical"}\n',
+            self.logs / 'endpoint_2020-01-02.jsonl': b'legacy invalid sample\n\xff\n',
+        }
+        for path, data in self.history.items():
+            path.write_bytes(data)
+        self.public = types.SimpleNamespace(
+            returnMsg=lambda status, msg: dict(status=status, msg=msg),
+            readFile=Mock(side_effect=lambda path: Path(path).read_text(encoding='utf-8')),
+            writeFile=Mock(side_effect=AssertionError('unchecked writer')),
+            httpGet=Mock(side_effect=AssertionError('unexpected network')),
+            httpPost=Mock(side_effect=AssertionError('unexpected network')),
+            serviceReload=Mock(), WriteLog=Mock(), M=Mock())
         self.backend = load_backend(self.public)
-        self.backend.get_config = Mock(return_value={'logs_path': str(self.root)})
-        self.today = datetime.date.today()
+        self.backend._free_waf_main__path = str(self.root) + os.sep
+        self.backend._free_waf_main__PATH = str(ROOT) + os.sep
+        self.backend._free_waf_main__update_request_is_post = Mock(return_value=True)
+        self.backend._free_waf_main__checked_nginx_reload = Mock(return_value=True)
+        self.backend._free_waf_main__write_site_domains = Mock()
+        self.backend.get_config = Mock(return_value=dict(
+            logs_path=str(self.logs), log_save=1, retry=10, retry_cycle=60, retry_time=60,
+            cc=dict(open=True, cycle=60, limit=10, endtime=60),
+            get=dict(open=True), post=dict(open=True), cookie=dict(open=True),
+            **{'user-agent': dict(open=True), 'scan': dict(open=True)}))
+        template = self.backend._free_waf_main__get_site_conf()
+        template['log_size'] = 0
+        self.legacy_rules = [dict(
+            id='a' * 32, name='Legacy login', enabled=True, action='ban',
+            match='exact', path='/api/login', method='POST', window_seconds=60,
+            max_requests=10, ban_seconds=60)]
+        self.config = {'fixture.example': copy.deepcopy(template),
+                       'other.example': copy.deepcopy(template)}
+        self.config['fixture.example']['endpoint_limits'] = copy.deepcopy(self.legacy_rules)
+        self.config['other.example']['endpoint_limits'] = {'unknown': ['keep', None]}
+        self.write(self.config)
+        self.public.M.return_value.field.return_value.select.return_value = [
+            dict(name=site) for site in self.config]
+        exists = os.path.exists
+        panel_logs = patch('os.path.exists', side_effect=lambda path:
+                           True if path == '/www/wwwlogs/free_waf_log' else exists(path))
+        panel_logs.start()
+        self.addCleanup(panel_logs.stop)
 
-    def event(self, **changes):
-        row = dict(timestamp=self.today.isoformat() + ' 12:00:00', site='fixture.example',
-                   ip='192.0.2.10', path='/api/login', method='POST', rule_id='a' * 32,
-                   rule_name='Login', action='observe', count=11, limit=10, window_seconds=60, retry_after=0)
-        row.update(changes)
-        return row
+    def write(self, config):
+        self.path.write_bytes((json.dumps(config, indent=2) + '\r\n').encode('utf-8'))
 
-    def write_events(self, rows, day=None):
-        path = self.root / ('endpoint_' + (day or self.today).isoformat() + '.jsonl')
-        path.write_text('\n'.join(json.dumps(row) for row in rows) + '\n', encoding='utf-8')
-        return path
+    def read(self):
+        return json.loads(self.path.read_bytes())
 
-    def call(self, **args):
-        function = getattr(self.backend, 'get_endpoint_policy_events', None)
-        self.assertTrue(callable(function), 'events API missing')
-        return function(types.SimpleNamespace(**args))
+    def save_repeat(self):
+        return self.backend.save_repeat_ban_policy(types.SimpleNamespace(
+            siteName='fixture.example',
+            policy=json.dumps(self.backend._free_waf_main__repeat_defaults()),
+            revision=hashlib.sha256(self.path.read_bytes()).hexdigest()))
 
-    def test_empty_events_have_sampled_record_notice_and_recorded_only_summary(self):
-        result = self.call()
-        self.assertTrue(result['status'])
-        self.assertEqual(result['events'], [])
-        self.assertIs(result['coverage']['partial'], False)
-        self.assertIn('\u91c7\u6837', result['coverage']['notice'])
-        self.assertEqual(result['summary'], dict(recorded_events=0, observed=0, rejected=0, banned=0))
+    def assert_history_preserved(self):
+        for site, conf in self.config.items():
+            self.assertEqual(self.read()[site]['endpoint_limits'], conf['endpoint_limits'])
+        self.assertEqual(set(self.logs.iterdir()), set(self.history))
+        for path, data in self.history.items():
+            self.assertEqual(path.read_bytes(), data)
 
-    def test_latest_first_site_rule_filter_and_recorded_summary(self):
-        self.write_events([self.event(timestamp=self.today.isoformat() + ' 10:00:00'),
-                           self.event(action='reject', retry_after=60),
-                           self.event(site='other.example', action='ban'),
-                           self.event(rule_id='b' * 32)])
-        result = self.call(days='1', siteName='fixture.example', rule_id='a' * 32)
-        self.assertTrue(result['status'])
-        self.assertEqual([row['action'] for row in result['events']], ['reject', 'observe'])
-        self.assertEqual(result['summary'], dict(recorded_events=2, observed=1, rejected=1, banned=0))
+    def site_view(self):
+        return self.backend.get_site_config(None)
 
-    def test_evidence_is_allowlisted_and_query_body_credentials_never_returned(self):
-        self.write_events([self.event(path='/api/login?token=secret#fragment', rule_name='<b>Login</b>',
-                                      headers={'Cookie': 'secret'}, body='private', cookie='private', query='secret')])
-        result = self.call()
-        row = result['events'][0]
-        self.assertEqual(set(row), set(self.event()))
-        self.assertEqual(row['path'], '/api/login')
-        self.assertEqual(row['rule_name'], '<b>Login</b>')
-        self.assertNotIn('secret', json.dumps(result))
-        self.assertNotIn('private', json.dumps(result))
+    def test_management_apis_are_removed_not_disabled_stubs(self):
+        for name in REMOVED_APIS:
+            with self.subTest(api=name):
+                self.assertFalse(hasattr(type(self.backend), name), name + ' still defined')
+                self.assertFalse(hasattr(self.backend, name), name + ' still exposed')
 
-    def test_bad_rows_are_skipped_not_coerced_or_echoed(self):
-        self.write_events([self.event(), [], self.event(ip='not-an-ip'), self.event(count=True),
-                           self.event(path='/../private'), self.event(action='drop'),
-                           self.event(timestamp='not-a-time'), self.event(rule_id='../private')])
-        result = self.call()
-        self.assertEqual(len(result['events']), 1)
-        self.assertTrue(result['coverage']['partial'])
+    def test_dedicated_validators_sample_reader_and_writers_are_removed(self):
+        for name in REMOVED_HELPERS:
+            with self.subTest(helper=name):
+                self.assertFalse(hasattr(self.backend, '_free_waf_main' + name), name + ' still defined')
 
-    def test_query_parameters_are_validated_before_any_log_read(self):
-        for args in ({'days': '0'}, {'days': '8'}, {'days': True}, {'days': '1.5'},
-                     {'rule_id': '../private'}, {'siteName': '../private'}, {'siteName': 'a\nb'}):
-            with self.subTest(args=args), patch('builtins.open', side_effect=AssertionError('unexpected file read')):
-                self.assertFalse(self.call(**args)['status'])
+    def test_backend_has_no_legacy_endpoint_data_or_sampling_paths(self):
+        tree = ast.parse((ROOT / 'free_waf_main.py').read_text(encoding='utf-8'))
+        consumers = [node.value for node in ast.walk(tree)
+                     if isinstance(node, ast.Constant) and isinstance(node.value, str)
+                     and node.value in ('endpoint_limits', 'endpoint_')]
+        self.assertEqual(consumers, [])
 
-    def test_frontend_file_arguments_are_ignored_and_only_fixed_daily_names_opened(self):
-        self.write_events([self.event()])
-        secret = self.root / 'secret.jsonl'
-        secret.write_text('private')
-        result = self.call(path=str(secret), filename=str(secret), logs_path=str(secret), days=1)
-        self.assertEqual(len(result['events']), 1)
+    def test_shared_helpers_remain_available_to_repeat_and_site_configuration(self):
+        for name in ('__endpoint_transaction', '__endpoint_site_name', '__checked_nginx_reload'):
+            with self.subTest(helper=name):
+                self.assertTrue(callable(getattr(type(self.backend), '_free_waf_main' + name, None)))
 
-    def test_max_two_hundred_events_and_one_megabyte_total_across_seven_days(self):
-        for offset in range(7):
-            self.write_events([self.event()] * 5000, self.today - datetime.timedelta(days=offset))
-        original_fdopen = os.fdopen
-        bytes_read = []
+    def test_shared_transaction_reuses_historical_lock_path_without_replacing_it(self):
+        path = self.root / '.endpoint-policy.lock'
+        path.write_bytes(b'legacy lock identity')
+        before = path.stat()
+        with self.backend._free_waf_main__endpoint_transaction():
+            with self.backend._free_waf_main__endpoint_transaction():
+                self.assertEqual(path.stat().st_ino, before.st_ino)
+        self.assertEqual(path.read_bytes(), b'legacy lock identity')
+        self.assertEqual(list(self.root.glob('*.lock')), [path])
 
-        class Meter:
-            def __init__(self, stream):
-                self.stream = stream
-            def __enter__(self):
-                self.stream.__enter__()
-                return self
-            def __exit__(self, *args):
-                return self.stream.__exit__(*args)
-            def __getattr__(self, name):
-                return getattr(self.stream, name)
-            def read(self, size=-1):
-                data = self.stream.read(size)
-                bytes_read.append(len(data))
-                return data
+    def test_repeat_reads_ignore_legacy_rules_without_migration_or_log_reads(self):
+        open_regular = self.backend._free_waf_main__open_regular_file
+        with patch.object(self.backend, '_free_waf_main__open_regular_file', wraps=open_regular) as opened:
+            for legacy in (self.legacy_rules, {'invalid': True}, None, 'opaque legacy data'):
+                with self.subTest(legacy=legacy):
+                    config = copy.deepcopy(self.config)
+                    config['fixture.example']['endpoint_limits'] = legacy
+                    self.write(config)
+                    original = self.path.read_bytes()
+                    self.assertTrue(self.backend.get_repeat_ban_sites(None)['status'])
+                    result = self.backend.get_repeat_ban_policy(types.SimpleNamespace(siteName='fixture.example'))
+                    self.assertTrue(result['status'])
+                    self.assertFalse(result['policy']['enabled'])
+                    self.assertEqual(self.path.read_bytes(), original)
+            self.assertTrue(opened.call_args_list)
+            self.assertTrue(all(Path(call.args[0]) == self.path for call in opened.call_args_list))
+        self.write(self.config)
+        self.assert_history_preserved()
+        self.public.writeFile.assert_not_called()
+        self.public.serviceReload.assert_not_called()
+        self.backend._free_waf_main__checked_nginx_reload.assert_not_called()
+        self.backend._free_waf_main__write_site_domains.assert_not_called()
 
-        with patch('os.fdopen', side_effect=lambda *a, **k: Meter(original_fdopen(*a, **k))):
-            result = self.call(days=7)
-        self.assertEqual(len(result['events']), 200)
-        self.assertTrue(result['coverage']['partial'])
-        self.assertGreater(sum(bytes_read), 0)
-        self.assertLessEqual(sum(bytes_read), 1024 * 1024)
+    def test_repeat_save_preserves_enabled_and_malformed_legacy_config_and_logs(self):
+        self.assertTrue(self.save_repeat()['status'])
+        self.assert_history_preserved()
+        self.assertEqual(self.read()['fixture.example']['repeat_ban_policy'],
+                         self.backend._free_waf_main__repeat_defaults())
+        self.assertEqual(self.read()['other.example'], self.config['other.example'])
+        self.assertEqual(len(list(self.root.glob('*.bak'))), 1)
+        self.public.writeFile.assert_not_called()
 
-    def test_unterminated_last_record_is_kept_and_partial_first_record_is_discarded(self):
-        path = self.write_events([])
-        path.write_bytes(b'x' * (1024 * 1024) + b'\n' + json.dumps(self.event()).encode())
-        result = self.call()
-        self.assertEqual(result['events'], [self.event()])
-        self.assertTrue(result['coverage']['partial'])
+    def test_repeat_rollback_restores_exact_config_and_keeps_history(self):
+        original = self.path.read_bytes()
+        self.backend._free_waf_main__checked_nginx_reload.side_effect = [False, True]
+        self.assertFalse(self.save_repeat()['status'])
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assert_history_preserved()
+        self.assertEqual(self.backend._free_waf_main__checked_nginx_reload.call_count, 2)
 
-    def test_log_symlink_is_never_followed(self):
-        secret = self.root / 'private'
-        secret.write_text(json.dumps(self.event()) + '\n')
-        path = self.root / ('endpoint_' + self.today.isoformat() + '.jsonl')
-        try:
-            path.symlink_to(secret)
-        except OSError as exc:
-            self.skipTest('symlink creation unavailable: ' + str(exc))
-        result = self.call()
-        self.assertEqual(result['events'], [])
-        self.assertTrue(result['coverage']['partial'])
+    def test_site_read_keeps_historical_fields_and_logs_without_a_cleanup_migration(self):
+        original = self.path.read_bytes()
+        result = self.site_view()
+        self.assertEqual(result, self.config)
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assert_history_preserved()
+        self.public.writeFile.assert_not_called()
+        self.public.serviceReload.assert_not_called()
+        self.backend._free_waf_main__checked_nginx_reload.assert_not_called()
 
-    def test_deeply_nested_invalid_record_is_skipped_not_an_api_error(self):
-        path = self.write_events([])
-        path.write_text('[' * 3000 + '0' + ']' * 3000 + '\n' + json.dumps(self.event()), encoding='utf-8')
-        try:
-            result = self.call()
-        except RecursionError:
-            self.fail('a corrupt bounded record crashed the events API')
-        self.assertEqual(len(result['events']), 1)
-        self.assertTrue(result['coverage']['partial'])
+    def test_existing_site_migration_retains_opaque_legacy_fields_and_sample_logs(self):
+        config = copy.deepcopy(self.config)
+        del config['fixture.example']['registration_guard']
+        self.write(config)
+        result = self.site_view()
+        self.assertIn('registration_guard', result['fixture.example'])
+        self.assert_history_preserved()
 
-    def test_evidence_keeps_literal_normalized_paths_not_just_policy_pattern_characters(self):
-        self.write_events([self.event(path='/api/a+b/(draft)/[item]/100%?token=secret')])
-        result = self.call()
-        self.assertEqual(len(result['events']), 1)
-        self.assertEqual(result['events'][0]['path'], '/api/a+b/(draft)/[item]/100%')
+    def test_legacy_site_save_preserves_historical_policy_in_both_sites(self):
+        real_refresh = type(self.backend)._free_waf_main__write_site_domains.__get__(self.backend)
+        self.public.readFile.side_effect = lambda path: (
+            Path(path).read_text(encoding='utf-8') if Path(path).exists() else False)
+        tables = {
+            'sites': [dict(id=7, name='fixture.example'), dict(id=8, name='other.example')],
+            'domain': [dict(pid=7, name='new.fixture.example')],
+            'binding': [dict(pid=7, domain='bound.fixture.example')]}
+        self.public.M.side_effect = lambda table: types.SimpleNamespace(
+            field=lambda fields: types.SimpleNamespace(select=lambda: tables[table]))
+        display_fields = ('top', 'siteName', 'log_size', 'total')
+        for domestic in (False, True):
+            with self.subTest(domestic=domestic):
+                config = copy.deepcopy(self.config)
+                for site, conf in config.items():
+                    conf.update(top={'not': 'site policy'}, siteName=site, log_size=832, total=[])
+                self.write(config)
+                global_config = dict(self.backend.get_config.return_value,
+                                     compatibility_profile='bt-free-waf-8.4' if domestic else None,
+                                     site_aliases={'old.fixture.example': 'fixture.example'})
+                (self.root / 'config.json').write_text(json.dumps(global_config), encoding='utf-8')
+                (self.root / 'domains.json').write_text(json.dumps([
+                    dict(name='fixture.example', domains=['old.fixture.example'])]), encoding='utf-8')
+                expected = {site: {key: value for key, value in conf.items() if key not in display_fields}
+                            for site, conf in config.items()}
+                expected['fixture.example']['cdn'] = True
+                before = {path: path.read_bytes() for path in self.root.rglob('*') if path.is_file()}
+                self.site_view()
+                self.assertEqual({path: path.read_bytes() for path in self.root.rglob('*') if path.is_file()}, before)
+                stages = []
 
-    def test_evidence_strings_are_raw_json_values_for_single_ui_escape(self):
-        name = '<b>Login & audit</b>'
-        path = '/api/a&b/<draft>"/[]()+'
-        self.write_events([self.event(path=path, rule_name=name)])
-        row = self.call()['events'][0]
-        self.assertEqual(row['site'], 'fixture.example')
-        self.assertEqual(row['rule_name'], name)
-        self.assertEqual(row['path'], path)
+                def verify_snapshot(stage):
+                    lock = os.path.normcase(os.path.abspath(str(self.root / '.endpoint-policy.lock')))
+                    self.assertIn((os.getpid(), lock), self.backend._free_waf_main__site_config_locks.paths)
+                    self.assertTrue(Path(lock).exists())
+                    self.assertEqual(self.read(), expected)
+                    stages.append(stage)
+                    return True
+
+                def reload():
+                    verify_snapshot('reload')
+                    if domestic:
+                        current = json.loads((self.root / 'config.json').read_bytes())
+                        self.assertEqual(current['site_aliases'], {
+                            'new.fixture.example': 'fixture.example', 'bound.fixture.example': 'fixture.example'})
+                        self.assertEqual(json.loads((self.root / 'domains.json').read_bytes()), [
+                            dict(name='fixture.example', domains=['bound.fixture.example', 'new.fixture.example']),
+                            dict(name='other.example', domains=[])])
+                    return True
+
+                refresh = Mock(wraps=real_refresh) if domestic else Mock(side_effect=lambda: verify_snapshot('domains'))
+
+                def stage_journal(path, content):
+                    staged = Path(path)
+                    self.assertEqual(staged.parent, self.root / '.policy-recovery')
+                    self.assertTrue(staged.name.startswith('.policy-'))
+                    staged.write_text(content, encoding='utf-8')
+                    return True
+
+                checked = self.backend._free_waf_main__checked_nginx_reload
+                checked.reset_mock()
+                checked.side_effect = reload
+                with patch.object(self.backend, '_free_waf_main__write_site_domains', refresh), \
+                        patch.object(self.public, 'writeFile', side_effect=stage_journal) as journal_writer:
+                    result = self.backend.set_site_cdn_state(types.SimpleNamespace(siteName='fixture.example'))
+                self.assertTrue(result['status'])
+                self.assertEqual(self.read(), expected)
+                if domestic:
+                    refresh.assert_called_once_with(expected)
+                    self.assertEqual(journal_writer.call_count, 1)
+                else:
+                    refresh.assert_called_once_with()
+                    journal_writer.assert_not_called()
+                checked.assert_called_once_with()
+                self.assertEqual(stages, ['reload'] if domestic else ['domains', 'reload'])
+                self.assert_history_preserved()
+                self.public.writeFile.assert_not_called()
+                self.public.serviceReload.assert_not_called()
+
+    def test_repeat_save_does_not_add_legacy_policy_fields_when_absent(self):
+        config = copy.deepcopy(self.config)
+        for conf in config.values():
+            conf.pop('endpoint_limits')
+        self.write(config)
+        self.assertTrue(self.save_repeat()['status'])
+        self.assertTrue(all('endpoint_limits' not in conf for conf in self.read().values()))
+        self.assertNotIn('endpoint_limits', self.backend._free_waf_main__get_site_conf())
+        for path, data in self.history.items():
+            self.assertEqual(path.read_bytes(), data)
 
 
 if __name__ == '__main__':

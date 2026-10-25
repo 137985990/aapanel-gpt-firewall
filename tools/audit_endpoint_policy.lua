@@ -1,7 +1,6 @@
--- Real production helpers; storage, clock and responses remain memory-only.
+-- Retired-policy regression and shared CC helpers; all state remains memory-only.
 local source = assert(rawget(_G, 'WAF_RUNTIME_SOURCE'))
 local json = require 'cjson'
-local now = 1000
 local passed = 0
 local function check(name, body)
     local ok, err = pcall(body)
@@ -9,291 +8,172 @@ local function check(name, body)
     passed = passed + 1
 end
 local function dictionary()
-    local values, deadlines = {}, {}
+    local values = {}
     local d = {}
-    function d:get(k)
-        if deadlines[k] and deadlines[k] <= now then values[k] = nil end
-        return values[k]
+    function d:get(key) return values[key] end
+    function d:set(key, value) values[key] = value; return true end
+    function d:safe_add(key, value)
+        if values[key] ~= nil then return nil, 'exists' end
+        values[key] = value; return true
     end
-    function d:set(k, v, ttl) values[k], deadlines[k] = v, ttl and now + ttl; return true end
-    function d:add(k, v, ttl)
-        if self:get(k) ~= nil then return nil, 'exists' end
-        return self:set(k, v, ttl)
+    function d:incr(key, delta)
+        if values[key] == nil then return nil, 'not found' end
+        values[key] = values[key] + delta; return values[key]
     end
-    function d:safe_set(k,v,ttl) values[k],deadlines[k]=v,ttl and now+ttl; return true end
-    function d:safe_add(k,v,ttl)
-        if self:get(k)~=nil then return nil,'exists' end
-        return self:safe_set(k,v,ttl)
-    end
-    function d:incr(k, delta)
-        if self:get(k) == nil then return nil, 'not found' end
-        values[k] = values[k] + delta; return values[k]
-    end
-    function d:delete(k) values[k], deadlines[k] = nil, nil end
-    function d:get_keys() local keys = {}; for k in pairs(values) do keys[#keys + 1] = k end; return keys end
+    function d:delete(key) values[key] = nil end
+    function d:get_keys() local keys = {}; for key in pairs(values) do keys[#keys + 1] = key end; return keys end
     return d
 end
-local function fixture(overrides)
-    local rule = {id = string.rep('a', 32), name = 'fixture', enabled = true, action = 'reject',
-        match = 'exact', path = '/login', method = 'POST', window_seconds = 10, max_requests = 2, ban_seconds = 30}
-    for k,v in pairs(overrides or {}) do rule[k] = v end
+local function fixture()
+    local f = {responses = {}, events = {}, checks = {}}
     local env = setmetatable({}, {__index = _G})
-    local f = {rule = rule, events = {}, drops = {}, writes = 0}
-    local sites = {['example.org'] = {endpoint_limits = {rule}}, ['other.example'] = {endpoint_limits = {rule}}}
-    local ngx = {var = {uri = '/login', server_name = 'example.org'}, header = {},
+    local config = {open = true, cc = {open = true, cycle = 10, limit = 2, endtime = 60, status = 403},
+        retry = 6, retry_time = 60, retry_cycle = 60}
+    local site = {open = true, cc = {increase = true, cycle = 10, limit = 2, endtime = 60},
+        retry = 6, retry_time = 60, retry_cycle = 60,
+        endpoint_limits = {{id = string.rep('a',32), name = 'Legacy login', enabled = true, action = 'ban', path = '/login', match = 'exact',
+            method = 'POST', max_requests = 1, window_seconds = 3600, ban_seconds = 28800}}}
+    env.config, env.site_config, env.json = config, {['fixture.example'] = site}, json
+    env.ngx = {var = {uri = '/login', request_uri = '/login?token=secret', server_name = 'fixture.example'},
+        req = {get_headers = function() return {} end, get_method = function() return 'POST' end,
+            get_uri_args = function() return {} end},
         shared = {free_waf = dictionary(), free_waf_drop_ip = dictionary(), free_waf_drop_sum = dictionary()},
-        time = function() return now end, today = function() return '2026-10-23' end,
-        localtime = function() return '2026-10-23 10:00:00' end,
-        md5 = function(s) local h=5381; for i=1,#s do h=(h*33+s:byte(i))%2147483647 end; return string.format('%032x',h) end,
-        say = function(s) f.response = s end,
+        header = {}, unescape_uri = function(value) return value end,
+        md5 = function(value) return value end, time = function() return 1000 end,
+        say = function(value) f.responses[#f.responses + 1] = value end,
         exit = function(status) error({status = status}) end}
-    local config = {open = true, log = true, logs_path = 'fixture', cc = {open = true, status = 403}}
-    env.ngx, env.ip, env.server_name, env.method = ngx, '192.0.2.1', 'example.org', 'POST'
-    env.ip_black_rules, env.request_header = {}, {}
     env.ngx_match = function() return false end
-    env.retry, env.cycle, env.limit, env.endtime, env.site_cc = 6, 10, 2, 60, true
-    env.request_uri, env.uri, env.uri_request_args = '/login', '/login', {}
-    env.json, env.config, env.site_config = json, config, sites
-    env.write_log = function() error('legacy retry/attack counter changed') end
-    env.read_file=function(name)
-        assert(name=='ip_black' and f.lock_owner, 'read must hold the blacklist transaction')
-        return {}
+    env.get_client_ip = function() return '192.0.2.1' end
+    env.arrip = function() return {192, 0, 2, 1} end
+    env.is_site_config = function(name) return site[name] end
+    env.ip_white, env.user_agent_white, env.url_white = function() return false end, function() return false end, function() return false end
+    env.write_log = function() end
+    env.write_drop_ip = function() end
+    env.repeat_ban_event = function(...) f.events[#f.events + 1] = {...} end
+    for _,name in ipairs({'min_route', 'total_log_worker_init', 'repeat_ban_guard', 'registration_guard',
+        'drop', 'ip_black', 'ban_empty_ua', 'url_black', 'drop_abroad', 'user_agent', 'header_rule',
+        'url', 'args', 'cookie', 'scan_black', 'post', 'php_path', 'url_path', 'url_ext',
+        'url_rule_ex', 'url_tell', 'post_data'}) do
+        local key = name
+        env[key] = function() f.checks[key] = (f.checks[key] or 0) + 1 end
     end
-    env.repeat_ban_lock=function(path)
-        assert(path=='fixture/ip_black.json.lock')
-        if f.lock_busy then return nil end
-        assert(not f.lock_owner)
-        f.lock_owner={fd=17}; return f.lock_owner
+    for _,name in ipairs({'is_runtime_ban_ipv4', 'is_runtime_ban_ip', 'endpoint_normalize_ip', 'endpoint_state_ip', 'clear_endpoint_state',
+        'rate_limit_response', 'cc_counter_key', 'cc', 'cc2', 'security_verification', 'run_btwaf'}) do
+        local text = assert(source:match('\nfunction ' .. name .. '%(.-\nend'), name)
+        local chunk = assert(loadstring('local config,site_config,json=config,site_config,json\n' .. text, '@' .. name))
+        setfenv(chunk, env); chunk()
     end
-    env.repeat_ban_unlock=function(owner)
-        assert(owner==f.lock_owner); f.lock_owner=nil
-    end
-    env.runtime_atomic_write=function()
-        error('unchanged empty blacklist must not be published')
-    end
-    env.jpath='fixture/'
-    env.write_drop_ip = function() f.drops[#f.drops + 1] = true end
-    env.write_drop_ip_entry = function(...) f.drops[#f.drops + 1] = {...}; return true end
-    -- Keep optional escalation absent in this endpoint-only fixture.
-    env.repeat_ban_policy = function() return nil end
-    env.repeat_ban_event = function() return false end
-    env.repeat_ban_rows = function() return {} end
-    env.repeat_ban_clear = function() return true end
-    env.io = {open = function(path, mode)
-        assert(path == 'fixture/endpoint_2026-10-23.jsonl' and mode == 'ab')
-        return {write = function(_, data) f.writes = f.writes + 1; f.events[#f.events + 1] = json.decode(data); return true end,
-            close = function() return true end, flush = function() return true end}
-    end}
-    local helpers = {'is_runtime_ban_ipv4', 'is_runtime_ban_ip', 'endpoint_normalize_ip',
-        'endpoint_state_key', 'endpoint_state_ip', 'endpoint_valid_rule', 'endpoint_path_matches',
-        'endpoint_record_event', 'endpoint_limit_response', 'endpoint_policy_guard',
-        'clear_endpoint_state', 'repeat_ban_state_identity', 'cc_counter_key', 'cc', 'cc2', 'security_verification', 'registration_guard_scopes',
-        'registration_state_ip', 'registration_state_ambiguous', 'clear_registration_state',
-        'get_return_state', 'encode_json_array', 'get_btwaf_drop_ip', 'with_ip_black_lock', 'clean_btwaf_drop_ip'}
-    for _,name in ipairs(helpers) do
-        local start = source:find('function ' .. name .. '%(')
-        assert(start, 'missing production helper: ' .. name)
-        local finish = source:find('\nfunction ', start + 1)
-        local text = source:sub(start, finish and finish - 1 or #source)
-        assert(loadstring(text, '@' .. name))
-        local fn = assert(loadstring('local config, site_config, json = config, site_config, json\n' .. text, '@' .. name))
-        setfenv(fn, env); fn()
-    end
-    f.env, f.ngx, f.sites = env, ngx, sites
-    function f:request(path, method, site, ip)
-        ngx.header, self.response = {}, nil
-        ngx.var.uri = path or '/login'; env.uri = ngx.var.uri
-        env.server_name = site or 'example.org'; ngx.var.server_name = env.server_name
-        env.method, env.ip = method or 'POST', ip or '192.0.2.1'
-        local ok, value = pcall(env.endpoint_policy_guard)
-        if ok then return false end
-        if type(value) == 'table' then return value.status end
-        error(value)
+    f.env, f.site = env, site
+    env.ip, env.server_name, env.method = '192.0.2.1', 'fixture.example', 'POST'
+    env.uri, env.request_uri, env.request_header = '/login', '/login', {}
+    env.cycle, env.limit, env.endtime, env.retry, env.site_cc = 10, 2, 60, 6, true
+    function f:request()
+        local ok, value = pcall(env.run_btwaf)
+        if not ok and type(value) ~= 'table' then error(value) end
+        return not ok and value.status or 200
     end
     return f
 end
-check('missing rules are inert', function()
-    local f = fixture(); f.sites['example.org'].endpoint_limits = nil
-    for i=1,4 do assert(not f:request()) end
-    assert(f.writes == 0 and #f.ngx.shared.free_waf:get_keys() == 0)
-end)
-check('disabled and invalid rules are inert', function()
-    for _,change in ipairs({{enabled=false},{action='unknown'},{window_seconds=0},{max_requests=0},{id='bad'},{ban_seconds=28801}}) do
-        local f = fixture(change); for i=1,4 do assert(not f:request()) end
-        assert(f.writes == 0)
+local function legacy_key(kind, address)
+    return 'endpoint:v1:' .. kind .. ':15:fixture.example:' .. string.rep('a',32) .. '.' .. string.rep('b',32) .. ':' .. address
+end
+
+check('old enabled policies and malformed policy data cannot throttle requests', function()
+    for _,legacy in ipairs({false, 'malformed', {enabled = true}, {}}) do
+        local f = fixture()
+        if legacy ~= false then f.site.endpoint_limits = legacy end
+        f.env.cc, f.env.cc2 = function() return false end, function() return false end
+        f.env.ngx.shared.free_waf:safe_add(legacy_key('ban', '192.0.2.1'), 9999)
+        for _=1,10 do assert(f:request() == 200) end
+        assert(#f.responses == 0 and #f.events == 0)
+        assert(f.checks.registration_guard == 10 and f.checks.post == 10)
     end
 end)
-check('exact path and method', function()
-    local f = fixture()
-    for i=1,4 do assert(not f:request('/login-more')); assert(not f:request('/login','GET')) end
-    assert(not f:request()); assert(not f:request()); assert(f:request()==429)
-    assert(f.ngx.header['Retry-After'] == '10')
-    assert(json.decode(f.response).error.type == 'rate_limit_exceeded')
+check('normal CC still enforces despite retained retired configuration', function()
+    local f = fixture(); f.env.cc2 = function() return false end
+    assert(f:request() == 200 and f:request() == 200 and f:request() == 403)
+    assert(#f.events == 1 and f.events[1][4] == 'cc')
 end)
-check('prefix is segment aware', function()
-    local f = fixture({match='prefix',path='/api'})
-    for i=1,4 do assert(not f:request('/apiculture')) end
-    assert(not f:request('/api/login')); assert(not f:request('/api/search')); assert(f:request('/api')==429)
+check('ordinary CC separates sites and paths but ignores query strings', function()
+    local f = fixture(); local env = f.env
+    for n=1,2 do env.request_uri = '/login?attempt=' .. n; assert(not env.cc()) end
+    env.server_name = 'other.example'; assert(not env.cc())
+    env.server_name = 'fixture.example'; env.ngx.var.uri = '/other'; assert(not env.cc())
+    env.ngx.var.uri = '/login'
+    local ok, value = pcall(env.cc)
+    assert(not ok and type(value) == 'table' and value.status == 403)
 end)
-check('site and ip counters isolated', function()
-    local f = fixture(); assert(not f:request()); assert(not f:request())
-    assert(not f:request(nil,nil,'other.example')); assert(not f:request(nil,nil,nil,'192.0.2.2'))
-    assert(f:request()==429)
+check('enhanced CC still enforces its fingerprint threshold', function()
+    local f = fixture(); f.env.cc = function() return false end
+    for _=1,6 do assert(f:request() == 200) end
+    assert(f:request() == 429)
 end)
-check('observe never bans or calls legacy counters', function()
-    local f=fixture({action='observe'})
-    for i=1,8 do assert(not f:request()) end
-    assert(f.writes==1 and f.events[1].action=='observe' and #f.drops==0)
-    assert(#f.ngx.shared.free_waf_drop_ip:get_keys()==0)
-    assert(f.events[1].path=='/login' and f.events[1].rule_id==f.rule.id)
+check('enhanced CC aggregates fingerprints but keeps site and path boundaries', function()
+    local f = fixture(); local env = f.env
+    env.site_config['other.example'] = {cc = {increase = true}}
+    for n=1,6 do env.ip = '192.0.2.' .. n; assert(not env.cc2()) end
+    env.ip = '192.0.2.8'; env.server_name = 'other.example'; assert(not env.cc2())
+    env.server_name = 'fixture.example'; env.ngx.var.uri = '/other'; assert(not env.cc2())
+    env.ngx.var.uri = '/login'
+    local ok, value = pcall(env.cc2)
+    assert(not ok and type(value) == 'table' and value.status == 429)
 end)
-check('counter window expires', function()
-    local f=fixture(); assert(not f:request()); assert(not f:request()); assert(f:request()==429)
-    now=now+11; assert(not f:request())
-end)
-check('ban scoped to endpoint and site', function()
-    local f=fixture({action='ban'}); assert(not f:request()); assert(not f:request()); assert(f:request()==429)
-    assert(f:request()==429 and f.ngx.header['Retry-After']=='30')
-    assert(not f:request('/home')); assert(not f:request(nil,nil,'other.example'))
-    assert(#f.ngx.shared.free_waf_drop_ip:get_keys()==0 and #f.drops==1)
-    now=now+31; assert(not f:request())
-end)
-check('policy edits do not inherit old counter or ban', function()
-    local f=fixture({action='ban'}); f:request(); f:request(); assert(f:request()==429)
-    f.rule.max_requests=20; assert(not f:request())
-end)
-check('shared storage exhaustion fails open', function()
-    local f=fixture(); f.ngx.shared.free_waf.safe_add=function() return nil,'no memory' end
-    f.ngx.shared.free_waf.incr=function() return nil,'not found' end
-    for i=1,4 do assert(not f:request()) end
-    assert(f.writes==0)
-end)
-check('endpoint allocations cannot evict unrelated security state', function()
-    for _,action in ipairs({'observe','reject','ban'}) do
-        local f=fixture({action=action}); local shared=f.ngx.shared.free_waf
-        shared:safe_set('legacy-retry',5,3600)
-        shared.add=function(self,...) self:delete('legacy-retry'); return nil,'no memory' end
-        shared.set=shared.add
-        for i=1,4 do f:request() end
-        assert(shared:get('legacy-retry')==5)
-    end
-end)
-check('ban enumeration hides edited disabled and deleted policy revisions', function()
-    for _,change in ipairs({'edit','disable','delete'}) do
-        local f=fixture({action='ban'}); for i=1,3 do f:request() end
-        assert(#f.env.get_btwaf_drop_ip()==1)
-        if change=='edit' then f.rule.action='observe'
-        elseif change=='disable' then f.rule.enabled=false
-        else f.sites['example.org'].endpoint_limits={} end
-        assert(not f:request())
-        assert(#f.env.get_btwaf_drop_ip()==0)
-        f.env.clear_endpoint_state({['192.0.2.1']=true})
-        for _,key in ipairs(f.ngx.shared.free_waf:get_keys()) do assert(not f.env.endpoint_state_ip(key,true)) end
-    end
-end)
-check('bulk unban removes hidden endpoint revisions and counters', function()
-    for _,change in ipairs({'edit','disable','delete'}) do
-        local f=fixture({action='ban'}); for i=1,3 do f:request() end
-        if change=='edit' then f.rule.action='observe'
-        elseif change=='disable' then f.rule.enabled=false
-        else f.sites['example.org'].endpoint_limits={} end
-        assert(#f.env.get_btwaf_drop_ip()==0)
-        assert(f.env.clean_btwaf_drop_ip().status==true)
-        f.rule.action,f.rule.enabled='ban',true
-        f.sites['example.org'].endpoint_limits={f.rule}
-        assert(not f:request())
-        assert(#f.env.get_btwaf_drop_ip()==0)
-    end
-end)
-check('bulk unban lock contention preserves endpoint bans and counters', function()
-    local f=fixture({action='ban'}); for i=1,3 do f:request() end
-    local shared, before=f.ngx.shared.free_waf,{}
-    for _,key in ipairs(shared:get_keys()) do before[key]=shared:get(key) end
-    f.lock_busy=true
-    assert(f.env.clean_btwaf_drop_ip().status==false)
-    for key,value in pairs(before) do assert(shared:get(key)==value, 'lock failure changed endpoint state') end
-    assert(f:request()==429 and f.lock_owner==nil)
-    f.lock_busy=false
-    assert(f.env.clean_btwaf_drop_ip().status==true)
-    assert(not f:request() and f.lock_owner==nil)
-end)
-check('enhanced cc aggregates fingerprint across clients but not sites or paths', function()
-    local f=fixture(); f.sites['example.org'].cc={increase=true}; f.sites['other.example'].cc={increase=true}
-    for i=1,6 do f.env.ip='192.0.2.'..i; assert(not f.env.cc2()) end
-    f.env.ip='192.0.2.8'
-    f.env.server_name='other.example'; assert(not f.env.cc2())
-    f.env.server_name='example.org'; f.ngx.var.uri='/other'; assert(not f.env.cc2())
-    f.ngx.var.uri='/login'
-    local ok,e=pcall(f.env.cc2); assert(not ok and type(e)=='table' and e.status==429)
-end)
-check('ordinary cc initialization does not evict existing security state', function()
-    local f=fixture(); local shared=f.ngx.shared.free_waf
-    shared:safe_set('existing-ban',100,60)
-    shared.add=function(self,...) self:delete('existing-ban'); return nil,'no memory' end
-    f.env.write_log=function() end
+check('CC allocation does not evict existing security state', function()
+    local f = fixture(); local shared = f.env.ngx.shared.free_waf
+    shared:set('existing-ban', 9999)
+    shared.add = function(self) self:delete('existing-ban'); return nil, 'no memory' end
     assert(not f.env.cc())
-    assert(shared:get('existing-ban')==100)
+    assert(shared:get('existing-ban') == 9999)
 end)
-check('enhanced cc increments the first counter atomically', function()
-    local f=fixture(); f.sites['example.org'].cc={increase=true}
-    local shared=f.ngx.shared.free_waf
-    local original_get, original_set=shared.get,shared.safe_set
-    local original_add=shared.safe_add
-    local injected=false
-    shared.get=function(self,key)
-        local value=original_get(self,key)
-        if not injected and key:sub(-4)=='_cc2' and value==nil then
-            injected=true; original_set(self,key,1,10)
+check('enhanced CC first increment remains atomic under contention', function()
+    local f = fixture(); local shared = f.env.ngx.shared.free_waf
+    local original, injected = shared.safe_add, false
+    shared.safe_add = function(self, key, value, ttl)
+        if not injected and key:sub(-4) == '_cc2' then
+            injected = true; self:set(key, 1)
         end
-        return value
+        return original(self, key, value, ttl)
     end
-    shared.safe_add=function(self,key,value,ttl)
-        if not injected and key:sub(-4)=='_cc2' then
-            injected=true; original_set(self,key,1,10)
-        end
-        return original_add(self,key,value,ttl)
-    end
-    assert(not f.env.cc2())
+    assert(not f.env.cc2() and injected)
     for _,key in ipairs(shared:get_keys()) do
-        if key:sub(-4)=='_cc2' then assert(original_get(shared,key)==2) end
-    end
-    assert(injected)
-end)
-check('evidence excludes secrets and limits repeated events', function()
-    local f=fixture(); f.env.request_uri='/login?token=secret'; f.env.request_header={authorization='secret'}
-    for i=1,10 do f:request() end
-    assert(f.writes==1 and not json.encode(f.events):find('secret',1,true))
-end)
-check('scoped bans visible and precise unban clears all state for one ip', function()
-    local f=fixture({action='ban'}); for i=1,3 do f:request() end
-    assert(f.env.get_btwaf_drop_ip()[1]=='192.0.2.1')
-    for i=1,3 do f:request(nil,nil,nil,'192.0.2.2') end
-    f.env.clear_endpoint_state({['192.0.2.1']=true})
-    assert(not f:request()); assert(f:request(nil,nil,nil,'192.0.2.2')==429)
-end)
-check('ipv6 canonicalization and malformed keys', function()
-    local f=fixture()
-    assert(f.env.endpoint_normalize_ip('2001:0DB8:0:0:0:0:0:1')=='2001:db8::1')
-    assert(f.env.endpoint_normalize_ip('::ffff:192.0.2.1')=='::ffff:c000:201')
-    assert(f.env.endpoint_normalize_ip('192.0.2.1.evil')==nil)
-    for _,key in ipairs({'endpoint:v1:ban:1:x:bad:192.0.2.1','endpoint:v1:ban:999:x:y:192.0.2.1'}) do
-        assert(f.env.endpoint_state_ip(key,true)==nil)
+        if key:sub(-4) == '_cc2' then assert(shared:get(key) == 2) end
     end
 end)
-check('legacy cc site dimension and query independent key', function()
-    local f=fixture(); f.env.write_log=function() end
-    for i=1,2 do f.env.request_uri='/login?x='..i; assert(not f.env.cc()) end
-    f.env.server_name='other.example'; assert(not f.env.cc())
-    f.env.server_name='example.org'
-    local ok,e=pcall(f.env.cc); assert(not ok and type(e)=='table' and e.status==403)
+check('IP and URL allowlists retain priority over ordinary CC', function()
+    for _,name in ipairs({'ip_white', 'url_white'}) do
+        local f = fixture(); f.env[name] = function() return true end
+        for _=1,10 do assert(f:request() == 200) end
+        assert(#f.events == 0)
+    end
 end)
-check('legacy arithmetic challenge cannot reflect a request or grant a bypass', function()
-    local f=fixture()
-    f.env.request_uri="/login?q=';alert(1);//"
-    f.env.uri_request_args={btwaf='40'}
-    local ok,e=pcall(f.env.security_verification)
-    assert(not ok and type(e)=='table' and e.status==429)
-    assert(not f.response:find('alert',1,true) and not f.response:find('<script',1,true))
-    assert(f.ngx.shared.free_waf:get('192.0.2.1')==nil)
+check('precise legacy cleanup never removes another clients state', function()
+    local f = fixture(); local shared = f.env.ngx.shared.free_waf
+    for _,kind in ipairs({'count', 'event', 'ban'}) do
+        shared:safe_add(legacy_key(kind, '192.0.2.1'), 9999)
+        shared:safe_add(legacy_key(kind, '192.0.2.2'), 9999)
+    end
+    shared:safe_add('unrelated', true)
+    f.env.clear_endpoint_state({['192.0.2.1'] = true})
+    for _,kind in ipairs({'count', 'event', 'ban'}) do
+        assert(shared:get(legacy_key(kind, '192.0.2.1')) == nil)
+        assert(shared:get(legacy_key(kind, '192.0.2.2')) == 9999)
+    end
+    assert(shared:get('unrelated'))
 end)
-print('endpoint_policy=' .. passed .. '/' .. passed .. ' isolated_fixture=true')
+check('shared IP normalization and malformed legacy keys remain safe', function()
+    local f = fixture()
+    assert(f.env.endpoint_normalize_ip('2001:0DB8:0:0:0:0:0:1') == '2001:db8::1')
+    assert(f.env.endpoint_normalize_ip('::ffff:192.0.2.1') == '::ffff:c000:201')
+    assert(f.env.endpoint_normalize_ip('192.0.2.1.evil') == nil)
+    assert(f.env.endpoint_state_ip('endpoint:v1:ban:999:x:y:192.0.2.1', true) == nil)
+end)
+check('legacy challenge still returns a safe rate limit response', function()
+    local f = fixture()
+    f.env.request_uri = "/login?q=';alert(1);//"
+    local ok, value = pcall(f.env.security_verification)
+    assert(not ok and type(value) == 'table' and value.status == 429)
+    assert(f.env.ngx.header['Retry-After'] == '10')
+    assert(not f.responses[1]:find('alert',1,true))
+    assert(json.decode(f.responses[1]).error.type == 'rate_limit_exceeded')
+end)
+print('retired_endpoint_policy=' .. passed .. '/' .. passed .. ' isolated_fixture=true')

@@ -7,7 +7,7 @@ import re
 import zipfile
 
 
-VERSION = '0.1.8'
+VERSION = '0.1.9'
 PLUGIN_FILES = (
     'info.json', 'install.sh', 'free_waf_main.py', 'index.html',
     'init.lua', 'ban_store.py', 'report_store.py', 'website_statistics.py', 'update_service.py',
@@ -18,7 +18,7 @@ PLUGIN_FILES = (
 )
 SOURCE_FILES = PLUGIN_FILES + (
     '.gitignore', '.gitattributes', 'AGENTS.md', 'tools/ci-template.yml',
-    'docs/images/policies.png', 'docs/images/statistics.png',
+    'docs/images/statistics.png',
     'docs/images/task-manager.png',
     'tools/build_release.py', 'tools/check.py',
     'tools/audit_registration_state.lua', 'tools/audit_rule_identity.lua', 'tools/audit_runtime_routes.lua',

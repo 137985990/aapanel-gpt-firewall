@@ -226,7 +226,10 @@ class BackgroundReports:
         snapshots = sorted(self.directory.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
         for path in snapshots[self.max_entries:]:
             if path != current:
-                path.unlink(missing_ok=True)
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
 
     def close(self):
         self._executor.shutdown(wait=True)

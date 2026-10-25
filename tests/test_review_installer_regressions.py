@@ -47,7 +47,7 @@ class InstallerReviewRegressions(unittest.TestCase):
                 python.unlink()
                 bootstrap = '''import os, sys
 from pathlib import Path
-source = sys.argv.pop(1)
+source = Path(sys.argv.pop(1)).read_text(encoding='utf-8')
 fixture_root = Path(sys.argv[1]) / 'www/server/free_waf'
 fixture_target = fixture_root / ''' + repr(name) + '''
 fixture_victim = fixture_root / 'init.lua'
@@ -71,8 +71,8 @@ os.chown, os.fchown = by_path, by_fd
 exec(source)
 '''
                 executable = '"' + Path(sys.executable).as_posix() + '"'
-                t.write(python, '#!/bin/bash\nif [[ ${6:-} == prepare_storage ]]; then\n'
-                        'exec ' + executable + ' -B -c ' + shlex.quote(bootstrap) + ' "$3" "${@:4}"\n'
+                t.write(python, '#!/bin/bash\nif [[ ${5:-} == prepare_storage ]]; then\n'
+                        'exec ' + executable + ' -B -c ' + shlex.quote(bootstrap) + ' "$2" "${@:3}"\n'
                         'fi\nexec ' + executable + ' "$@"\n')
                 python.chmod(0o755)
                 owner = program.stat().st_uid
@@ -300,7 +300,7 @@ for name in ('rule/ip_black.json', '.statistics/total.json'):
             python.unlink()
             bootstrap = '''import shutil, sys
 from pathlib import Path
-source = sys.argv.pop(1)
+source = Path(sys.argv.pop(1)).read_text(encoding='utf-8')
 copy = shutil.copy2
 def tamper(path, target, *args, **kwargs):
     Path(path).write_bytes(b"backup changed during restore copy\\n")
@@ -309,8 +309,8 @@ shutil.copy2 = tamper
 exec(source)
 '''
             executable = '"' + Path(sys.executable).as_posix() + '"'
-            t.write(python, '#!/bin/bash\nif [[ ${6:-} == restore ]]; then\n'
-                    '  exec ' + executable + ' -B -c ' + shlex.quote(bootstrap) + ' "$3" "${@:4}"\n'
+            t.write(python, '#!/bin/bash\nif [[ ${5:-} == restore ]]; then\n'
+                    '  exec ' + executable + ' -B -c ' + shlex.quote(bootstrap) + ' "$2" "${@:3}"\n'
                     'fi\nexec ' + executable + ' "$@"\n')
             python.chmod(0o755)
             t.write(t.root / 'fail-candidate-test', '1')
@@ -324,26 +324,26 @@ exec(source)
         """Use real worker, subprocess and installer, but synthetic release/Nginx."""
         with fixture(online.UpdateServiceTest) as package:
             payload = package.archive({
-                'install.sh': (offline.PLUGIN_SOURCE / 'install.sh').read_bytes(),
+                'install.sh': (t.plugin / 'install.sh').read_bytes(),
                 'init.lua': offline.NEW_LUA.encode(),
-                'info.json': b'{"name":"free_waf","versions":"0.1.8"}',
+                'info.json': b'{"name":"free_waf","versions":"0.1.9"}',
             })
             package.payload = payload
             package.configure_release()
-            release = json.loads(json.dumps(package.release).replace('0.1.1', '0.1.8'))
-            asset = online.ASSET.replace('0.1.1', '0.1.8')
+            release = json.loads(json.dumps(package.release).replace('0.1.1', '0.1.9'))
+            asset = online.ASSET.replace('0.1.1', '0.1.9')
             checksums = (hashlib.sha256(payload).hexdigest() + '  ' + asset + '\n').encode()
             release['assets'][1]['size'] = len(checksums)
-            download = updater.DOWNLOAD_URL + 'v0.1.8/'
+            download = updater.DOWNLOAD_URL + 'v0.1.9/'
             responses = {
                 updater.API_URL + '?per_page=100': json.dumps([release]).encode(),
-                updater.API_URL + '/tags/v0.1.8': json.dumps(release).encode(),
+                updater.API_URL + '/tags/v0.1.9': json.dumps(release).encode(),
                 download + asset: payload, download + 'SHA256SUMS': checksums,
             }
         t.write_json(t.plugin / 'info.json', {'name': 'free_waf', 'versions': '0.1.7'})
         service = updater.UpdateService(t.plugin, test_mode=True,
             transport=lambda url, **kwargs: responses[url], spawn=lambda *a, **k: mock.Mock(pid=123456))
-        started = service.start('v0.1.8')
+        started = service.start('v0.1.9')
         self.assertTrue(started['status'], started)
         return service, started['job_id']
 
@@ -594,6 +594,75 @@ exec(source)
                 except ValueError as error:
                     self.fail('Legal Lua must not be parsed as shell: ' + str(error))
             self.assertEqual([call.args[0][1] for call in command.call_args_list], ['-t', '-T', '-s'])
+
+
+class DomesticMigrationCrashRegressions(unittest.TestCase):
+    def test_rollback_rechecks_owned_snapshot_before_restoring_each_entry(self):
+        with fixture(offline.DomesticInstallerTest) as t:
+            python = t.root / 'www/server/panel/pyenv/bin/python'
+            python.unlink()
+            bootstrap = """import os, sys
+from pathlib import Path
+source = Path(sys.argv.pop(1)).read_text(encoding='utf-8')
+target = Path(sys.argv[1]) / 'www/server/free_waf/config.json'
+original_open = os.open
+observations = []
+
+def injected(path, flags, *args, **kwargs):
+    if Path(path) == target:
+        observations.append(True)
+        if len(observations) == 2:
+            target.write_text('{"concurrent":true}\\n', encoding='utf-8')
+    return original_open(path, flags, *args, **kwargs)
+os.open = injected
+exec(source)
+"""
+            executable = '"' + Path(sys.executable).as_posix() + '"'
+            t.write(python, '#!/bin/bash\nif [[ ${5:-} == restore_domestic ]]; then\n'
+                    'exec ' + executable + ' -B -c ' + shlex.quote(bootstrap) + ' "$2" "${@:3}"\n'
+                    'fi\nexec ' + executable + ' "$@"\n')
+            python.chmod(0o755)
+            t.write(t.root / 'fail-candidate-test', '1')
+            result = t.run_installer()
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(json.loads((t.runtime / 'config.json').read_text()), {'concurrent': True})
+            self.assertEqual(t.status()['data_rollback'], 'conflict_or_failed')
+            journal = t.runtime / t.status()['data_migration_backup'] / 'compatibility-migration.json'
+            self.assertEqual(json.loads(journal.read_text())['state'], 'applying')
+            self.assertFalse(any('-s reload' in call for call in offline.OfflineInstallerTest.calls(t)))
+
+    def test_write_ahead_identity_restores_a_published_file_if_journal_update_fails(self):
+        with fixture(offline.DomesticInstallerTest) as t:
+            python = t.root / 'www/server/panel/pyenv/bin/python'
+            python.unlink()
+            bootstrap = """import os, sys
+from pathlib import Path
+source = Path(sys.argv.pop(1)).read_text(encoding='utf-8')
+runtime = Path(sys.argv[1]) / 'www/server/free_waf'
+replace = os.replace
+failed = []
+def injected(source, destination):
+    if (Path(destination).name == 'compatibility-migration.json'
+            and (runtime / 'rule/cookie.json').exists() and not failed):
+        failed.append(True)
+        raise OSError('fixture journal failure after publication')
+    return replace(source, destination)
+os.replace = injected
+exec(source)
+"""
+            executable = '"' + Path(sys.executable).as_posix() + '"'
+            t.write(python, '#!/bin/bash\nif [[ ${5:-} == migrate_domestic ]]; then\n'
+                    'exec ' + executable + ' -B -c ' + shlex.quote(bootstrap) + ' "$2" "${@:3}"\n'
+                    'fi\nexec ' + executable + ' "$@"\n')
+            python.chmod(0o755)
+            before = {p.name: p.read_bytes() for p in (t.runtime / 'rule').glob('*.json')}
+            result = t.run_installer()
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(t.status()['data_rollback'], 'restored')
+            self.assertEqual((t.runtime / 'config.json').read_bytes(), t.original_config)
+            for name, body in before.items():
+                self.assertEqual((t.runtime / 'rule' / name).read_bytes(), body)
+            self.assertFalse((t.runtime / 'rule/cookie.json').exists())
 
 
 if __name__ == '__main__':

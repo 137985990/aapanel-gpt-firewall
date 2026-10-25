@@ -1,3 +1,4 @@
+import json
 import re
 import unittest
 from pathlib import Path
@@ -141,7 +142,7 @@ class LuaPolicyTest(unittest.TestCase):
         self.assertNotIn('add_ip_black_exact', self._function_body('repeat_ban_event'))
 
     def test_only_successfully_created_automatic_bans_feed_repeat_escalation(self):
-        for name in ('cc', 'cc2', 'registration_guard', 'endpoint_policy_guard'):
+        for name in ('cc', 'cc2', 'registration_guard'):
             body = self._function_body(name)
             self.assertIn('repeat_ban_event(', body, name)
             self.assertIn(':safe_add(', body, name)
@@ -182,7 +183,7 @@ class LuaPolicyTest(unittest.TestCase):
 
     def test_cdn_client_ip_uses_validated_forwarded_ip(self):
         body = self._function_body("get_client_ip")
-        self.assertIn("first_client_ip_from_header(header_tmp)", body)
+        self.assertIn("first_client_ip_from_header(header_tmp, site_config[server_name]['cdn_header_order'])", body)
         self.assertNotIn("split_bylog(header_tmp,',')[1]", body)
         helper = self._function_body("first_client_ip_from_header")
         self.assertIn("is_ipaddr(candidate)", helper)
@@ -199,10 +200,11 @@ class LuaPolicyTest(unittest.TestCase):
 
         body = self._function_body("get_client_ip")
         self.assertIn("is_trusted_cdn_proxy(site_config[server_name])", body)
+        self.assertIn("first_client_ip_from_header(header_tmp, site_config[server_name]['cdn_header_order'])", body)
         self.assertIn("return client_ip", body)
         self.assertLess(
             body.index("is_trusted_cdn_proxy(site_config[server_name])"),
-            body.index("first_client_ip_from_header(header_tmp)"),
+            body.index("first_client_ip_from_header(header_tmp, site_config[server_name]['cdn_header_order'])"),
         )
 
     def test_cc_ban_duration_is_capped_at_60_seconds(self):
@@ -219,15 +221,80 @@ class LuaPolicyTest(unittest.TestCase):
         challenge = self._function_body("security_verification")
         self.assertNotIn("request_uri", challenge)
         self.assertNotIn("math.random", challenge)
-        self.assertIn("endpoint_limit_response", challenge)
+        self.assertIn("rate_limit_response", challenge)
         self.assertNotIn("== 666", self._function_body("cc2"))
 
-    def test_optional_endpoint_policy_preserves_explicit_whitelists(self):
+    def test_retired_endpoint_policy_has_no_request_enforcement_or_rule_loader(self):
         body = self._function_body("run_btwaf")
-        guard = self._call_pos(body, "endpoint_policy_guard()")
+        self.assertNotIn('endpoint_policy_guard', body)
+        self.assertNotIn('endpoint_limits', self.init_lua)
+        for name in ('endpoint_policy_guard', 'endpoint_state_key', 'endpoint_valid_rule',
+                     'endpoint_path_matches', 'endpoint_record_event'):
+            self.assertNotRegex(self.init_lua, r'(?m)^function ' + name + r'\(', name)
+        guard = self._call_pos(body, "cc()")
         for call in ("if ip_white() then return true end", "if user_agent_white() then return true end", "if url_white() then return true end"):
             self.assertLess(self._call_pos(body, call), guard)
-        self.assertLess(guard, self._call_pos(body, "cc()"))
+
+    def test_retired_endpoint_bans_are_not_reported_as_active_but_can_be_cleared(self):
+        self.assertNotIn('endpoint_state_ip', self._function_body('get_btwaf_drop_ip'))
+        for name in ('remove_btwaf_drop_ip', 'clean_btwaf_drop_ip'):
+            self.assertIn('clear_endpoint_state(', self._function_body(name), name)
+
+    def test_retired_reason_remains_readable_but_cannot_add_escalation_events(self):
+        self.assertIn('endpoint_limit=true', self._function_body('repeat_ban_valid_record'))
+        self.assertNotIn('endpoint_limit=true', self._function_body('repeat_ban_event'))
+
+
+class LuaCompatibilityRuntimeTest(unittest.TestCase):
+    def test_full_source_runtime_routes_in_embedded_luajit(self):
+        try:
+            from lupa.luajit21 import LuaRuntime, lua_type
+        except ImportError:
+            self.skipTest("optional embedded LuaJIT unavailable; native fixture runs in Lua state tests")
+        runtime = LuaRuntime(unpack_returned_tuples=True)
+        has_cjson, _ = runtime.execute("return pcall(require, 'cjson')")
+        if not has_cjson:
+            # Only JSON IO is adapted; the full, unmodified WAF runs in LuaJIT.
+            null = runtime.eval("newproxy()")
+
+            def to_lua(value):
+                if value is None:
+                    return null
+                if isinstance(value, dict):
+                    return runtime.table_from({key: to_lua(item) for key, item in value.items()})
+                if isinstance(value, list):
+                    return runtime.table_from([to_lua(item) for item in value])
+                return value
+
+            def from_lua(value):
+                kind = lua_type(value)
+                if kind == "userdata":
+                    return None
+                if kind != "table":
+                    return value
+                keys = list(value.keys())
+                if keys and set(keys) == set(range(1, len(keys) + 1)):
+                    return [from_lua(value[index]) for index in range(1, len(keys) + 1)]
+                return {key: from_lua(item) for key, item in value.items()}
+
+            runtime.globals().fixture_json_encode = lambda value: json.dumps(from_lua(value), separators=(",", ":"))
+            runtime.globals().fixture_json_decode = lambda value: to_lua(json.loads(value))
+            runtime.globals().fixture_json_null = null
+            runtime.execute("""
+                package.preload.cjson = function()
+                    return {
+                        encode = function(value) return fixture_json_encode(value) end,
+                        decode = function(value) return fixture_json_decode(value) end,
+                        null = fixture_json_null,
+                    }
+                end
+            """)
+        root = Path(__file__).resolve().parents[1]
+        runtime.globals().WAF_RUNTIME_SOURCE = (root / "init.lua").read_text(encoding="utf-8")
+        try:
+            runtime.execute((root / "tools/audit_runtime_routes.lua").read_text(encoding="utf-8"))
+        except Exception as error:
+            self.fail(str(error))
 
 
 if __name__ == "__main__":

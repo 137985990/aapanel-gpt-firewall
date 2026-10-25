@@ -581,7 +581,7 @@ class SiteConfigTransactionTest(unittest.TestCase):
     WRITERS = {'set_site_obj_open', 'set_site_cc_conf', 'set_site_retry', 'set_site_cdn_state',
                'add_site_cdn_header', 'remove_site_cdn_header', 'add_site_cdn_trusted_proxy',
                'remove_site_cdn_trusted_proxy', 'add_site_rule', 'remove_site_rule',
-               'set_site_disable_rule', '__check_site'}
+               'set_site_disable_rule'}
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -630,10 +630,8 @@ class SiteConfigTransactionTest(unittest.TestCase):
         return self.backend.save_repeat_ban_policy(types.SimpleNamespace(
             siteName=site, policy=json.dumps(DEFAULTS), revision=hashlib.sha256(self.path.read_bytes()).hexdigest()))
 
-    def save_endpoint(self, site='other.example'):
-        return self.backend.save_endpoint_policy(types.SimpleNamespace(siteName=site, policy=json.dumps(dict(
-            name='Login', match='exact', path='/login', method='POST', window_seconds=60,
-            max_requests=10, ban_seconds=60))))
+    def save_other_repeat(self):
+        return self.save_repeat(site='other.example')
 
     def args(self, **changes):
         data = dict(siteName='fixture.example', obj='open', cycle='60', limit='20', endtime='60',
@@ -655,7 +653,7 @@ class SiteConfigTransactionTest(unittest.TestCase):
             args.ruleName = 'header'
         return getattr(self.backend, name)(args)
 
-    def test_ast_all_twelve_legacy_writer_callers_hold_a_transaction(self):
+    def test_ast_all_eleven_legacy_writers_hold_a_transaction_and_readers_do_not_write(self):
         tree = ast.parse((ROOT / 'free_waf_main.py').read_text(encoding='utf-8'))
         cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'free_waf_main')
         callers = {method.name: method for method in cls.body if isinstance(method, ast.FunctionDef)
@@ -666,14 +664,65 @@ class SiteConfigTransactionTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertTrue(any(isinstance(node, ast.Name) and node.id == '__site_config_locked'
                                     for node in method.decorator_list), name + ' missing transaction')
+        methods = {method.name: method for method in cls.body if isinstance(method, ast.FunctionDef)}
+        for name in ('__check_site', 'get_site_config', 'get_site_config_byname'):
+            with self.subTest(reader=name):
+                calls = {node.func.attr for node in ast.walk(methods[name])
+                         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
+                self.assertFalse(calls & {'__write_site_config', '__write_site_domains', '__remove_log_file',
+                                         'writeFile', 'mkdir', 'makedirs', 'remove', 'unlink', 'serviceReload'})
 
     def test_all_eleven_legacy_public_mutations_still_succeed_without_changing_other_sites(self):
-        for name in sorted(self.WRITERS - {'__check_site'}):
+        changes = {
+            'set_site_obj_open': {'open': False},
+            'set_site_cc_conf': {'cc': dict(open=True, cycle=60, limit=20, endtime=60, increase=False)},
+            'set_site_retry': dict(retry=11, retry_cycle=60, retry_time=60),
+            'set_site_cdn_state': {'cdn': True},
+            'add_site_cdn_header': {'cdn_header': ['x-remove', 'x-added']},
+            'remove_site_cdn_header': {'cdn_header': []},
+            'add_site_cdn_trusted_proxy': {'cdn_trusted_proxy': [
+                [[198, 51, 100, 1], [198, 51, 100, 9]], [[192, 0, 2, 1], [192, 0, 2, 9]]]},
+            'remove_site_cdn_trusted_proxy': {'cdn_trusted_proxy': []},
+            'add_site_rule': {'url_white': ['/new', '/remove']},
+            'remove_site_rule': {'url_white': []},
+            'set_site_disable_rule': {'disable_rule': dict(self.config['fixture.example']['disable_rule'], header=[0])}}
+        self.assertEqual(set(changes), self.WRITERS)
+        for name in sorted(self.WRITERS):
             with self.subTest(name=name):
-                self.write(self.config)
+                config = copy.deepcopy(self.config)
+                for site, conf in config.items():
+                    conf.update(top={'display': True}, siteName=site, log_size=832, total=[])
+                self.write(config)
+                expected = {site: {key: value for key, value in conf.items()
+                                   if key not in ('top', 'siteName', 'log_size', 'total')}
+                            for site, conf in config.items()}
+                expected['fixture.example'].update(changes[name])
+                stages = []
+
+                def observe(stage):
+                    lock = os.path.normcase(os.path.abspath(str(self.root / '.endpoint-policy.lock')))
+                    self.assertIn((os.getpid(), lock), self.backend._free_waf_main__site_config_locks.paths)
+                    self.assertTrue(Path(lock).exists())
+                    self.assertEqual(self.read(), expected)
+                    stages.append(stage)
+                    return True
+
+                refresh = self.backend._free_waf_main__write_site_domains
+                checked = self.backend._free_waf_main__checked_nginx_reload
+                refresh.reset_mock()
+                checked.reset_mock()
+                refresh.side_effect = lambda: observe('domains')
+                checked.side_effect = lambda: observe('reload')
                 result = self.invoke(name)
                 self.assertTrue(result['status'], result)
-                self.assertEqual(self.read()['other.example'], self.config['other.example'])
+                self.assertEqual(self.read(), expected)
+                self.assertEqual(config['other.example'], dict(self.config['other.example'],
+                    top={'display': True}, siteName='other.example', log_size=832, total=[]))
+                refresh.assert_called_once_with()
+                checked.assert_called_once_with()
+                self.assertEqual(stages, ['domains', 'reload'])
+                self.public.writeFile.assert_not_called()
+                self.public.serviceReload.assert_not_called()
 
     def test_every_legacy_writer_is_rejected_before_read_or_side_effect_when_another_thread_owns_lock(self):
         locked = threading.Event()
@@ -814,14 +863,14 @@ class SiteConfigTransactionTest(unittest.TestCase):
         self.assertIs(config['other.example']['open'], False)
         self.assertEqual(config['fixture.example']['repeat_ban_policy'], DEFAULTS)
 
-    def test_old_read_cannot_overlap_endpoint_policy_save(self):
+    def test_old_read_cannot_overlap_other_site_repeat_policy_save(self):
         first, conflicting = self.overlap_legacy_read(
-            lambda: self.backend.set_site_cdn_state(self.args()), self.save_endpoint)
+            lambda: self.backend.set_site_cdn_state(self.args()), self.save_other_repeat)
         self.assertTrue(first['status'])
         self.assertFalse(conflicting['status'])
-        self.assertTrue(self.save_endpoint()['status'])
+        self.assertTrue(self.save_other_repeat()['status'])
         self.assertIs(self.read()['fixture.example']['cdn'], True)
-        self.assertEqual(len(self.read()['other.example']['endpoint_limits']), 1)
+        self.assertEqual(self.read()['other.example']['repeat_ban_policy'], DEFAULTS)
 
     def test_two_legacy_site_mutations_cannot_read_same_unlocked_snapshot(self):
         first, conflicting = self.overlap_legacy_read(
@@ -833,16 +882,46 @@ class SiteConfigTransactionTest(unittest.TestCase):
         self.assertIs(self.read()['fixture.example']['open'], False)
         self.assertIs(self.read()['other.example']['cdn'], True)
 
-    def test_get_site_config_migration_cannot_read_then_overwrite_a_repeat_policy(self):
+    def test_site_read_without_lock_does_not_migrate_or_overwrite_concurrent_repeat_save(self):
         config = copy.deepcopy(self.config)
         del config['fixture.example']['registration_guard']
         self.write(config)
-        migrated, conflicting = self.overlap_legacy_read(lambda: self.backend.get_site_config(None), self.save_repeat)
-        self.assertIn('registration_guard', migrated['fixture.example'])
-        self.assertFalse(conflicting['status'])
-        self.assertTrue(self.save_repeat()['status'])
-        self.assertIn('registration_guard', self.read()['fixture.example'])
+        original = self.path.read_bytes()
+        files = set(self.root.rglob('*'))
+        with patch('os.mkdir', side_effect=AssertionError('read created a directory')), \
+                patch('os.remove', side_effect=AssertionError('read removed a file')), \
+                patch('os.unlink', side_effect=AssertionError('read unlinked a file')):
+            view = self.backend.get_site_config(None)
+            detail = self.backend.get_site_config_byname(self.args())
+        self.assertIn('registration_guard', view['fixture.example'])
+        self.assertIn('top', detail)
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual(set(self.root.rglob('*')), files)
+        self.assertFalse((self.root / '.endpoint-policy.lock').exists())
+        self.backend._free_waf_main__write_site_domains.assert_not_called()
+        self.backend._free_waf_main__checked_nginx_reload.assert_not_called()
+        self.public.writeFile.assert_not_called()
+        self.public.WriteLog.assert_not_called()
+        published = []
+
+        def save():
+            result = self.save_repeat()
+            published.append(self.path.read_bytes())
+            return result
+
+        view, saved = self.overlap_legacy_read(lambda: self.backend.get_site_config(None), save)
+        self.assertIn('registration_guard', view['fixture.example'])
+        self.assertNotIn('repeat_ban_policy', view['fixture.example'])
+        self.assertTrue(saved['status'])
+        self.assertEqual(self.path.read_bytes(), published[0])
+        self.assertNotEqual(self.path.read_bytes(), original)
+        self.assertNotIn('registration_guard', self.read()['fixture.example'])
         self.assertEqual(self.read()['fixture.example']['repeat_ban_policy'], DEFAULTS)
+        self.assertTrue((self.root / '.endpoint-policy.lock').exists())
+        self.backend._free_waf_main__checked_nginx_reload.assert_called_once_with()
+        self.backend._free_waf_main__write_site_domains.assert_not_called()
+        self.public.writeFile.assert_not_called()
+        self.public.serviceReload.assert_not_called()
 
     def test_repeat_save_holds_lock_until_replace_so_legacy_cannot_write_in_the_gap(self):
         entered, release = threading.Event(), threading.Event()

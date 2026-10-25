@@ -185,21 +185,21 @@ check('deduplication outlives a rolling window shorter than the original ban',fu
     local f=fixture(); local first=now
     f.env.site_config['fixture.example'].repeat_ban_policy={enabled=true,window_seconds=60,
         tiers={{threshold=2,ban_seconds=604800}}}
-    assert(not f:event(nil,nil,28800,'endpoint_limit'))
-    now=first+61; assert(not f:event(nil,nil,1,'endpoint_limit'))
+    assert(not f:event(nil,nil,28800,'registration_abuse_register'))
+    now=first+61; assert(not f:event(nil,nil,1,'registration_abuse_register'))
     now=first+63
-    assert(not f:event(nil,nil,1,'endpoint_limit'),'overlapping bans were counted after history TTL expired')
+    assert(not f:event(nil,nil,1,'registration_abuse_register'),'overlapping bans were counted after history TTL expired')
     assert(#f:rows()==0)
-    now=first+28800; assert(not f:event(nil,nil,1,'endpoint_limit'))
-    now=now+2; assert(f:event(nil,nil,1,'endpoint_limit'),'distinct bans after exact expiry must count')
+    now=first+28800; assert(not f:event(nil,nil,1,'registration_abuse_register'))
+    now=now+2; assert(f:event(nil,nil,1,'registration_abuse_register'),'distinct bans after exact expiry must count')
 end)
 check('a longer overlapping ban refreshes the deduplication TTL',function()
     local f=fixture(); local first=now
     local policy=f.env.site_config['fixture.example'].repeat_ban_policy
     policy.window_seconds=60
-    assert(not f:event(nil,nil,1,'endpoint_limit'))
-    assert(not f:event(nil,nil,28800,'endpoint_limit'))
-    now=first+61; assert(not f:event(nil,nil,1,'endpoint_limit'))
+    assert(not f:event(nil,nil,1,'registration_abuse_register'))
+    assert(not f:event(nil,nil,28800,'registration_abuse_register'))
+    now=first+61; assert(not f:event(nil,nil,1,'registration_abuse_register'))
     local key=f.env.repeat_ban_state_key('fixture.example','192.0.2.1',policy)
     local raw=assert(f.env.ngx.shared.free_waf:get(key),'deduplication state expired')
     local history=json.decode(raw)

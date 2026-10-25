@@ -26,7 +26,7 @@ except ImportError:
     fcntl = None
 
 
-PLUGIN_VERSION = '0.1.8'
+PLUGIN_VERSION = '0.1.9'
 REPOSITORY = '137985990/aapanel-gpt-firewall'
 API_URL = 'https://api.github.com/repos/' + REPOSITORY + '/releases'
 DOWNLOAD_URL = 'https://github.com/' + REPOSITORY + '/releases/download/'

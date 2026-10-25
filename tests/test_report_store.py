@@ -1,10 +1,12 @@
 import json
+import os
 import sys
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from report_store import BackgroundReports, fcntl
@@ -29,6 +31,61 @@ class BackgroundReportsTest(unittest.TestCase):
                 return result
             self.release.wait(0.005) if not self.release.is_set() else time.sleep(0.005)
         self.fail("background build did not complete")
+
+    def prune_paths(self):
+        self.reports.max_entries = 1
+        old = Path(self.directory.name) / "old.json"
+        current = Path(self.directory.name) / "current.json"
+        old.write_text("{}")
+        current.write_text("{}")
+        os.utime(old, (1, 1))
+        os.utime(current, (2, 2))
+        return old, current
+
+    def test_prune_supports_python37_unlink_signature(self):
+        old, current = self.prune_paths()
+        unlink = Path.unlink
+
+        def python37_unlink(path):
+            return unlink(path)
+
+        with mock.patch.object(Path, "unlink", python37_unlink):
+            self.reports._prune(current)
+        self.assertFalse(old.exists())
+        self.assertTrue(current.exists())
+
+    def test_prune_ignores_a_file_removed_before_unlink(self):
+        old, current = self.prune_paths()
+        unlink = Path.unlink
+
+        def concurrent_unlink(path):
+            unlink(path)
+            raise FileNotFoundError(str(path))
+
+        with mock.patch.object(Path, "unlink", concurrent_unlink):
+            self.reports._prune(current)
+        self.assertFalse(old.exists())
+        self.assertTrue(current.exists())
+
+    def test_prune_propagates_other_unlink_io_errors(self):
+        old, current = self.prune_paths()
+        for error in (PermissionError("denied"), OSError("disk failure")):
+            with self.subTest(error=type(error).__name__):
+                def failed_unlink(path):
+                    raise error
+
+                with mock.patch.object(Path, "unlink", failed_unlink):
+                    with self.assertRaises(type(error)) as raised:
+                        self.reports._prune(current)
+                self.assertIs(raised.exception, error)
+        self.assertTrue(old.exists())
+        self.assertTrue(current.exists())
+
+    def test_prune_never_removes_current_even_outside_retention_limit(self):
+        old, current = self.prune_paths()
+        self.reports._prune(old)
+        self.assertTrue(old.exists())
+        self.assertTrue(current.exists())
 
     def test_slow_first_build_returns_immediately_and_polls_share_one_job(self):
         calls = []

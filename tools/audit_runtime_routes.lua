@@ -43,8 +43,9 @@ local function state_key(scope, ip, kind)
     return 'registration_guard:v2:' .. (kind and 'count' or 'ban') .. ':' .. #scope .. ':' .. scope .. ':' .. (kind and kind .. ':' or '') .. ip
 end
 
-local function fixture(rules, extra_scopes)
-    local f = {files = {}, shared = {}, generic = {}, writes = 0, query = {}, post_args = {},
+local function fixture(rules, extra_scopes, options)
+    options = options or {}
+    local f = {files = {}, shared = {}, generic = {}, writes = 0, query = {}, post_args = {}, headers = {},
         lock_files = {}, descriptors = {}, locked = {}, metadata = {}, next_fd = 10, next_inode = 1}
     local config = {
         open = false, log = false, reqfile_path = 'fixture-html',
@@ -55,6 +56,7 @@ local function fixture(rules, extra_scopes)
         config[name] = {open = true, status = 403, reqfile = name .. '.html'}
         f.files['fixture-html/' .. name .. '.html'] = 'fixture-blocked'
     end
+    for key, value in pairs(options.config or {}) do config[key] = value end
     f.files[root .. 'config.json'] = json.encode(config)
     local sites = {fixture = {
         post = true, disable_rule = {post = {1}},
@@ -68,13 +70,16 @@ local function fixture(rules, extra_scopes)
     for index, scope in ipairs(extra_scopes or {'other'}) do
         sites['scope' .. index] = {registration_guard = {open = false, scope = scope}}
     end
-    f.files[root .. 'site.json'] = json.encode(sites)
+    f.files[root .. 'site.json'] = json.encode(options.sites or sites)
     f.files[root .. '/rule/cn.json'] = '[]'
     f.files[root .. 'rule/ip_black.json'] = rules and json.encode(rules) or '[]'
     for _, name in ipairs({'post', 'user_agent_white'}) do
         f.files[root .. 'rule/' .. name .. '.json'] = json.encode({
             {0, 'inactive'}, {1, 'needle'}, {1, 'other'},
         })
+    end
+    if options.args_rules then
+        f.files[root .. 'rule/args.json'] = json.encode(options.args_rules)
     end
     local exit_marker = {}
     local ngx = {
@@ -91,7 +96,7 @@ local function fixture(rules, extra_scopes)
         say = function(body) f.output[#f.output + 1] = body end,
         exit = function(status) f.exit_status = status; error(exit_marker, 0) end,
         req = {
-            get_headers = function() return {} end,
+            get_headers = function() return f.headers end,
             get_method = function() return 'GET' end,
             get_uri_args = function() return f.query end,
             get_post_args = function() return f.post_args end,
@@ -253,6 +258,232 @@ local function fixture(rules, extra_scopes)
 end
 
 local tests = {}
+
+local function cdn_fixture(order, overrides, config)
+    local site = {
+        cdn = true, cdn_header = {'x-forwarded-for', 'x-real-ip'}, cdn_header_order = order,
+        cdn_trusted_proxy = {{{198, 51, 100, 20}, {198, 51, 100, 20}}},
+    }
+    for key, value in pairs(overrides or {}) do site[key] = value end
+    local f = fixture(nil, nil, {config = config, sites = {fixture = site}})
+    f.ngx.var.remote_addr = '198.51.100.20'
+    f.headers['x-forwarded-for'] = '192.0.2.10, 192.0.2.30'
+    return f
+end
+
+local function assert_identity(f, site, ip)
+    f.output, f.exit_status = {}, nil
+    f.ngx.var.uri, f.ngx.var.request_uri = '/ordinary', '/ordinary'
+    local ok, result = pcall(f.env.run_btwaf)
+    assert(ok and result == false, 'identity request failed: ' .. tostring(result))
+    assert(f.env.server_name == site, 'expected site ' .. site .. ', got ' .. tostring(f.env.server_name))
+    assert(f.env.ip == ip, 'expected client IP ' .. ip .. ', got ' .. tostring(f.env.ip))
+    assert(f.writes == 0, 'identity lookup must not write files')
+end
+
+function tests.cn_alias_maps_once_before_cdn_lookup_and_resets_each_request()
+    local f = fixture(nil, nil, {
+        config = {compatibility_profile = 'bt-free-waf-8.4',
+            site_aliases = {fixture = 'canonical', canonical = 'other'}},
+        sites = {
+            fixture = {cdn = true, cdn_header = {'x-forwarded-for'}},
+            canonical = {cdn = true, cdn_header = {'x-forwarded-for'}, cdn_header_order = 'last',
+                cdn_trusted_proxy = {{{198, 51, 100, 20}, {198, 51, 100, 20}}}},
+            other = {},
+        },
+    })
+    f.ngx.var.remote_addr = '198.51.100.20'
+    f.headers['x-forwarded-for'] = '192.0.2.10, 192.0.2.30'
+    assert_identity(f, 'canonical', '192.0.2.30')
+    assert(f.ngx.var.server_name == 'fixture', 'must not rewrite the Nginx server name')
+    f.ngx.var.remote_addr = '198.51.100.21'
+    assert_identity(f, 'canonical', '198.51.100.21')
+    f.ngx.var.server_name = 'new-alias'
+    f.headers.host = 'fixture'
+    assert_identity(f, 'new-alias', '198.51.100.21')
+    f.ngx.var.server_name = '_'
+    assert_identity(f, '_', '198.51.100.21')
+end
+
+function tests.cn_alias_requires_the_exact_profile_and_preserves_aapanel()
+    local profiles = {false, true, 84, {}, json.null, 'bt-free-waf-8.4 ',
+        'BT-free-waf-8.4', 'bt-free-waf-8.5', 'aapanel-free-waf-5.0'}
+    for index = 0, #profiles do
+        local f = fixture(nil, nil, {
+            config = {compatibility_profile = profiles[index], site_aliases = {fixture = 'canonical'}},
+            sites = {fixture = {}, canonical = {}},
+        })
+        assert_identity(f, 'fixture', '127.0.0.1')
+    end
+end
+
+function tests.cn_alias_ignores_unknown_map_and_target_types()
+    local invalid = {false, true, 84, 'canonical', json.null, {{fixture = 'canonical'}}}
+    for index = 0, #invalid do
+        local f = fixture(nil, nil, {
+            config = {compatibility_profile = 'bt-free-waf-8.4', site_aliases = invalid[index]},
+            sites = {fixture = {}, canonical = {}},
+        })
+        assert_identity(f, 'fixture', '127.0.0.1')
+    end
+    for _, target in ipairs({false, true, 84, {}, json.null, '', 'missing', ' canonical '}) do
+        local f = fixture(nil, nil, {
+            config = {compatibility_profile = 'bt-free-waf-8.4', site_aliases = {fixture = target}},
+            sites = {fixture = {}, canonical = {}},
+        })
+        assert_identity(f, 'fixture', '127.0.0.1')
+    end
+end
+
+function tests.cn_alias_stale_or_non_site_target_keeps_the_original_scope()
+    for _, site in ipairs({false, true, 84, 'not-a-site', json.null}) do
+        local f = fixture(nil, nil, {
+            config = {compatibility_profile = 'bt-free-waf-8.4', site_aliases = {fixture = 'removed'}},
+            sites = {fixture = {}, removed = site},
+        })
+        assert_identity(f, 'fixture', '127.0.0.1')
+    end
+end
+
+function tests.cdn_explicit_first_and_last_follow_both_header_orders()
+    for _, order in ipairs({'first', 'last'}) do
+        local f = cdn_fixture(order, {cdn_baidu = order == 'last'})
+        local expected = order == 'last' and '192.0.2.30' or '192.0.2.10'
+        assert_identity(f, 'fixture', expected)
+        f.headers['x-forwarded-for'] = '192.0.2.30, 192.0.2.10'
+        expected = order == 'last' and '192.0.2.10' or '192.0.2.30'
+        assert_identity(f, 'fixture', expected)
+    end
+end
+
+function tests.cdn_missing_or_invalid_order_keeps_first_even_in_cn_profile()
+    local invalid = {false, true, 1, {}, json.null, 'LAST', 'last ', ''}
+    for index = 0, #invalid do
+        local f = cdn_fixture(invalid[index], {cdn_baidu = true}, {compatibility_profile = 'bt-free-waf-8.4'})
+        assert_identity(f, 'fixture', '192.0.2.10')
+    end
+    assert_identity(cdn_fixture(), 'fixture', '192.0.2.10')
+end
+
+function tests.cdn_scans_past_invalid_and_loopback_ips_in_the_selected_direction()
+    for _, order in ipairs({'first', 'last'}) do
+        local f = cdn_fixture(order)
+        f.headers['x-forwarded-for'] = 'bad, 999.0.0.1, 127.0.0.1, 192.0.2.10, 192.0.2.30, 127.0.0.1, bad'
+        assert_identity(f, 'fixture', order == 'last' and '192.0.2.30' or '192.0.2.10')
+        f.headers['x-forwarded-for'] = 'bad, 999.0.0.1, 127.0.0.1'
+        assert_identity(f, 'fixture', '198.51.100.20')
+        f.headers['x-real-ip'] = '192.0.2.40'
+        assert_identity(f, 'fixture', '192.0.2.40')
+    end
+end
+
+function tests.cdn_rejects_malformed_ipv4_tokens_not_just_bad_octet_ranges()
+    for _, order in ipairs({'first', 'last'}) do
+        for _, invalid in ipairs({'192.0.2.1.9', '192.0.2.1:80', '192.0.2.-1', '192.0.2.1e1'}) do
+            local f = cdn_fixture(order)
+            f.headers['x-forwarded-for'] = invalid .. ', 192.0.2.10, ' .. invalid
+            assert_identity(f, 'fixture', '192.0.2.10')
+        end
+    end
+end
+
+function tests.cdn_ignores_non_string_headers_and_preserves_repeated_header_semantics()
+    for _, order in ipairs({'first', 'last'}) do
+        for _, value in ipairs({false, true, 84, json.null, {}, {true}, {{'192.0.2.10'}}}) do
+            local f = cdn_fixture(order)
+            f.headers['x-forwarded-for'] = value
+            assert_identity(f, 'fixture', '198.51.100.20')
+        end
+        local f = cdn_fixture(order)
+        f.headers['x-forwarded-for'] = {'192.0.2.10, 192.0.2.30', '192.0.2.99'}
+        assert_identity(f, 'fixture', order == 'last' and '192.0.2.30' or '192.0.2.10')
+    end
+end
+
+function tests.cdn_order_never_bypasses_proxy_trust_or_the_site_cdn_switch()
+    for _, order in ipairs({'first', 'last'}) do
+        local f = cdn_fixture(order)
+        f.ngx.var.remote_addr = '198.51.100.21'
+        assert_identity(f, 'fixture', '198.51.100.21')
+        f.ngx.var.remote_addr = nil
+        assert_identity(f, 'fixture', 'unknown')
+        assert_identity(cdn_fixture(order, {cdn = false}), 'fixture', '198.51.100.20')
+        f = cdn_fixture(order, {cdn_trusted_proxy = {}})
+        assert_identity(f, 'fixture', order == 'last' and '192.0.2.30' or '192.0.2.10')
+    end
+end
+
+local function args_fixture(args_disabled, post_disabled)
+    local f = fixture(nil, nil, {
+        config = {open = true, scan = {open = false}, drop_abroad = {open = false}},
+        args_rules = {{0, 'inactive'}, {1, 'needle'}, {1, 'other'}},
+        sites = {fixture = {
+            open = true, log = false, cdn = false, get = true, post = false, cookie = false,
+            ['user-agent'] = false, cc = {open = false}, retry = 6, retry_time = 60, retry_cycle = 60,
+            disable_rule = {args = args_disabled or {}, post = post_disabled or {}},
+            url_white = {}, disable_php_path = {}, disable_path = {}, disable_ext = {},
+            url_rule = {}, url_tell = {},
+        }},
+    })
+    f.ngx.var.remote_addr = '198.51.100.20'
+    f.ngx.var.uri, f.ngx.var.request_uri = '/ordinary', '/ordinary?a=clean&a=needle'
+    f.headers['user-agent'] = 'fixture-client'
+    f.query = {a = {'clean', 'needle'}}
+    return f
+end
+
+function tests.repeated_get_values_block_on_either_array_position()
+    for _, values in ipairs({{'clean', 'needle'}, {'needle', 'clean'}}) do
+        local f = args_fixture()
+        f.query = {a = values}
+        f:assert_blocked(f.env.run_btwaf)
+        assert(f.ngx.status == 403 and f.output[1] == 'fixture-blocked')
+        assert(f.env.error_rule == 'needle >> a:needle', 'block must come from the repeated GET value')
+    end
+end
+
+function tests.repeated_get_values_keep_raw_args_exception_offsets()
+    local f = args_fixture({1})
+    assert(f.env.run_btwaf() == nil and f.exit_status == nil, 'args exception must permit the repeated value')
+    f = args_fixture({0})
+    f:assert_blocked(f.env.run_btwaf)
+    assert(f.env.error_rule == 'needle >> a:needle', 'disabled global rows must not compact exception offsets')
+end
+
+function tests.repeated_get_values_do_not_use_post_exceptions()
+    local f = args_fixture({}, {1})
+    f:assert_blocked(f.env.run_btwaf)
+    assert(f.env.error_rule == 'needle >> a:needle', 'POST exceptions must not disable GET rules')
+end
+
+function tests.repeated_get_values_ignore_non_strings_without_skipping_later_strings()
+    local f = args_fixture()
+    f.query = {flag = true, a = {true, false, 84, json.null, {}, {'needle'}, 'needle'}}
+    f:assert_blocked(f.env.run_btwaf)
+    assert(f.env.error_rule == 'needle >> a:needle')
+end
+
+function tests.repeated_get_values_expand_only_one_array_level()
+    local f = args_fixture()
+    f.query = {flag = true, a = {true, false, 84, json.null, {'needle'}, {named = 'needle'}}}
+    assert(f.env.run_btwaf() == nil and f.exit_status == nil, 'nested/non-string values must not crash or recurse')
+    for _, value in ipairs({true, false, 84, json.null}) do
+        local ok, matched = pcall(f.env.is_ngx_match, {'needle'}, value, 'args')
+        assert(ok and matched == false, 'non-table/non-string input must be ignored safely')
+    end
+end
+
+function tests.repeated_get_values_preserve_scalar_key_and_other_family_semantics()
+    local f = args_fixture()
+    local match = f.env.is_ngx_match
+    assert(match({'needle'}, {a = 'needle'}, 'args'), 'scalar values must still match')
+    assert(match({'needle'}, {needle = true}, 'args'), 'boolean parameter keys must still match')
+    assert(not match({'needle'}, {needle = false}, 'args'), 'false-valued keys must retain existing behavior')
+    assert(not match({'needle'}, {content = {'needle'}}, 'args'), 'excluded parameter keys must stay excluded')
+    assert(not match({'needle'}, {a = {'clean', 'needle'}}, 'post'), 'POST array handling is outside this GET fix')
+    assert(not match({'needle'}, {a = {'clean', 'needle'}}, 'header'), 'header array handling must not change')
+end
+
 function tests.empty_list_route_is_json_array_not_object_or_string()
     local f = fixture()
     assert(type(f.env.get_btwaf_drop_ip()) == 'table', 'helper must still return a Lua table')

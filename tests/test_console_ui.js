@@ -28,6 +28,22 @@ test('navigation synchronizes page, section and previous page without extra read
   assert.equal(h.requests.length, before);
 });
 
+test('historical endpoint bans remain visible with a retired-feature label and unchanged data', () => {
+  const h = harness();
+  const rows = [[1792700000, '192.0.2.1', 'a.example', '/login', 60, 'endpoint_limit', false]];
+  const original = JSON.stringify(rows);
+  let table;
+  h.waf.refresh_table_view = options => { table = options; };
+  h.waf.render_history_data();
+  h.of('get_safe_logs').at(-1).resolve(rows);
+  assert.equal(table.el, '#history_table');
+  assert.strictEqual(table.data, rows);
+  assert.equal(table.config.find(column => column.fid === '3').templet(rows[0]), '历史接口限流');
+  assert.equal(h.waf.repeat_ban_reason('endpoint_limit'), '历史接口限流');
+  assert.equal(JSON.stringify(rows), original);
+  assert.deepEqual(h.requests.slice(2).map(request => request.method), ['get_safe_logs']);
+});
+
 test('configured open never claims an enabled firewall or triggers an automatic check', () => {
   const h = harness();
   h.of('get_total_all')[0].resolve({open:true,safe_day:0,total:{total:0,rules:[]}});

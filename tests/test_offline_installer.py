@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -40,6 +41,7 @@ init_by_lua_file /www/server/free_waf/init.lua;
 access_by_lua_file /www/server/free_waf/waf.lua;
 log_by_lua_block { if ban_404_accumulate then ban_404_accumulate() end }
 '''
+DOMESTIC_LUA_SHA256 = 'ad3c6b78342859fd9f5fa93a50d4cda2176a16ae832580ffe9c3819a47d4e873'
 MOCK_NGINX = r'''#!/bin/bash
 set -eu
 root="${BASH_SOURCE[0]%/www/server/nginx/sbin/nginx}"
@@ -84,12 +86,19 @@ class OfflineInstallerTest(unittest.TestCase):
         self.nginx = self.root / "www/server/nginx/sbin/nginx"
         self.conf = self.root / "www/server/nginx/conf/nginx.conf"
         self.include = self.root / "www/server/panel/vhost/nginx/free_waf.conf"
-        self.write(self.plugin / "install.sh", (PLUGIN_SOURCE / "install.sh").read_text(encoding="utf-8"))
+        source = (PLUGIN_SOURCE / "install.sh").read_text(encoding="utf-8")
+        community_marker = "KNOWN_COMMUNITY_LUA_SHA256 = frozenset({"
+        self.assertEqual(source.count(community_marker), 1, "community runtime hash allowlist is missing or ambiguous")
+        fixture_hashes = "".join(
+            "\n    {!r},".format(hashlib.sha256(lua.encode("utf-8")).hexdigest())
+            for lua in (OLD_LUA, NEW_LUA)
+        )
+        self.write(self.plugin / "install.sh", source.replace(community_marker, community_marker + fixture_hashes, 1))
         self.write(self.plugin / "init.lua", NEW_LUA)
         for name in ("free_waf_main.py", "ban_store.py", "report_store.py", "website_statistics.py", "update_service.py"):
             self.write(self.plugin / name, "# imported backend; prior version unavailable\n")
         self.write(self.plugin / "index.html", "<html>already imported UI</html>\n")
-        self.write_json(self.plugin / "info.json", {"name": "free_waf", "versions": "0.1.8"})
+        self.write_json(self.plugin / "info.json", {"name": "free_waf", "versions": "0.1.9"})
         self.write_json(self.plugin / "rule.json", ["scanner_signature"])
         self.write(self.runtime / "init.lua", OLD_LUA)
         self.write(self.runtime / "waf.lua", "run_btwaf()\n")
@@ -172,7 +181,7 @@ class OfflineInstallerTest(unittest.TestCase):
         paths += [self.include, self.conf, self.root / "www/wwwlogs/free_waf_log/history.log"]
         return {str(p.relative_to(self.root)): (p.read_bytes(), p.stat().st_mtime_ns, stat.S_IMODE(p.stat().st_mode))
                 for p in paths if p.is_file() and ".gpt-firewall-" not in str(p)
-                and '.statistics' not in p.parts and p.name != 'ip_black.json.lock'}
+                and '.statistics' not in p.parts and p.name not in ('ip_black.json.lock', '.endpoint-policy.lock')}
 
     def assert_failed_without_runtime_change(self, result, before):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -192,7 +201,7 @@ class OfflineInstallerTest(unittest.TestCase):
         self.assertEqual((self.plugin / "free_waf_main.py").read_bytes(), backend)
         status = self.status()
         self.assertEqual(status["status"], "success")
-        self.assertEqual(status["version"], "0.1.8")
+        self.assertEqual(status["version"], "0.1.9")
         self.assertEqual(status["plugin_name"], "free_waf")
         self.assertTrue(status["waf_active"])
         self.assertTrue(status["runtime_changed"])
@@ -282,7 +291,7 @@ class OfflineInstallerTest(unittest.TestCase):
                 self.assertFalse(self.calls())
 
     def test_wrong_package_identity_is_rejected(self):
-        self.write_json(self.plugin / "info.json", {"name": "gpt_firewall", "versions": "0.1.8"})
+        self.write_json(self.plugin / "info.json", {"name": "gpt_firewall", "versions": "0.1.9"})
         self.assert_failed_without_runtime_change(self.run_installer(), self.state_snapshot())
 
     def test_wrong_package_version_is_rejected(self):
@@ -296,6 +305,28 @@ class OfflineInstallerTest(unittest.TestCase):
     def test_incompatible_existing_waf_entrypoint_is_rejected(self):
         self.write(self.runtime / "waf.lua", "run_a_different_waf()\n")
         self.assert_failed_without_runtime_change(self.run_installer(), self.state_snapshot())
+
+    def test_unknown_complete_runtime_is_rejected_by_source_profile(self):
+        unknown_lua = OLD_LUA + "\n-- unknownsuffix\n"
+        self.write(self.runtime / "init.lua", unknown_lua)
+        before = self.state_snapshot()
+        result = self.run_installer()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.status()["status"], "failed")
+        self.assertEqual(self.status()["diagnostic_code"], "source_profile")
+        self.assertEqual((self.runtime / "init.lua").read_text(encoding="utf-8"), unknown_lua)
+        self.assertEqual(self.state_snapshot(), before)
+        self.assertFalse(any("-s reload" in call for call in self.calls()))
+        self.assertFalse(list(self.runtime.glob(".gpt-firewall-backup.*")))
+
+    def test_verified_community_runtime_reports_known_community(self):
+        before = self.state_snapshot()
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.status()["status"], "success")
+        self.assertEqual(self.status()["source_profile"], "known-community")
+        self.assertEqual((self.runtime / "init.lua").read_text(encoding="utf-8"), NEW_LUA)
+        self.assertEqual(self.state_snapshot(), before)
 
     def test_rule_schema_failure_preserves_the_invalid_rule_for_manual_repair(self):
         self.write_json(self.runtime / "rule/ip_black.json", {"invalid": "not an array"})
@@ -564,6 +595,223 @@ class OfflineInstallerTest(unittest.TestCase):
         self.assertEqual(stat.S_IMODE((self.plugin / "install-status.json").stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(original.stat().st_mode), original_mode)
         self.assertEqual((original.stat().st_uid, original.stat().st_gid), original_owner)
+
+
+class DomesticInstallerTest(unittest.TestCase):
+    """Sanitized format fixtures, not redistributed vendor code or user data."""
+
+    def setUp(self):
+        OfflineInstallerTest.setUp(self)
+        source = (self.plugin / 'install.sh').read_text(encoding='utf-8')
+        fixture_hash = hashlib.sha256(OLD_LUA.encode('utf-8')).hexdigest()
+        self.write(self.plugin / 'install.sh', source.replace(DOMESTIC_LUA_SHA256, fixture_hash))
+        config = json.loads((self.runtime / 'config.json').read_text())
+        del config['url_black']
+        config['from_data'] = True
+        self.write_json(self.runtime / 'config.json', config)
+        for name in ('header', 'cookie', 'user_agent_white'):
+            (self.runtime / 'rule' / (name + '.json')).unlink()
+        self.write_json(self.runtime / 'rule/ip_black.json', [])
+        self.write_json(self.runtime / 'domains.json', [])
+        self.write_json(self.runtime / 'site.json', {})
+        self.original_config = (self.runtime / 'config.json').read_bytes()
+
+    write = staticmethod(OfflineInstallerTest.write)
+    write_json = OfflineInstallerTest.write_json
+    run_installer = OfflineInstallerTest.run_installer
+    set_active = OfflineInstallerTest.set_active
+    state_snapshot = OfflineInstallerTest.state_snapshot
+    status = OfflineInstallerTest.status
+
+    @staticmethod
+    def site_fixture():
+        return dict(open=True, log=True, cdn=False, project='', cdn_header=['x-forwarded-for'],
+                    retry=6, retry_cycle=60, retry_time=180,
+                    disable_php_path=['^/upload/'], disable_path=[], disable_ext=[],
+                    disable_upload_ext=['php', 'jsp'], url_white=[], url_rule=[], url_tell=[],
+                    disable_rule={name: [] for name in ('url', 'post', 'args', 'cookie', 'user_agent')},
+                    cc=dict(open=True, cycle=60, limit=120, endtime=300),
+                    get=True, post=True, cookie=True, scan=True, drop_abroad=False, **{'user-agent': True})
+
+    def test_domestic_84_explicitly_migrates_only_missing_contract_fields(self):
+        rules = {p.name: p.read_bytes() for p in (self.runtime / 'rule').glob('*.json')}
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        config = json.loads((self.runtime / 'config.json').read_text())
+        self.assertEqual(config.pop('compatibility_profile'), 'bt-free-waf-8.4')
+        self.assertEqual(config.pop('site_aliases'), {})
+        self.assertEqual(config.pop('url_black'), {'open': True, 'status': 403})
+        self.assertEqual(config, json.loads(self.original_config))
+        for name, body in rules.items():
+            self.assertEqual((self.runtime / 'rule' / name).read_bytes(), body)
+        for name in ('header', 'cookie', 'user_agent_white'):
+            self.assertEqual(json.loads((self.runtime / 'rule' / (name + '.json')).read_text()), [])
+        self.assertEqual(self.status()['source_profile'], 'bt-free-waf-8.4')
+        migration = self.runtime / self.status()['data_migration_backup'] / 'compatibility-migration.json'
+        self.assertTrue(migration.is_file())
+        self.assertTrue(self.status()['compatibility_warnings'])
+
+    def test_domestic_unknown_code_refused_without_migration(self):
+        self.write(self.runtime / 'init.lua', OLD_LUA + '\n-- unknown vendor revision\n')
+        before = self.state_snapshot()
+        result = self.run_installer()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.state_snapshot(), before)
+        self.assertFalse((self.runtime / 'rule/header.json').exists())
+
+    def test_domestic_exception_offsets_domains_and_cdn_selection_preserved(self):
+        self.write_json(self.runtime / 'rule/args.json', [[1, 'first', '', 0], [1, 'second', '', 0], [1, 'third', '', 0]])
+        self.write_json(self.runtime / 'domains.json', [{'name': 'site.invalid', 'domains': ['alias.invalid']}])
+        site = self.site_fixture()
+        site.update(cdn=True, cdn_baidu=False)
+        site['disable_rule'].update(args=[0], post=[0])
+        self.write_json(self.runtime / 'site.json', {'site.invalid': site})
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        migrated = json.loads((self.runtime / 'site.json').read_text())['site.invalid']
+        self.assertEqual(migrated['disable_rule']['args'], [0])
+        self.assertEqual(migrated['cdn_header_order'], 'last')
+        self.assertEqual(migrated['cc'], site['cc'])
+        self.assertEqual(json.loads((self.runtime / 'config.json').read_text())['site_aliases'],
+                         {'alias.invalid': 'site.invalid'})
+
+    def test_domestic_ambiguous_alias_and_out_of_range_exception_refused(self):
+        for mode in ('alias', 'offset', 'permanent_ip'):
+            with self.subTest(mode=mode):
+                if mode == 'alias':
+                    self.write_json(self.runtime / 'domains.json', [
+                        {'name': 'a.invalid', 'domains': ['same.invalid']},
+                        {'name': 'b.invalid', 'domains': ['same.invalid']}])
+                else:
+                    self.write_json(self.runtime / 'domains.json', [])
+                self.write_json(self.runtime / 'site.json', {'a.invalid': {'disable_rule': {'args': [999]}}}
+                                if mode == 'offset' else {})
+                ip = [198, 51, 100, 3]
+                self.write_json(self.runtime / 'rule/ip_black.json', [[ip, ip]] if mode == 'permanent_ip' else [])
+                before = self.state_snapshot()
+                result = self.run_installer()
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.state_snapshot(), before)
+
+    def test_domestic_failure_restores_config_and_created_rules(self):
+        self.write(self.root / 'fail-candidate-test', '1')
+        before = {str(p.relative_to(self.runtime)): p.read_bytes() for p in self.runtime.rglob('*') if p.is_file()}
+        result = self.run_installer()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.status()['data_rollback'], 'restored')
+        for name, body in before.items():
+            self.assertEqual((self.runtime / name).read_bytes(), body)
+        for name in ('header', 'cookie', 'user_agent_white'):
+            self.assertFalse((self.runtime / 'rule' / (name + '.json')).exists())
+
+    def test_installer_metadata_reads_use_python37_compatible_nofollow(self):
+        source = (self.plugin / 'install.sh').read_text(encoding='utf-8')
+        self.assertNotIn('.stat(follow_symlinks=False)', source)
+
+    def test_unfinished_migration_blocks_retry_without_mutating_config(self):
+        journal = self.runtime / '.gpt-firewall-backup.interrupted/compatibility-migration.json'
+        self.write_json(journal, {'profile': 'bt-free-waf-8.4', 'state': 'applying', 'entries': {}})
+        before = self.state_snapshot()
+        result = self.run_installer()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.state_snapshot(), before)
+        self.assertEqual(self.status().get('diagnostic_code'), 'migration_conflict')
+
+    def test_ambiguous_original_exception_semantics_refused_not_guessed(self):
+        self.write_json(self.runtime / 'rule/args.json', [[0, 'off', '', 0], [1, 'second', '', 0], [1, 'third', '', 0]])
+        site = self.site_fixture()
+        site['disable_rule']['args'] = [1]
+        self.write_json(self.runtime / 'site.json', {'site.invalid': site})
+        before = self.state_snapshot()
+        result = self.run_installer()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.state_snapshot(), before)
+        self.assertEqual(self.status().get('diagnostic_code'), 'migration_conflict')
+
+    def test_incomplete_site_configuration_is_rejected_not_silently_filled(self):
+        self.write_json(self.runtime / 'site.json', {'site.invalid': {'open': True, 'disable_rule': {}}})
+        result = self.run_installer()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.status().get('diagnostic_code'), 'json_schema')
+
+    def test_missing_original_exception_key_is_not_filled_with_an_empty_list(self):
+        site = self.site_fixture()
+        del site['disable_rule']['cookie']
+        self.write_json(self.runtime / 'site.json', {'site.invalid': site})
+        before = self.state_snapshot()
+        result = self.run_installer()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.status().get('diagnostic_code'), 'json_schema')
+        self.assertEqual(self.state_snapshot(), before)
+
+    def test_domain_canonical_site_must_exist_before_migration(self):
+        self.write_json(self.runtime / 'domains.json', [{'name': 'missing.invalid', 'domains': ['alias.invalid']}])
+        before = self.state_snapshot()
+        result = self.run_installer()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.status().get('diagnostic_code'), 'migration_conflict')
+        self.assertEqual(self.state_snapshot(), before)
+
+    def test_same_name_alias_is_not_a_substitute_for_missing_canonical_site(self):
+        self.write_json(self.runtime / 'domains.json', [{'name': 'missing.invalid', 'domains': []}])
+        before = self.state_snapshot()
+        result = self.run_installer()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.status().get('diagnostic_code'), 'migration_conflict')
+        self.assertEqual(self.state_snapshot(), before)
+
+    def test_domestic_invalid_global_scalar_values_are_rejected_before_writes(self):
+        original = json.loads(self.original_config)
+        for path, value in ((('open',), 'false'), (('retry',), True),
+                            (('cc', 'limit'), 0), (('cc', 'status'), 799),
+                            (('get', 'open'), 'true'), (('get', 'status'), '403')):
+            with self.subTest(path=path):
+                config = json.loads(json.dumps(original))
+                target = config
+                for part in path[:-1]:
+                    target = target[part]
+                target[path[-1]] = value
+                self.write_json(self.runtime / 'config.json', config)
+                before = self.state_snapshot()
+                result = self.run_installer()
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.status().get('diagnostic_code'), 'json_schema')
+                self.assertEqual(self.state_snapshot(), before)
+
+    def test_concurrent_rule_edit_after_nginx_test_prevents_candidate_reload(self):
+        modified = MOCK_NGINX.replace(
+            'if $candidate && [ -e "$root/fail-candidate-test" ]; then exit 1; fi',
+            'if $candidate; then printf \'["^/concurrent$"]\\n\' > "$root/www/server/free_waf/rule/url_black.json"; fi')
+        self.write(self.nginx, modified)
+        result = self.run_installer()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads((self.runtime / 'rule/url_black.json').read_text()), ['^/concurrent$'])
+        self.assertEqual((self.runtime / 'config.json').read_bytes(), self.original_config)
+        self.assertFalse(any('candidate=true' in call and '-s reload' in call
+                             for call in OfflineInstallerTest.calls(self)))
+
+    def test_data_rollback_does_not_overwrite_a_concurrent_config_edit(self):
+        modified = MOCK_NGINX.replace(
+            'if $candidate && [ -e "$root/fail-candidate-test" ]; then exit 1; fi',
+            'if $candidate && [ -e "$root/fail-candidate-test" ]; then '
+            'printf \'{"concurrent":true}\\n\' > "$root/www/server/free_waf/config.json"; exit 1; fi')
+        self.write(self.nginx, modified)
+        self.write(self.root / 'fail-candidate-test', '1')
+        result = self.run_installer()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(json.loads((self.runtime / 'config.json').read_text()), {'concurrent': True})
+        self.assertEqual(self.status()['data_rollback'], 'conflict_or_failed')
+        self.assertEqual(self.status()['rollback'], 'restore_data_conflict')
+        self.assertFalse(any('-s reload' in call for call in OfflineInstallerTest.calls(self)))
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX permissions require a POSIX filesystem')
+    def test_new_rule_files_are_readable_without_becoming_world_writable(self):
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for name in ('cookie', 'header', 'user_agent_white'):
+            mode = stat.S_IMODE((self.runtime / 'rule' / (name + '.json')).stat().st_mode)
+            self.assertTrue(mode & stat.S_IROTH)
+            self.assertFalse(mode & stat.S_IWOTH)
 
 
 if __name__ == "__main__":

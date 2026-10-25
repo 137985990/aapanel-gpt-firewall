@@ -69,11 +69,38 @@ class LuaStateRegressionsTest(unittest.TestCase):
     def test_full_runtime_routes(self):
         self.run_fixture("audit_runtime_routes.lua")
 
-    def test_endpoint_policy(self):
+    def test_retired_endpoint_policy_and_shared_cc_helpers(self):
         self.run_fixture("audit_endpoint_policy.lua")
 
     def test_repeat_ban(self):
         self.run_fixture("audit_repeat_ban.lua")
+
+
+class EmbeddedRetiredPolicyTest(unittest.TestCase):
+    def test_retired_policy_and_shared_cc_in_embedded_luajit(self):
+        try:
+            from lupa.luajit21 import LuaRuntime
+        except ImportError:
+            self.skipTest('optional embedded LuaJIT unavailable')
+        runtime = LuaRuntime(unpack_returned_tuples=True)
+        runtime.globals().WAF_RUNTIME_SOURCE = (ROOT / 'init.lua').read_text(encoding='utf-8')
+        # This memory codec tests execution, not cjson serialization compatibility.
+        runtime.execute('''
+            local objects, serial = {}, 0
+            package.preload.cjson = function()
+                return {
+                    encode = function(value)
+                        serial = serial + 1
+                        local token = 'fixture-json-' .. serial
+                        objects[token] = value
+                        return token
+                    end,
+                    decode = function(token) return assert(objects[token]) end
+                }
+            end
+            assert(loadstring(WAF_RUNTIME_SOURCE, '@init.lua'))
+        ''')
+        runtime.execute((ROOT / 'tools/audit_endpoint_policy.lua').read_text(encoding='utf-8'))
 
 
 if __name__ == "__main__":

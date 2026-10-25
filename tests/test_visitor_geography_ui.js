@@ -56,8 +56,122 @@ function metric(h, value) { h.$('#website_stats_geo_metric').val(value); h.fire(
 function country(h, value) { h.$('#website_stats_geo_country').val(value); h.fire('#website_stats_geo_country', 'change'); }
 function assets(h) { return h.requests.filter(request => request.options.url.startsWith('/static/')); }
 
+function panelMaps(h) {
+  const charts = chartEngine(h), maps = new Map(), modules = [];
+  h.waf._trend_chart = { setOption() {}, resize() {}, dispose() {} };
+  delete h.context.window.__free_waf_world;
+  h.context.window.echarts.getMap = name => maps.get(name);
+  h.context.window.echarts.registerMap = (name, geoJSON) => maps.set(name, { geoJSON });
+  h.waf.world_map_module = () => new Promise((resolve, reject) => modules.push({ resolve, reject }));
+  return { charts, maps, modules };
+}
+
+test('registered panel maps are reused for overview and visitors without loading assets', () => {
+  for (const field of ['geoJSON', 'geoJson']) {
+    const h = harness(), panel = panelMaps(h);
+    panel.maps.set('world', { [field]: world });
+    h.of('get_overview_report')[0].resolve({ summary: {}, trend: [], attack_geography: { countries: [{ code: 'CN', count: 4 }] } });
+    assert.equal(h.context.window.__free_waf_world, world);
+    assert.equal(h.waf._map_model.data.find(row => row.name === 'China').value, 4);
+    open(h);
+    assert.equal(panel.modules.length, 0);
+    assert.equal(assets(h).length, 0);
+    assert.ok(panel.charts.some(chart => chart.node.key === '#website_stats_geo_map'));
+  }
+});
+
+test('panel12 default-export geometry loads lazily and is shared with the overview', async () => {
+  const h = harness(), panel = panelMaps(h);
+  h.navigate('statistics'); h.stats().at(-1).resolve(report({ geography: geography() }));
+  assert.equal(panel.modules.length, 0);
+  h.fire('.website_stats_tab', 'click', { 'data-stats-page': 'geography' });
+  assert.equal(panel.modules.length, 1);
+  metric(h, 'requests'); country(h, 'CN');
+  assert.equal(panel.modules.length, 1, 'do not duplicate an in-flight map load');
+  panel.modules[0].resolve({ default: world });
+  await Promise.resolve();
+  assert.equal(h.context.window.__free_waf_world, world);
+  assert.equal(panel.maps.get('free_waf_world_v1').geoJSON, world);
+  assert.equal(h.waf._statistics_geo_model.data.find(row => row.code === 'CN').value, 10);
+  assert.equal(h.$('#website_stats_geo_retry').prop('hidden'), true);
+  h.navigate('home');
+  h.waf._trend_chart = { setOption() {}, resize() {}, dispose() {} };
+  h.of('get_overview_report').at(-1).resolve({ summary: {}, trend: [], attack_geography: { countries: [{ code: 'CN', count: 2 }] } });
+  assert.equal(panel.modules.length, 1);
+  assert.equal(assets(h).length, 0);
+});
+
+test('overview loads panel12 geometry and renders the registered map', async () => {
+  const h = harness(), panel = panelMaps(h);
+  h.of('get_overview_report')[0].resolve({ summary: {}, trend: [], attack_geography: { countries: [{ code: 'CN', count: 2 }] } });
+  assert.equal(panel.modules.length, 1);
+  panel.modules[0].resolve({ default: world });
+  await Promise.resolve();
+  assert.equal(h.waf._map_model.data.find(row => row.name === 'China').value, 2);
+  assert.ok(panel.charts.some(chart => chart.node.key === '#overview_attack_map'));
+  assert.equal(assets(h).length, 0);
+});
+
+test('module failure falls back to fixed legacy JSON without running response text', async () => {
+  const h = harness(), panel = panelMaps(h); open(h);
+  assert.equal(panel.modules.length, 1);
+  panel.modules[0].reject(Error('module unavailable'));
+  await Promise.resolve();
+  const fallback = assets(h).at(-1);
+  assert.equal(fallback.options.url, '/static/vite/data/world.json');
+  assert.equal(fallback.options.dataType, 'json');
+  fallback.resolve(world);
+  assert.equal(h.context.window.__free_waf_world, world);
+  assert.equal(h.$('#website_stats_geo_retry').prop('hidden'), true);
+});
+
+test('invalid module and legacy geometry fail once and retry only on demand', async () => {
+  const h = harness(), panel = panelMaps(h); open(h);
+  assert.equal(panel.modules.length, 1);
+  panel.modules[0].resolve({ default: { features: [] } });
+  await Promise.resolve();
+  assets(h).at(-1).resolve({ features: [] });
+  assert.equal(h.$('#website_stats_geo_retry').prop('hidden'), false);
+  metric(h, 'bytes'); country(h, 'CN');
+  assert.equal(panel.modules.length, 1);
+  assert.equal(assets(h).length, 1);
+  h.fire('#website_stats_geo_retry');
+  assert.equal(panel.modules.length, 2);
+  assert.equal(h.stats().length, 1);
+});
+
+test('module timeout stops loading and ignores late geometry', async () => {
+  const h = harness(), panel = panelMaps(h); open(h);
+  assert.equal(panel.modules.length, 1);
+  h.tick(12000);
+  assert.equal(h.$('#website_stats_geo_retry').prop('hidden'), false);
+  const before = panel.charts.length;
+  panel.modules[0].resolve({ default: world });
+  await Promise.resolve();
+  assert.equal(h.context.window.__free_waf_world, undefined);
+  assert.equal(panel.charts.length, before);
+});
+
+for (const exit of ['tab', 'leave', 'close', 'reinit', 'reload']) {
+  test(exit + ' ignores late panel12 module completion', async () => {
+    const h = harness(), panel = panelMaps(h); open(h);
+    assert.equal(panel.modules.length, 1);
+    if (exit === 'tab') h.fire('.website_stats_tab', 'click', { 'data-stats-page': 'clients' });
+    if (exit === 'leave') h.navigate('home');
+    if (exit === 'close') h.close();
+    if (exit === 'reinit') h.waf.init();
+    if (exit === 'reload') h.reload();
+    const status = h.$('#website_stats_geo_map_status').text();
+    panel.modules[0].resolve({ default: world });
+    await Promise.resolve();
+    assert.equal(h.context.window.__free_waf_world, undefined);
+    assert.equal(h.$('#website_stats_geo_map_status').text(), status);
+    assert.equal(assets(h).length, 0);
+  });
+}
+
 test('geography is the eighth Chinese tab, responsive and honest about IP/log coverage', () => {
-  assert.match(html, /class="waf_conter"[^>]*data-version="0\.1\.8"/);
+  assert.match(html, /class="waf_conter"[^>]*data-version="0\.1\.9"/);
   const tabs = [...html.matchAll(/class="website_stats_tab[^\"]*"[^>]*data-stats-page="([^"]+)"/g)].map(match => match[1]);
   assert.equal(tabs.length, 8); assert.equal(tabs.at(-1), 'geography');
   for (const text of ['访客地域', '独立 IP 不是人数', '网络出口', '机器人', 'API', '本地日志', '省份', '城市']) assert.ok(html.includes(text), text);
@@ -253,8 +367,10 @@ test('raw region names, country evidence, reasons and attributes are escaped wit
   assert.equal(JSON.stringify(geo), original);
 });
 
-test('asset failure is bounded; only explicit local map retry reloads resources, never statistics', () => {
-  const h = harness(); open(h); const asset = assets(h)[0]; assert.ok(asset); asset.reject();
+test('asset failure is bounded; only explicit local map retry reloads resources, never statistics', async () => {
+  const h = harness(), modules = [];
+  h.waf.world_map_module = () => new Promise((resolve, reject) => modules.push({ resolve, reject }));
+  open(h); const asset = assets(h)[0]; assert.ok(asset); asset.reject();
   assert.match(h.$('#website_stats_geo_map_status').text(), /不可用|失败/);
   const before = h.requests.length;
   for (let i = 0; i < 3; i++) { metric(h, i % 2 ? 'bytes' : 'requests'); country(h, 'CN'); }
@@ -263,6 +379,9 @@ test('asset failure is bounded; only explicit local map retry reloads resources,
   assert.equal(assets(h).length, 2); assert.equal(h.stats().length, 1);
   h.context.window.echarts = { init() { throw Error('invalid renderer'); } };
   assets(h).at(-1).resolve('');
+  assert.equal(modules.length, 1);
+  modules[0].reject(Error('module unavailable'));
+  await Promise.resolve();
   assert.equal(assets(h).length, 3); assert.equal(assets(h).at(-1).options.url, '/static/vite/data/world.json');
   assets(h).at(-1).resolve({ features: [] });
   assert.match(h.$('#website_stats_geo_map_status').text(), /不可用|失败/);

@@ -38,10 +38,11 @@ if [[ ! -x $python ]]; then
     }
 fi
 
-# Only JSON/schema checks and status serialization run in Python; no plugin imports.
-helper() {
-    "$python" -B -c "$(cat <<'PY'
-import hashlib, hmac, json, os, re, secrets, shutil, stat, sys, tempfile, uuid
+# Private generated helper avoids OS command-line length limits; no plugin imports.
+helper_source=$(mktemp "$plugin/.gpt-firewall-helper.XXXXXX")
+trap 'rm -f -- "$helper_source"' EXIT
+cat > "$helper_source" <<'PY'
+import base64, hashlib, hmac, json, os, re, secrets, shutil, stat, sys, tempfile, uuid
 from pathlib import Path
 
 root, plugin, mode, *args = sys.argv[1:]
@@ -50,7 +51,7 @@ diagnostic_codes = {
     'missing_resource', 'unsafe_resource', 'invalid_resource', 'invalid_json', 'json_schema',
     'integration_conflict', 'runtime_incomplete', 'package_identity', 'runtime_entrypoint',
     'config_incomplete', 'response_template', 'scan_rules', 'preflight_failed',
-    'nginx_test_failed', 'nginx_reload_failed', 'storage_permissions',
+    'nginx_test_failed', 'nginx_reload_failed', 'storage_permissions', 'source_profile', 'migration_conflict',
 }
 resources = {
     'nginx.conf', 'free_waf.conf', 'init.lua', 'waf.lua', 'free_waf_main.py', 'report_store.py',
@@ -58,7 +59,7 @@ resources = {
     'rule.json', 'drop_ip.log', 'config.json', 'site.json', 'total.json', 'scan_black.json',
     'cn.json', 'ip_black.json', 'ip_white.json', 'url_white.json', 'url_black.json',
     'user_agent_white.json', 'user_agent.json', 'header.json', 'post.json', 'cookie.json',
-    'args.json', 'url.json', 'head_white.json', 'response_template', 'runtime_directory',
+    'args.json', 'url.json', 'head_white.json', 'response_template', 'runtime_directory', 'domains.json',
 }
 
 class CheckError(ValueError):
@@ -217,12 +218,242 @@ def owner():
     return data
 
 def fingerprint(path):
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0))
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_BINARY', 0))
     with os.fdopen(descriptor, 'rb') as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             raise ValueError('运行文件不是独占普通文件')
         return dict(dev=info.st_dev, ino=info.st_ino, sha256=hashlib.sha256(stream.read()).hexdigest())
+
+# Pin the inspected original runtime, not a vendor name or a forgeable version label.
+DOMESTIC_LUA_SHA256 = 'ad3c6b78342859fd9f5fa93a50d4cda2176a16ae832580ffe9c3819a47d4e873'
+DOMESTIC_PROFILE = 'bt-free-waf-8.4'
+KNOWN_COMMUNITY_LUA_SHA256 = frozenset({
+    '817731649860903097321baa2873dc92918e3d8f0670dcb555129e66dfb0c94b',
+    '570fa78d20b3803722cf0c1969d441a5cc7083e0d6e49e68b4b2518212a548ca',
+    'f4e81a063d46aa985ca47f867182536623a0208d1feb9934686d7003eeb4a85d',
+    'd6486cf33fbea9d3da8d667dbd9ca0b7b791052aa2a4d500dc1f26770fd50b2a',
+    'f695787c47bd9def72058754951efbf642d1bc8a5b23613eadf65537602975ec',
+    '9f06c3b1531a0dc036e19e12205ff2ec146f90720c81cef893847725d5354790',
+})
+
+def source_profile(runtime):
+    identity = fingerprint(file(runtime / 'init.lua'))['sha256']
+    if identity == DOMESTIC_LUA_SHA256:
+        return DOMESTIC_PROFILE
+    if identity in KNOWN_COMMUNITY_LUA_SHA256 or identity == fingerprint(file(plugin / 'init.lua'))['sha256']:
+        return 'known-community'
+    raise CheckError('source_profile', '未核验的运行版本或自定义 Lua，请先确认来源，不能直接覆盖升级', 'init.lua')
+
+def domestic_plan(runtime):
+    config = load(runtime / 'config.json', dict)
+    sites = load(runtime / 'site.json', dict)
+    domains = load(runtime / 'domains.json', list)
+    def invalid_config(field):
+        raise CheckError('json_schema', '旧全局配置字段缺失或类型不兼容：' + field, 'config.json')
+    if type(config.get('open')) is not bool: invalid_config('open')
+    for field in ('log', 'from_data'):
+        if field in config and type(config[field]) is not bool: invalid_config(field)
+    for field in ('retry', 'retry_cycle', 'retry_time'):
+        if type(config.get(field)) is not int or not 1 <= config[field] <= 2147483647:
+            invalid_config(field)
+    for kind in ('cc', 'scan', 'drop_abroad', 'get', 'post', 'cookie', 'user-agent', 'other', 'url_black'):
+        if kind == 'url_black' and kind not in config: continue
+        item = config.get(kind)
+        if not isinstance(item, dict): invalid_config(kind)
+        if kind != 'other' and type(item.get('open')) is not bool: invalid_config(kind + '.open')
+        if type(item.get('status')) is not int or not 400 <= item['status'] <= 599:
+            invalid_config(kind + '.status')
+        if kind == 'cc':
+            for field in ('cycle', 'limit', 'endtime'):
+                if type(item.get(field)) is not int or not 1 <= item[field] <= 2147483647:
+                    invalid_config(kind + '.' + field)
+    changes, aliases, owners = {}, {}, {}
+    def safe_name(name):
+        return isinstance(name, str) and 0 < len(name) <= 253 and not re.search(r'[/\\\x00-\x20]', name) and name not in ('.', '..')
+    for item in domains:
+        if (not isinstance(item, dict) or not safe_name(item.get('name')) or
+                not isinstance(item.get('domains'), list)):
+            raise CheckError('json_schema', '旧站点别名结构不兼容', 'domains.json')
+        if item['name'] not in sites:
+            raise CheckError('migration_conflict', '域名对应的站点配置缺失，请先核对，未创建默认站点配置', 'domains.json')
+        for alias in item['domains']:
+            if not safe_name(alias) or alias in owners and owners[alias] != item['name']:
+                raise CheckError('migration_conflict', '旧站点别名有冲突，未迁移', 'domains.json')
+            if alias in sites and alias != item['name']:
+                raise CheckError('migration_conflict', '别名覆盖了独立站点配置，未迁移', 'domains.json')
+            owners[alias] = item['name']
+            aliases[alias] = item['name']
+    if 'url_black' not in config:
+        # Original 8.4 always enforces this table using the GET response status.
+        config['url_black'] = {'open': True, 'status': config.get('get', {}).get('status', 403)}
+    if config.get('compatibility_profile') not in (None, DOMESTIC_PROFILE):
+        raise CheckError('source_profile', '已有其他来源迁移标记，未覆盖', 'config.json')
+    config['compatibility_profile'] = DOMESTIC_PROFILE
+    config['site_aliases'] = aliases
+    tables = {}
+    for name in ('url', 'post', 'args', 'cookie', 'user_agent', 'header', 'user_agent_white'):
+        path = runtime / 'rule' / (name + '.json')
+        if not path.exists() and not path.is_symlink() and name in ('cookie', 'header', 'user_agent_white'):
+            tables[name] = []
+            changes['rule/' + name + '.json'] = '[]\n'
+        else:
+            tables[name] = load(path, list)
+        for row in tables[name]:
+            if (not isinstance(row, list) or len(row) < 2 or type(row[0]) is not int
+                    or row[0] not in (0, 1) or not isinstance(row[1], str)):
+                raise CheckError('json_schema', '旧正则规则行不兼容', name + '.json')
+    for rule in load(runtime / 'rule/ip_black.json', list):
+        if (not isinstance(rule, list) or len(rule) not in (2, 3) or
+                any(not isinstance(ip, list) or len(ip) != 4 or
+                    any(type(n) is not int or not 0 <= n <= 255 for n in ip) for ip in rule[:2])):
+            raise CheckError('json_schema', '旧 IP 黑名单格式不兼容', 'ip_black.json')
+        if rule[0] == rule[1] and (len(rule) == 2 or type(rule[2]) is not int or rule[2] <= 0):
+            raise CheckError('migration_conflict', '单 IP 黑名单没有明确到期时间，请先人工确认时长；未改成临时封禁', 'ip_black.json')
+    for name, site in sites.items():
+        if not safe_name(name) or not isinstance(site, dict):
+            raise CheckError('json_schema', '旧站点配置不兼容', 'site.json')
+        disabled = site.get('disable_rule')
+        if not isinstance(disabled, dict) or not all(
+                kind in disabled for kind in ('url', 'post', 'args', 'cookie', 'user_agent')):
+            raise CheckError('json_schema', '旧站点规则例外结构不兼容', 'site.json')
+        if (any(disabled.values()) and
+                any(row[0] == 0 for kind in ('url', 'post', 'args', 'cookie', 'user_agent') for row in tables[kind])):
+            raise CheckError('migration_conflict', '原版后台与运行时的规则例外序号含义冲突，请先人工核对，未猜测转换', 'site.json')
+        if disabled.get('post', []) != disabled.get('args', []):
+            raise CheckError('migration_conflict', '原版多值 GET 与 POST 例外存在交叉引用，无法无歧义迁移，请先人工核对', 'site.json')
+        def invalid_site(field):
+            raise CheckError('json_schema', '旧站点配置字段缺失或类型不兼容：' + field, 'site.json')
+        for field in ('open', 'log', 'cdn', 'get', 'post', 'cookie', 'user-agent', 'scan', 'drop_abroad'):
+            if type(site.get(field)) is not bool: invalid_site(field)
+        for field in ('retry', 'retry_cycle', 'retry_time'):
+            if type(site.get(field)) is not int or not 1 <= site[field] <= 2147483647: invalid_site(field)
+        cc = site.get('cc')
+        if not isinstance(cc, dict) or type(cc.get('open')) is not bool: invalid_site('cc.open')
+        for field in ('cycle', 'limit', 'endtime'):
+            if type(cc.get(field)) is not int or not 1 <= cc[field] <= 2147483647: invalid_site('cc.' + field)
+        for field in ('cdn_header', 'disable_php_path', 'disable_path', 'disable_ext', 'disable_upload_ext', 'url_white'):
+            if not isinstance(site.get(field), list) or not all(isinstance(value, str) for value in site[field]):
+                invalid_site(field)
+        for field, length in (('url_rule', 2), ('url_tell', 3)):
+            if (not isinstance(site.get(field), list) or any(
+                    not isinstance(row, list) or len(row) != length or
+                    not all(isinstance(value, str) for value in row) for row in site[field])):
+                invalid_site(field)
+        for field in ('cdn_baidu',):
+            if field in site and type(site[field]) is not bool: invalid_site(field)
+        if 'increase' in cc and type(cc['increase']) is not bool: invalid_site('cc.increase')
+        if 'cdn_trusted_proxy' in site:
+            ranges = site['cdn_trusted_proxy']
+            if not isinstance(ranges, list): invalid_site('cdn_trusted_proxy')
+            for row in ranges:
+                if (not isinstance(row, list) or len(row) != 2 or any(
+                        not isinstance(ip, list) or len(ip) != 4 or any(type(n) is not int or not 0 <= n <= 255 for n in ip)
+                        for ip in row) or row[0] > row[1]):
+                    invalid_site('cdn_trusted_proxy')
+        for field in ('registration_guard', 'repeat_ban_policy', 'endpoint_limits'):
+            if field in site: invalid_site(field)
+        for kind in ('url', 'post', 'args', 'cookie', 'user_agent', 'header'):
+            offsets = disabled.get(kind, [])
+            if not isinstance(offsets, list) or any(type(i) is not int or i < 0 for i in offsets):
+                raise CheckError('json_schema', '旧站点规则例外序号无效', 'site.json')
+            positions = [i for i, row in enumerate(tables[kind]) if row[0] == 1]
+            if any(i >= len(positions) for i in offsets):
+                raise CheckError('migration_conflict', '旧站点规则例外超出有效规则范围', 'site.json')
+            disabled[kind] = list(offsets)
+        if site.get('cdn'):
+            if not isinstance(site.get('cdn_header'), list) or not all(isinstance(h, str) for h in site['cdn_header']):
+                raise CheckError('json_schema', '旧 CDN 请求头配置不兼容', 'site.json')
+            site['cdn_header_order'] = 'first' if site.get('cdn_baidu') else 'last'
+    changes['config.json'] = json.dumps(config, ensure_ascii=True) + '\n'
+    if sites != load(runtime / 'site.json', dict):
+        changes['site.json'] = json.dumps(sites, ensure_ascii=True) + '\n'
+    return changes
+
+def migration_entries(runtime):
+    entries = {}
+    for name, candidate in domestic_plan(runtime).items():
+        path = runtime / name
+        for parent in (path, *path.parents):
+            if parent.is_symlink():
+                raise CheckError('unsafe_resource', '迁移路径包含符号链接', path.name)
+        exists = path.exists()
+        entries[name] = dict(before=base64.b64encode(path.read_bytes()).decode('ascii') if exists else None,
+                             original=fingerprint(path) if exists else None, after=candidate, write=None)
+    return entries
+
+def migration_guards(runtime):
+    sources = ['config.json', 'site.json', 'domains.json']
+    sources += ['rule/' + name + '.json' for name in (
+        'cn', 'scan_black', 'ip_black', 'ip_white', 'url_white', 'url_black',
+        'user_agent_white', 'user_agent', 'header', 'post', 'cookie', 'args', 'url', 'head_white')]
+    return {name: fingerprint(runtime / name) if (runtime / name).exists() else None for name in sources}
+
+def migration_digest(entries, runtime):
+    guards = migration_guards(runtime)
+    return hashlib.sha256(json.dumps([entries, guards], sort_keys=True).encode('utf-8')).hexdigest()
+
+def verify_no_pending_migration(runtime):
+    for path in runtime.glob('.gpt-firewall-backup.*/compatibility-migration.json'):
+        if path.parent.is_symlink() or path.is_symlink():
+            raise CheckError('unsafe_resource', '迁移备份路径包含符号链接')
+        record = load(path, dict)
+        if record.get('state') not in ('committed', 'restored'):
+            raise CheckError('migration_conflict', '检测到未完成的兼容迁移，请先核查安装状态和对应备份，不可直接重试')
+
+def save_journal(path, value):
+    fd, temporary = tempfile.mkstemp(prefix='.compatibility-', dir=str(path.parent))
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            json.dump(value, stream, ensure_ascii=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        sync_directory(path.parent)
+    finally:
+        if os.path.exists(temporary): os.unlink(temporary)
+
+def sync_directory(path):
+    if os.name == 'posix':
+        fd = os.open(str(path), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try: os.fsync(fd)
+        finally: os.close(fd)
+
+def migration_identity(path):
+    if path.is_symlink():
+        raise CheckError('migration_conflict', '迁移文件变为符号链接，未覆盖', path.name)
+    return fingerprint(path) if path.exists() else None
+
+def prepare_migration_write(path, text, expected, staging):
+    if migration_identity(path) != expected:
+        raise CheckError('migration_conflict', '迁移文件发生同期变化，未覆盖', path.name)
+    if staging.is_symlink() or not staging.is_dir():
+        raise CheckError('unsafe_resource', '迁移暂存目录不安全')
+    fd, temporary = tempfile.mkstemp(prefix='.compatibility-', dir=str(staging))
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(text.encode('utf-8') if isinstance(text, str) else text)
+            stream.flush()
+            if os.name == 'posix':
+                info = path.lstat() if expected is not None else None
+                if info: os.fchown(stream.fileno(), info.st_uid, info.st_gid)
+                os.fchmod(stream.fileno(), stat.S_IMODE(info.st_mode) if info else 0o644)
+            os.fsync(stream.fileno())
+        sync_directory(staging)
+        return dict(name=Path(temporary).name, identity=fingerprint(Path(temporary)))
+    except BaseException:
+        if os.path.exists(temporary): os.unlink(temporary)
+        raise
+
+def publish_migration_write(path, prepared, expected, staging):
+    temporary = staging / prepared['name']
+    if (temporary.parent != staging or not prepared['name'].startswith('.compatibility-')
+            or fingerprint(temporary) != prepared['identity'] or migration_identity(path) != expected):
+        raise CheckError('migration_conflict', '迁移发布前文件已改变，未覆盖', path.name)
+    os.replace(temporary, path)
+    sync_directory(path.parent)
+    sync_directory(staging)
+    return prepared['identity']
 
 try:
     if mode == 'lock':
@@ -254,6 +485,20 @@ try:
         if len(args) > 1 and proof['sha256'] != json.loads(args[1])['sha256']:
             raise ValueError('原始运行文件与备份摘要不一致')
         print(json.dumps(proof))
+    elif mode == 'policy_lock':
+        if args[0] == 'supported':
+            sys.exit(0 if os.name == 'posix' else 1)
+        path = mapped('/www/server/free_waf/.endpoint-policy.lock')
+        if args[0] == 'prepare':
+            descriptor = os.open(str(path), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        else:
+            descriptor = os.dup(int(args[1]))
+        try:
+            info, linked = os.fstat(descriptor), path.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+                    (info.st_dev, info.st_ino) != (linked.st_dev, linked.st_ino)):
+                raise CheckError('migration_conflict', '配置锁身份不安全，未迁移')
+        finally: os.close(descriptor)
     elif mode == 'prepare_storage':
         owner()
         runtime = mapped('/www/server/free_waf')
@@ -282,7 +527,7 @@ try:
                 if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                     raise CheckError('unsafe_resource', '运行存储不是独占普通文件', path.name)
                 body = stream.read()
-                current = path.stat(follow_symlinks=False)
+                current = path.lstat()
                 if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
                     raise CheckError('storage_permissions', '读取期间运行存储被替换', path.name)
             return body, info
@@ -300,7 +545,7 @@ try:
                 os.fchown(descriptor, owner_uid, owner_gid)
                 if mode is not None:
                     os.fchmod(descriptor, mode)
-                linked = path.stat(follow_symlinks=False)
+                linked = path.lstat()
                 if (linked.st_dev, linked.st_ino) != (info.st_dev, info.st_ino):
                     raise CheckError('storage_permissions', '权限准备期间运行存储被替换', path.name)
             finally:
@@ -323,7 +568,7 @@ try:
                 descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600)
                 descriptors.append(descriptor)
                 info = os.fstat(descriptor)
-                linked = lock_path.stat(follow_symlinks=False)
+                linked = lock_path.lstat()
                 if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
                         (info.st_dev, info.st_ino) != (linked.st_dev, linked.st_ino)):
                     raise CheckError('unsafe_resource', '运行存储锁不是独占普通文件', 'runtime_directory')
@@ -362,10 +607,10 @@ try:
                 raise CheckError('storage_permissions', '迁移前黑名单发生同期变化，未改权限', 'ip_black.json')
             if os.name == 'posix':
                 set_metadata(blacklist, original_info, uid, gid)
-                rule_info = rule_directory.stat(follow_symlinks=False)
+                rule_info = rule_directory.lstat()
                 set_metadata(rule_directory, rule_info, rule_info.st_uid, gid, 0o770, directory=True)
                 set_metadata(total, total_info, uid, gid, 0o600)
-                state_info = state_directory.stat(follow_symlinks=False)
+                state_info = state_directory.lstat()
                 set_metadata(state_directory, state_info, uid, gid, 0o700, directory=True)
                 for descriptor, target in zip(descriptors, (blacklist, total)):
                     mode_bits = stat.S_IMODE(target.stat().st_mode)
@@ -378,6 +623,79 @@ try:
         finally:
             for descriptor in descriptors:
                 os.close(descriptor)
+    elif mode == 'migrate_domestic':
+        owner()
+        if os.environ.get('GPT_FIREWALL_SOURCE_PROFILE') == DOMESTIC_PROFILE:
+            runtime = mapped('/www/server/free_waf')
+            entries = migration_entries(runtime)
+            if migration_digest(entries, runtime) != os.environ.get('GPT_FIREWALL_MIGRATION_DIGEST'):
+                raise CheckError('migration_conflict', '预检后旧配置发生变化，未迁移', 'config.json')
+            journal = Path(args[0]) / 'compatibility-migration.json'
+            record = dict(profile=DOMESTIC_PROFILE, state='applying', entries=entries, guards=migration_guards(runtime))
+            save_journal(journal, record)
+            for name, entry in entries.items():
+                entry['pending'] = prepare_migration_write(runtime / name, entry['after'], entry['original'], journal.parent)
+                save_journal(journal, record)
+                entry['write'] = publish_migration_write(runtime / name, entry['pending'], entry['original'], journal.parent)
+                save_journal(journal, record)
+    elif mode == 'restore_domestic':
+        owner()
+        journal = Path(args[0]) / 'compatibility-migration.json'
+        if not journal.exists():
+            print('not_needed')
+        else:
+            runtime = mapped('/www/server/free_waf')
+            record = json.loads(journal.read_text(encoding='utf-8'))
+            entries = record['entries']
+            verified = {}
+            for name, entry in entries.items():
+                path = runtime / name
+                actual = migration_identity(path)
+                allowed = [entry['original'], entry.get('write'), entry.get('pending', {}).get('identity'),
+                           entry.get('restore_pending', {}).get('identity'), entry.get('restored_write')]
+                if actual not in [value for value in allowed if value is not None] and not (
+                        actual is None and entry['original'] is None):
+                    raise CheckError('migration_conflict', '数据回退检测到同期修改，请人工核查', path.name)
+                verified[name] = actual
+            for name, entry in reversed(list(entries.items())):
+                path = runtime / name
+                actual = migration_identity(path)
+                if actual != verified[name]:
+                    raise CheckError('migration_conflict', '数据回退执行前文件发生同期修改，未覆盖', path.name)
+                if actual == entry['original'] or (
+                        actual is not None and actual in [entry.get('restored_write'), entry.get('restore_pending', {}).get('identity')]):
+                    continue
+                if entry['before'] is None:
+                    save_journal(journal, record)
+                    if migration_identity(path) != actual:
+                        raise CheckError('migration_conflict', '数据回退删除前文件发生同期修改，未删除', path.name)
+                    path.unlink()
+                    sync_directory(path.parent)
+                else:
+                    entry['restore_pending'] = prepare_migration_write(path, base64.b64decode(entry['before']), actual, journal.parent)
+                    save_journal(journal, record)
+                    entry['restored_write'] = publish_migration_write(path, entry['restore_pending'], actual, journal.parent)
+                save_journal(journal, record)
+            record['state'] = 'restored'
+            save_journal(journal, record)
+            print('restored')
+    elif mode == 'verify_domestic':
+        owner()
+        journal = Path(args[0]) / 'compatibility-migration.json'
+        if journal.exists():
+            record, runtime = load(journal, dict), mapped('/www/server/free_waf')
+            for name, before in record['guards'].items():
+                entry = record['entries'].get(name)
+                expected = entry['write'] if entry else before
+                if migration_identity(runtime / name) != expected:
+                    raise CheckError('migration_conflict', '迁移激活前配置或规则发生同期修改，停止激活', Path(name).name)
+    elif mode == 'commit_domestic':
+        owner()
+        journal = Path(args[0]) / 'compatibility-migration.json'
+        if journal.exists():
+            record = load(journal, dict)
+            record['state'] = 'committed'
+            save_journal(journal, record)
     elif mode == 'restore':
         owner()
         target, backup, expected = Path(args[0]), Path(args[1]), json.loads(args[2])
@@ -418,13 +736,19 @@ try:
         target = plugin / 'install-status.json'
         if target.is_symlink():
             raise ValueError('安装状态文件路径不安全')
-        data = dict(product='aapanel GPT Firewall', version='0.1.8', plugin_name='free_waf',
+        data = dict(product='aapanel GPT Firewall', version='0.1.9', plugin_name='free_waf',
                     status=outcome, operation=operation, stage=stage, message=message,
                     task_id=identity['task_id'],
                     runtime_write=json.loads(os.environ.get('GPT_FIREWALL_RUNTIME_WRITE') or 'null'),
                     runtime_backup_sha256=json.loads(os.environ.get('GPT_FIREWALL_RUNTIME_BACKUP') or '{}').get('sha256'),
                     runtime_changed=changed == 'true', waf_active=loaded == 'true',
                     rollback=rollback, runtime_backup=backup or None,
+                    source_profile=os.environ.get('GPT_FIREWALL_SOURCE_PROFILE', 'unidentified'),
+                    data_rollback=os.environ.get('GPT_FIREWALL_DATA_ROLLBACK', 'not_needed'),
+                    data_migration_backup=Path(backup).name if backup and os.environ.get('GPT_FIREWALL_SOURCE_PROFILE') == DOMESTIC_PROFILE else None,
+                    compatibility_warnings=(['使用 GPT 检测引擎，不等同原版 8.4：JSON 正文、上传内容、爬虫验证和旧算术挑战不作等价迁移；普通命中不自动升级封禁，CC 使用 GPT 的限时策略。',
+                                             '已有站点别名与 CDN 取值方向保留；未来新增域名需核对站点归属。旧内存封禁与日志不能当作完整活动封禁快照。']
+                                            if os.environ.get('GPT_FIREWALL_SOURCE_PROFILE') == DOMESTIC_PROFILE else []),
                     plugin_rollback_available=False, lua_execution_verified=False,
                     warning='面板在安装钩子之前已覆盖后端和界面，钩子没有导入前的旧文件；'
                             '面板也可能忽略安装失败。Nginx 配置测试不等于 Lua 执行验证，'
@@ -457,12 +781,13 @@ try:
             runtime = mapped('/www/server/free_waf')
             if runtime.is_symlink() or not runtime.is_dir():
                 raise CheckError('runtime_incomplete', '需要完整的既有运行目录，不支持首次安装', 'runtime_directory')
+            verify_no_pending_migration(runtime)
             for name in ('init.lua', 'free_waf_main.py', 'report_store.py', 'ban_store.py',
                          'website_statistics.py', 'update_service.py', 'index.html', 'info.json', 'rule.json'):
                 file(plugin / name)
             info = load(plugin / 'info.json', dict)
-            if info.get('name') != 'free_waf' or info.get('versions') != '0.1.8':
-                raise CheckError('package_identity', '需要内部标识为 free_waf、版本为 0.1.8 的兼容升级包', 'info.json')
+            if info.get('name') != 'free_waf' or info.get('versions') != '0.1.9':
+                raise CheckError('package_identity', '需要内部标识为 free_waf、版本为 0.1.9 的兼容升级包', 'info.json')
             load(plugin / 'rule.json', list)
             for name in ('init.lua', 'waf.lua', 'drop_ip.log'):
                 path = runtime / name
@@ -477,6 +802,10 @@ try:
             if not re.search(r'\brun_btwaf\s*\(\s*\)', (runtime / 'waf.lua').read_text(encoding='utf-8-sig')):
                 raise CheckError('runtime_entrypoint', '既有 waf.lua 入口不兼容', 'waf.lua')
             config = load(runtime / 'config.json', dict)
+            profile = source_profile(runtime)
+            candidates = domestic_plan(runtime) if profile == DOMESTIC_PROFILE else {}
+            if 'config.json' in candidates:
+                config = json.loads(candidates['config.json'])
             load(runtime / 'site.json', dict)
             totals = load(runtime / 'total.json', dict)
             if not isinstance(totals.get('sites'), dict) or not isinstance(totals.get('rules'), dict):
@@ -510,7 +839,11 @@ try:
                     raise CheckError('scan_rules', '扫描器规则结构不兼容：scan_black.json', 'scan_black.json')
             for name in ('cn', 'ip_black', 'ip_white', 'url_white', 'url_black',
                          'user_agent_white', 'user_agent', 'header', 'post', 'cookie', 'args', 'url', 'head_white'):
-                load(runtime / 'rule' / (name + '.json'), list)
+                key = 'rule/' + name + '.json'
+                if key not in candidates:
+                    load(runtime / key, list)
+            print(json.dumps({'source_profile': profile,
+                              'migration_digest': migration_digest(migration_entries(runtime), runtime) if candidates else ''}))
     else:
         raise ValueError('未知的安装器辅助操作')
 except Exception as error:
@@ -520,8 +853,7 @@ except Exception as error:
                           'resource': error.resource if isinstance(error, CheckError) else ''}))
     sys.exit(1)
 PY
-)" "$root" "$plugin" "$@"
-}
+helper() { "$python" -B "$helper_source" "$root" "$plugin" "$@"; }
 
 stage=preflight
 message='升级失败；仅支持已安装的 legacy free_waf，请检查现有运行文件和 Nginx 配置。'
@@ -535,6 +867,9 @@ nested=false
 diagnostic=
 export GPT_FIREWALL_RUNTIME_WRITE=
 export GPT_FIREWALL_RUNTIME_BACKUP=
+export GPT_FIREWALL_SOURCE_PROFILE=unidentified
+export GPT_FIREWALL_MIGRATION_DIGEST=
+export GPT_FIREWALL_DATA_ROLLBACK=not_needed
 
 nginx_test() { "$nginx" -t -p "$nginx_prefix" -c "$nginx_conf"; }
 nginx_reload() { "$nginx" -s reload -p "$nginx_prefix" -c "$nginx_conf"; }
@@ -545,6 +880,14 @@ finish() {
     trap - EXIT INT TERM
     if [[ $code != 0 ]]; then
         outcome=failed
+        if [[ -n $backup && -f $backup/compatibility-migration.json ]]; then
+            if GPT_FIREWALL_DATA_ROLLBACK=$(helper restore_domestic "$backup"); then
+                export GPT_FIREWALL_DATA_ROLLBACK
+            else
+                export GPT_FIREWALL_DATA_ROLLBACK=conflict_or_failed
+                message+=' 数据回退发现冲突或失败，保留同期修改和迁移备份；不再重载，请人工核查。'
+            fi
+        fi
         if [[ $changed == true ]]; then
             rollback=restore_failed
             if rollback=$(helper restore "$runtime/init.lua" "$backup/init.lua" "$GPT_FIREWALL_RUNTIME_WRITE" "$GPT_FIREWALL_RUNTIME_BACKUP"); then
@@ -552,6 +895,8 @@ finish() {
                     message+=' 检测到运行文件所有权或摘要冲突，保留同期修改和备份；请人工恢复。'
                 elif [[ $rollback == backup_invalid ]]; then
                     message+=' 原始备份缺失或摘要不符，未覆盖运行文件、未重载；请人工恢复。'
+                elif [[ $rollback == restored && $GPT_FIREWALL_DATA_ROLLBACK == conflict_or_failed ]]; then
+                    rollback=restore_data_conflict
                 elif [[ $rollback == restored && $loaded == true ]]; then
                     if ! nginx_test; then rollback=restore_test_failed
                     elif ! nginx_reload; then rollback=restore_reload_failed
@@ -560,6 +905,12 @@ finish() {
             else
                 rollback=restore_failed
             fi
+        fi
+    elif [[ -n $backup ]]; then
+        if ! helper commit_domestic "$backup"; then
+            code=1
+            outcome=failed
+            message='更新已执行但迁移完成记录未写入；请核查备份与运行状态，不可直接重试。'
         fi
     fi
     [[ -z $temporary || ! -e $temporary ]] || rm -f -- "$temporary"
@@ -571,6 +922,7 @@ finish() {
             helper lock release || code=1
         fi
     fi
+    rm -f -- "$helper_source"
     printf '%s\n' "$message"
     exit "$code"
 }
@@ -596,7 +948,18 @@ for directory in "$plugin/html" "$plugin/docs" "$plugin/docs/images"; do
 done
 helper status running "$operation" "$stage" "$message" false false "$rollback" '' ''
 [[ -x $nginx && ! -L $nginx ]] || fail '缺少 aaPanel 自带 Nginx；未更新运行文件。'
-diagnostic=$(helper preflight "$operation") || exit 1
+if [[ $operation == install && -d $runtime && ! -L $runtime ]] && helper policy_lock supported; then
+    command -v flock >/dev/null || fail '缺少配置锁工具，未更新运行文件。'
+    helper policy_lock prepare || fail '无法安全准备配置锁，未更新运行文件。'
+    exec {policy_descriptor}<>"$runtime/.endpoint-policy.lock"
+    flock -n "$policy_descriptor" || fail '站点配置正在修改，未更新运行文件。'
+    helper policy_lock verify "$policy_descriptor" || fail '配置锁身份核对失败，未更新运行文件。'
+fi
+preflight=$(helper preflight "$operation") || { diagnostic=$preflight; exit 1; }
+if [[ $operation == install ]]; then
+    GPT_FIREWALL_SOURCE_PROFILE=$(printf '%s' "$preflight" | "$python" -c 'import json,sys; print(json.load(sys.stdin)["source_profile"])')
+    GPT_FIREWALL_MIGRATION_DIGEST=$(printf '%s' "$preflight" | "$python" -c 'import json,sys; print(json.load(sys.stdin)["migration_digest"])')
+fi
 nginx_test || fail '现有 Nginx 配置测试失败；未更新运行文件。' '{"code":"nginx_test_failed","resource":"nginx.conf"}'
 dump=$("$nginx" -T -p "$nginx_prefix" -c "$nginx_conf" 2>/dev/null) || fail '无法安全读取 Nginx 生效配置；未更新运行文件。'
 if loaded=$(printf '%s\n' "$dump" | helper active); then
@@ -620,6 +983,9 @@ backup=$(mktemp -d "$runtime/.gpt-firewall-backup.XXXXXX")
 GPT_FIREWALL_RUNTIME_BACKUP=$(helper fingerprint "$runtime/init.lua")
 cp -p "$runtime/init.lua" "$backup/init.lua"
 helper fingerprint "$backup/init.lua" "$GPT_FIREWALL_RUNTIME_BACKUP" >/dev/null
+stage=data_migration
+helper migrate_domestic "$backup" || fail '国内版数据迁移失败；将按本次迁移清单回退，请核查备份。'
+stage=storage_preparation
 diagnostic=$(printf '%s\n' "$dump" | helper prepare_storage "$backup") || fail '无法安全准备运行存储，未替换运行代码；请核查本次备份。' "$diagnostic"
 unset dump
 diagnostic=
@@ -639,12 +1005,16 @@ mv -f "$temporary" "$runtime/init.lua"
 temporary=
 stage=nginx_test
 nginx_test || fail '更新后的 Nginx 测试失败；将恢复原 init.lua。' '{"code":"nginx_test_failed","resource":"nginx.conf"}'
+helper verify_domestic "$backup" || fail '兼容迁移激活前核对失败；将尝试有界回退，请核查数据和备份。'
 if [[ $loaded == true ]]; then
     stage=nginx_reload
     nginx_reload || fail 'Nginx 重载失败；将恢复原 init.lua 并尝试测试、重载旧版本。' '{"code":"nginx_reload_failed","resource":"nginx.conf"}'
 fi
 stage=complete
 message='离线兼容升级完成；已更新运行 init.lua 并准备专用统计存储与数据权限，配置、规则内容、站点、日志及封禁状态未改动。'
+if [[ $GPT_FIREWALL_SOURCE_PROFILE == bt-free-waf-8.4 ]]; then
+    message='国内第三方 8.4 兼容升级完成；仅补齐已核验的缺失字段、域名别名及 CDN 取值方向，保留无歧义的规则例外；原配置与规则已独立备份，检测行为差异请查看安装状态中的兼容提示。'
+fi
 if [[ $loaded == false ]]; then
     message+=' 防护保持未启用，未创建接入配置、未重载 Nginx；新的 Lua 尚未经活动 Nginx 执行验证。'
 fi

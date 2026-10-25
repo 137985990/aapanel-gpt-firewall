@@ -107,7 +107,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
     __state = {True:'开启',False:'关闭',0:'停用',1:'启用'}
     __config = None
     __PATH='/www/server/panel/plugin/free_waf/'
-    __log_types = ('GPT Firewall', 'Nginx free firewall')
+    __log_types = ('GPT Firewall', 'Nginx free firewall', 'Nginx免费防火墙')
 
     def __local_service(self, name):
         import importlib.util
@@ -122,13 +122,13 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         module = sys.modules.get(key)
         if (module is None or getattr(module, '__file__', None) != path
                 or getattr(module, '_source_signature', None) != signature
-                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.8'):
+                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.9'):
             spec = importlib.util.spec_from_file_location(key, path)
             module = importlib.util.module_from_spec(spec)
             # Read source explicitly: same-second upgrades must not reuse stale bytecode.
             source = spec.loader.get_source(key)
             exec(compile(source, path, 'exec', dont_inherit=True), module.__dict__)
-            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.8':
+            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.9':
                 raise ValueError('服务版本不匹配，请重新打开插件')
             module._source_signature = signature
             sys.modules[key] = module
@@ -833,70 +833,6 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             raise ValueError('站点名称不正确')
         return value
 
-    def __endpoint_id(self, value):
-        if type(value) is not str or not re.fullmatch(r'[0-9a-f]{32}', value):
-            raise ValueError('规则 ID 不正确')
-        return value
-
-    def __endpoint_path(self, value, policy=True):
-        if (type(value) is not str or not value.startswith('/') or len(value.encode('utf-8')) > 512
-                or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in value)
-                or any(c in value for c in ('?', '#', '\\')) or '//' in value
-                or any(component in ('.', '..') for component in value.split('/'))
-                or (policy and any(c in value for c in '%^$*+()[]{}|'))):
-            raise ValueError('路径必须为不含参数、编码歧义、正则或点路径段的绝对路径')
-        return value
-
-    def __endpoint_rule(self, policy, stored=False):
-        required = {'name', 'match', 'path', 'method', 'window_seconds', 'max_requests', 'ban_seconds'}
-        optional = {'id', 'enabled', 'action'}
-        if type(policy) is not dict or set(policy) - (required | optional) or not required.issubset(policy):
-            raise ValueError('规则字段不完整或包含未知字段')
-        if stored and not optional.issubset(policy):
-            raise ValueError('已有规则字段不完整')
-        result = dict(policy)
-        result.setdefault('enabled', False)
-        result.setdefault('action', 'observe')
-        name = result['name']
-        if (type(name) is not str or not name.strip() or len(name) > 128
-                or any(ord(c) < 32 or ord(c) == 127 for c in name)):
-            raise ValueError('规则名称须为 1 至 128 字符且不含控制字符')
-        if type(result['enabled']) is not bool:
-            raise ValueError('启用状态必须是布尔值')
-        for key, choices in (('action', ('observe', 'reject', 'ban')), ('match', ('exact', 'prefix')),
-                             ('method', ('ALL', 'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'))):
-            if type(result[key]) is not str or result[key] not in choices:
-                raise ValueError('规则选项不正确：' + key)
-        result['path'] = self.__endpoint_path(result['path'])
-        for key, maximum in (('window_seconds', 3600), ('max_requests', 100000), ('ban_seconds', 28800)):
-            if type(result[key]) is not int or not 1 <= result[key] <= maximum:
-                raise ValueError('规则数值类型或范围不正确：' + key)
-        if 'id' in result:
-            self.__endpoint_id(result['id'])
-        return result
-
-    def __endpoint_site(self, get):
-        site_name = self.__endpoint_site_name(getattr(get, 'siteName', None))
-        # Unlike get_site_config, this read cannot migrate sites, prune logs or reload.
-        raw = public.readFile(self.__path + 'site.json')
-        config = json.loads(raw)
-        if type(config) is not dict or type(config.get(site_name)) is not dict:
-            raise ValueError('站点不存在或站点配置不正确')
-        rules = config[site_name].get('endpoint_limits', [])
-        if type(rules) is not list or len(rules) > 50:
-            raise ValueError('接口规则必须为最多 50 条的列表')
-        rules = [self.__endpoint_rule(rule, stored=True) for rule in rules]
-        if len({rule['id'] for rule in rules}) != len(rules):
-            raise ValueError('已有规则 ID 重复')
-        return site_name, config, rules, raw
-
-    def get_endpoint_policies(self, get):
-        try:
-            site_name, config, rules, raw = self.__endpoint_site(get)
-            return dict(status=True, siteName=site_name, rules=rules)
-        except Exception:
-            return public.returnMsg(False, '无法读取接口规则，请检查站点名称和已有规则格式。')
-
     def __checked_nginx_reload(self):
         self.__reload_panel_nginx()
 
@@ -1252,7 +1188,8 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             from contextlib import ExitStack
             with ExitStack() as held:
                 try:
-                    held.enter_context(self.__endpoint_transaction())
+                    read_only = operation.__name__.startswith('get_') or operation.__name__ == '__check_site'
+                    held.enter_context(self.__endpoint_transaction(create=not read_only))
                 except (OSError, ValueError):
                     if operation.__name__.startswith('__'):
                         raise
@@ -1260,7 +1197,9 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                 return operation(self, *args, **kwargs)
         return call
 
-    def __endpoint_transaction(self):
+    def __endpoint_transaction(self, create=True):
+        # Historical name/path: this lock is shared by site configuration writers.
+        # Keep the path stable so old and upgraded panel workers use the same lock.
         from contextlib import contextmanager
         import stat
 
@@ -1276,8 +1215,17 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                 yield
                 return
             self.__no_link_path(os.path.dirname(path))
-            flags = os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
-            descriptor = os.open(path, flags, 0o600)
+            flags = os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
+            if create:
+                flags |= os.O_CREAT
+            try:
+                descriptor = os.open(path, flags, 0o600)
+            except FileNotFoundError:
+                if create:
+                    raise
+                # Reads must not initialize storage; existing writers still serialize reads.
+                yield
+                return
             try:
                 info = os.fstat(descriptor)
                 current = self.__no_link_path(path)
@@ -1300,220 +1248,8 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                 os.close(descriptor)
         return locked()
 
-    def __write_endpoint_policies(self, site_name, config, rules, original):
-        if os.path.lexists(self.__path + '.policy-recovery/pending.json'):
-            return public.returnMsg(False, '策略恢复未确认，停止接口策略写入，请先人工核查。')
-        path = self.__path + 'site.json'
-        config[site_name]['endpoint_limits'] = rules
-        candidate = json.dumps(config)
-        if public.readFile(path) != original:
-            return public.returnMsg(False, '站点配置已变更，请刷新后重试。')
-        try:
-            if public.writeFile(path, candidate) is not True:
-                raise OSError('写入失败')
-            if public.readFile(path) != candidate:
-                raise OSError('写入核实失败')
-            if self.__checked_nginx_reload() is False:
-                raise RuntimeError('生效失败')
-        except Exception:
-            try:
-                # Roll back only our optional field; retain unrelated concurrent edits.
-                current_raw = public.readFile(path)
-                try:
-                    current = json.loads(current_raw)
-                    previous = json.loads(original)
-                    if current_raw in (original, candidate):
-                        restore = original
-                    else:
-                        if (type(current) is not dict or type(current.get(site_name)) is not dict
-                                or current[site_name].get('endpoint_limits') != rules):
-                            raise ValueError('配置已被其他操作修改')
-                        if 'endpoint_limits' in previous[site_name]:
-                            current[site_name]['endpoint_limits'] = previous[site_name]['endpoint_limits']
-                        else:
-                            current[site_name].pop('endpoint_limits', None)
-                        restore = json.dumps(current)
-                except (json.JSONDecodeError, TypeError):
-                    restore = original
-                if public.writeFile(path, restore) is not True:
-                    raise OSError('恢复失败')
-                if public.readFile(path) != restore:
-                    raise OSError('恢复核实失败')
-                if self.__checked_nginx_reload() is False:
-                    raise RuntimeError('恢复生效失败')
-            except Exception:
-                return public.returnMsg(False, '接口规则保存或生效失败，自动恢复未确认，可能已部分处理；请检查配置和 Nginx 状态。')
-            return public.returnMsg(False, '接口规则保存或生效失败，已恢复原接口规则；请检查后重试。')
-        return dict(status=True, siteName=site_name, rules=rules)
-
-    def save_endpoint_policy(self, get):
-        if not self.__update_request_is_post():
-            return public.returnMsg(False, '接口规则保存仅接受面板 POST 请求。')
-        try:
-            with self.__endpoint_transaction():
-                return self.__save_endpoint_policy_locked(get)
-        except Exception:
-            return public.returnMsg(False, '配置正在修改或配置锁不可用，未保存；请稍后重试。')
-
-    def __save_endpoint_policy_locked(self, get):
-        try:
-            text = getattr(get, 'policy', None)
-            if type(text) is not str or len(text) > 16384:
-                raise ValueError('规则须为 JSON 对象字符串')
-            submitted = json.loads(text)
-            policy = self.__endpoint_rule(submitted)
-            site_name, config, rules, raw = self.__endpoint_site(get)
-            if 'id' in policy:
-                index = next((i for i, rule in enumerate(rules) if rule['id'] == policy['id']), None)
-                if index is None:
-                    raise ValueError('规则不存在于此站点')
-                for optional in ('enabled', 'action'):
-                    if optional not in submitted:
-                        policy[optional] = rules[index][optional]
-                rules[index] = policy
-            else:
-                if len(rules) >= 50:
-                    raise ValueError('每站点最多 50 条接口规则')
-                import uuid
-                policy['id'] = uuid.uuid4().hex
-                rules.append(policy)
-            return self.__write_endpoint_policies(site_name, config, rules, raw)
-        except Exception:
-            return public.returnMsg(False, '接口规则保存失败：请检查站点、规则字段、ID 和数值范围。')
-
-    def delete_endpoint_policy(self, get):
-        if not self.__update_request_is_post():
-            return public.returnMsg(False, '接口规则删除仅接受面板 POST 请求。')
-        try:
-            with self.__endpoint_transaction():
-                return self.__delete_endpoint_policy_locked(get)
-        except Exception:
-            return public.returnMsg(False, '配置正在修改或配置锁不可用，未删除；请稍后重试。')
-
-    def __delete_endpoint_policy_locked(self, get):
-        try:
-            ident = self.__endpoint_id(getattr(get, 'id', None))
-            site_name, config, rules, raw = self.__endpoint_site(get)
-            remaining = [rule for rule in rules if rule['id'] != ident]
-            if len(remaining) == len(rules):
-                raise ValueError('规则不存在于此站点')
-            return self.__write_endpoint_policies(site_name, config, remaining, raw)
-        except Exception:
-            return public.returnMsg(False, '接口规则删除失败：请检查站点和规则 ID。')
-
-    def __endpoint_event(self, row):
-        import datetime
-        import ipaddress
-        if type(row) is not dict:
-            raise ValueError('事件格式不正确')
-        timestamp = row.get('timestamp')
-        if type(timestamp) is not str or len(timestamp) != 19:
-            raise ValueError('时间不正确')
-        datetime.datetime.strptime(timestamp, '%Y-%m-%d %H:%M:%S')
-        site = self.__endpoint_site_name(row.get('site'))
-        ip = row.get('ip')
-        if type(ip) is not str or '%' in ip or len(ip) > 45:
-            raise ValueError('IP 不正确')
-        ip = str(ipaddress.ip_address(ip))
-        path = row.get('path')
-        if type(path) is not str:
-            raise ValueError('路径不正确')
-        path = self.__endpoint_path(path.split('?', 1)[0].split('#', 1)[0], policy=False)
-        method, action = row.get('method'), row.get('action')
-        if method not in ('GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'):
-            raise ValueError('请求方法不正确')
-        if action not in ('observe', 'reject', 'ban'):
-            raise ValueError('动作不正确')
-        name = row.get('rule_name')
-        if type(name) is not str or len(name) > 240:
-            raise ValueError('规则名称不正确')
-        name = ''.join(c for c in name if ord(c) >= 32 and ord(c) != 127)
-        # JSON values stay raw; the UI owns the single HTML-escaping boundary.
-        event = dict(timestamp=timestamp, site=site, ip=ip, path=path,
-                     method=method, rule_id=self.__endpoint_id(row.get('rule_id')), rule_name=name, action=action)
-        for key, low, high in (('count', 0, 9007199254740991), ('limit', 1, 100000),
-                               ('window_seconds', 1, 3600), ('retry_after', 0, 28800)):
-            value = row.get(key)
-            if type(value) is not int or not low <= value <= high:
-                raise ValueError('事件数值不正确')
-            event[key] = value
-        return event
-
-    def get_endpoint_policy_events(self, get):
-        import datetime
-        try:
-            days = getattr(get, 'days', 1)
-            if type(days) is str and re.fullmatch(r'[1-7]', days):
-                days = int(days)
-            if type(days) is not int or not 1 <= days <= 7:
-                raise ValueError('天数必须为 1 至 7')
-            site = getattr(get, 'siteName', '')
-            ident = getattr(get, 'rule_id', '')
-            if site:
-                self.__endpoint_site_name(site)
-            if ident:
-                self.__endpoint_id(ident)
-            if type(site) is not str or type(ident) is not str:
-                raise ValueError('筛选条件不正确')
-        except Exception:
-            return public.returnMsg(False, '事件查询参数不正确。')
-        root = '/www/wwwlogs/free_waf_log'
-        try:
-            # Only the trusted server config may choose the log directory, never get.*.
-            root = self.get_config(None).get('logs_path') or root
-            root = self.__local_absolute_path(root)
-        except Exception:
-            root = '/www/wwwlogs/free_waf_log'
-        coverage = dict(partial=False, notice='仅展示采样记录事件，不代表全部请求、全部命中或精确历史总量；最多读取 1MB、返回最近 200 条。')
-        remaining, events = 1024 * 1024, []
-        today = datetime.date.today()
-        for offset in range(days):
-            if remaining <= 0:
-                coverage['partial'] = True
-                break
-            day = (today - datetime.timedelta(days=offset)).isoformat()
-            path = os.path.join(root, 'endpoint_' + day + '.jsonl')
-            try:
-                with self.__open_regular_file(path) as stream:
-                    size = stream.seek(0, os.SEEK_END)
-                    amount = min(remaining, size)
-                    start = max(0, size - amount)
-                    stream.seek(start)
-                    payload = stream.read(amount)
-                    remaining -= len(payload)
-                    if start:
-                        coverage['partial'] = True
-                        # The first suffix record may have started outside our read budget.
-                        payload = payload.partition(b'\n')[2]
-            except FileNotFoundError:
-                continue
-            except (OSError, ValueError):
-                coverage['partial'] = True
-                continue
-            for line in reversed(payload.splitlines()):
-                if not line.strip():
-                    continue
-                try:
-                    event = self.__endpoint_event(json.loads(line))
-                    if event['timestamp'][:10] != day:
-                        raise ValueError('事件日期不匹配')
-                except (ValueError, TypeError, OverflowError, RecursionError):
-                    coverage['partial'] = True
-                    continue
-                if (not site or event['site'] == site) and (not ident or event['rule_id'] == ident):
-                    events.append(event)
-        events.sort(key=lambda event: event['timestamp'], reverse=True)
-        if len(events) > 200:
-            coverage['partial'] = True
-            events = events[:200]
-        summary = dict(recorded_events=len(events), observed=0, rejected=0, banned=0)
-        for event in events:
-            summary[{'observe': 'observed', 'reject': 'rejected', 'ban': 'banned'}[event['action']]] += 1
-        return dict(status=True, events=events, coverage=coverage, summary=summary)
-    
     @__site_config_locked
     def get_site_config(self,get):
-        if not os.path.exists('/www/wwwlogs/free_waf_log'):os.mkdir('/www/wwwlogs/free_waf_log')
         site_config = public.readFile(self.__path + 'site.json')
         data =  self.__check_site(json.loads(site_config))
         if get:
@@ -3877,7 +3613,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
     def get_gl_logs(self, get):
         import page
         page = page.Page();
-        count = public.M('logs').where('type IN (?,?)', self.__log_types).count();
+        count = public.M('logs').where('type IN (?,?,?)', self.__log_types).count();
         limit = 12;
         info = {}
         info['count'] = count
@@ -3894,7 +3630,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
 
         # 获取分页数据
         data['page'] = page.GetPage(info, '1,2,3,4,5,8');
-        data['data'] = public.M('logs').where('type IN (?,?)', self.__log_types).order('id desc').limit(
+        data['data'] = public.M('logs').where('type IN (?,?,?)', self.__log_types).order('id desc').limit(
             str(page.SHIFT) + ',' + str(page.ROW)).field('log,addtime').select();
         return data;
 
@@ -4168,7 +3904,15 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             result.update(diagnostic_code=code, message=messages.get(code, '无法核验接入状态，请在服务器本地检查。'))
         return result
     
-    def __write_site_domains(self):
+    @__site_config_locked
+    def __write_site_domains(self, site_config=None):
+        if os.path.lexists(self.__path + '.policy-recovery/pending.json'):
+            raise RuntimeError('上次配置发布尚待人工恢复')
+        config_path = self.__path + 'config.json'
+        config_raw = self.__policy_file_bytes(config_path)
+        config = json.loads(config_raw) if config_raw is not False else {}
+        if type(config) is not dict:
+            raise ValueError('全局配置格式不正确')
         sites = public.M('sites').field('name,id').select();
         domain_rows = public.M('domain').field('pid,name').select()
         binding_rows = public.M('binding').field('pid,domain').select()
@@ -4184,6 +3928,45 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             tmp['domains'] = sorted(set(domains_by_site.get(my_site['id'], [])))
             my_domains.append(tmp)
         body = json.dumps(my_domains)
+        if config.get('compatibility_profile') == 'bt-free-waf-8.4':
+            site_path = self.__path + 'site.json'
+            site_raw = self.__repeat_config_bytes()
+            current_sites = json.loads(site_raw) if site_config is None else site_config
+            if type(current_sites) is not dict:
+                raise ValueError('站点配置格式不正确')
+            aliases = {}
+
+            def safe_name(name):
+                return (type(name) is str and 0 < len(name) <= 253 and
+                        not re.search(r'[/\\\x00-\x20]', name) and name not in ('.', '..'))
+
+            for item in my_domains:
+                owner = item['name']
+                if not safe_name(owner) or type(current_sites.get(owner)) is not dict:
+                    raise ValueError('域名所属站点没有有效防护配置')
+                for alias in item['domains']:
+                    if (not safe_name(alias) or alias in aliases and aliases[alias] != owner or
+                            alias in current_sites and alias != owner):
+                        raise ValueError('域名别名归属存在冲突，未更新配置')
+                    aliases[alias] = owner
+            config['site_aliases'] = aliases
+            domain_path = self.__path + 'domains.json'
+            originals = {config_path: config_raw, domain_path: self.__policy_file_bytes(domain_path),
+                         site_path: site_raw}
+            candidates = {config_path: json.dumps(config).encode('utf-8'),
+                          domain_path: body.encode('utf-8')}
+            if site_config is not None:
+                candidates[site_path] = json.dumps(site_config).encode('utf-8')
+            changes = {}
+            for path, value in candidates.items():
+                original = originals[path]
+                # Keep formatting/BOM and avoid reloading a semantically unchanged snapshot.
+                if (original is False or json.dumps(json.loads(value), sort_keys=True) !=
+                        json.dumps(json.loads(original), sort_keys=True)):
+                    changes[path] = value
+            if changes:
+                self.__publish_policy_files(changes, expected=originals)
+            return my_domains
         if public.readFile(self.__path + 'domains.json') != body:
             public.writeFile(self.__path + 'domains.json', body)
         return my_domains
@@ -4242,30 +4025,41 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             if not valid:
                 raise ValueError('规则内容格式不正确：' + name)
 
+    def __policy_file_bytes(self, path):
+        try:
+            with self.__open_regular_file(path) as stream:
+                return stream.read()
+        except FileNotFoundError:
+            return False
+
     def __atomic_policy_text(self, path, text, expected=None, ownership=None):
         import tempfile
         import stat
+        binary = type(text) is bytes
+        read = self.__policy_file_bytes if binary else public.readFile
         parent = os.path.dirname(path)
         self.__no_link_path(parent)
         previous = os.lstat(path) if os.path.lexists(path) else None
         if previous is not None and not stat.S_ISREG(previous.st_mode):
             raise ValueError('配置目标不是普通文件')
         fd, staged = tempfile.mkstemp(prefix='.policy-', dir=parent)
-        os.close(fd)
         try:
-            if public.writeFile(staged, text) is False or public.readFile(staged) != text:
+            with os.fdopen(fd, 'wb') as stream:
+                if binary:
+                    stream.write(text)
+            if (not binary and public.writeFile(staged, text) is False) or read(staged) != text:
                 raise OSError('配置写入核验失败')
             os.chmod(staged, stat.S_IMODE(previous.st_mode) if previous else 0o600)
             if previous and hasattr(os, 'chown'):
                 os.chown(staged, previous.st_uid, previous.st_gid)
             with open(staged, 'r+b') as stream:
                 os.fsync(stream.fileno())
-            if public.readFile(path) != (expected if expected is not None else False):
+            if read(path) != (expected if expected is not None else False):
                 raise RuntimeError('发布前配置发生同期修改')
             os.replace(staged, path)
             if ownership is not None:
                 ownership.add(path)
-            if public.readFile(path) != text:
+            if read(path) != text:
                 raise OSError('配置发布核验失败')
         finally:
             if os.path.exists(staged):
@@ -4318,6 +4112,8 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         return forwarded
 
     def __publish_policy_files(self, changes, expected=None, migration=None):
+        binary = any(type(value) is bytes for value in changes.values())
+        read = self.__policy_file_bytes if binary else public.readFile
         originals, applied, published = dict(expected or {}), [], set()
         site_path = self.__path + 'site.json'
         for path in set(changes) | set(originals):
@@ -4325,14 +4121,14 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             if os.path.lexists(path):
                 self.__no_link_path(path)
                 if path not in originals:
-                    originals[path] = self.__read_policy(path)
-                if type(originals[path]) is not str:
+                    originals[path] = read(path) if binary else self.__read_policy(path)
+                if type(originals[path]) is not (bytes if binary else str):
                     raise OSError('无法读取旧配置')
             else:
                 originals.setdefault(path, None)
                 if originals[path] is False:
                     originals[path] = None
-            if public.readFile(path) != (originals[path] if originals[path] is not None else False):
+            if read(path) != (originals[path] if originals[path] is not None else False):
                 raise RuntimeError('候选构造后配置已被其他操作修改')
         recovery = self.__path + '.policy-recovery'
         self.__no_link_path(os.path.dirname(recovery))
@@ -4341,11 +4137,15 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         pending = recovery + '/pending.json'
         if os.path.lexists(pending):
             raise RuntimeError('上次策略发布尚待人工恢复')
-        journal = json.dumps({'format_version': 1, 'originals': originals, 'candidates': changes})
+        # JSON stores exact UTF-8 text; byte snapshots also retain CRLF/BOM on rollback.
+        snapshots = {key: {path: value.decode('utf-8') if type(value) is bytes else value
+                           for path, value in values.items()}
+                     for key, values in (('originals', originals), ('candidates', changes))}
+        journal = json.dumps(dict(format_version=1, **snapshots))
         self.__atomic_policy_text(pending, journal)
         try:
             for path, candidate in changes.items():
-                if public.readFile(path) != (originals[path] if originals[path] is not None else False):
+                if read(path) != (originals[path] if originals[path] is not None else False):
                     raise RuntimeError('配置已被其他操作修改')
                 # Track attempts separately from successful replacement proofs.
                 applied.append(path)
@@ -4354,7 +4154,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                 raise RuntimeError('Nginx 生效核验失败')
             os.replace(pending, recovery + '/last.json')
         except Exception as failure:
-            current = {path: public.readFile(path) for path in originals}
+            current = {path: read(path) for path in originals}
             restore_plan, restored_paths = {}, []
             recovery_started = False
             try:
@@ -4385,7 +4185,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                 for path in order:
                     restore = restore_plan[path]
                     if restore is None:
-                        if public.readFile(path) != current[path]:
+                        if read(path) != current[path]:
                             raise RuntimeError('恢复前发生同期修改')
                         os.unlink(path)
                     elif restore != current[path]:
@@ -4405,14 +4205,14 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                         coherent[site_path] = json.dumps(candidate_site)
                     compensation_expected = {}
                     for path in coherent:
-                        actual = public.readFile(path)
+                        actual = read(path)
                         owned = (current.get(path), restore_plan.get(path), changes.get(path))
                         if actual not in owned:
                             raise RuntimeError('恢复期间有外部变更')
                         compensation_expected[path] = actual
                     for path, candidate in coherent.items():
                         expected = compensation_expected[path]
-                        if public.readFile(path) != expected:
+                        if read(path) != expected:
                             raise RuntimeError('补偿前发生同期修改')
                         if expected != candidate:
                             self.__atomic_policy_text(path, candidate, expected=expected)
@@ -4481,66 +4281,36 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
     
     @__site_config_locked
     def __check_site(self,site_config):
+        import copy
+        site_config = copy.deepcopy(site_config)
         sites = public.M('sites').field('name').select();
-        siteNames = []
-        n = 0
         for siteInfo in sites:
-            siteNames.append(siteInfo['name'])
             if siteInfo['name'] in site_config: continue
             site_config[siteInfo['name']] = self.__get_site_conf()
-            n += 1
-        old_site_config = site_config.copy()
         for sn in site_config.keys():
-            if sn in siteNames: 
-                if not 'retry_cycle' in site_config[sn]:
-                    site_config[sn]['retry_cycle'] = 60;
-                    n += 1;
-                if not 'cdn_header' in site_config[sn]:
-                    site_config[sn]['cdn_header'] = ['x-forwarded-for', 'x-real-ip'];
-                    n += 1;
-                if not 'cdn_trusted_proxy' in site_config[sn]:
-                    site_config[sn]['cdn_trusted_proxy'] = [];
-                    n += 1;
-                if not 'registration_guard' in site_config[sn] or type(site_config[sn]['registration_guard']) != dict:
-                    site_config[sn]['registration_guard'] = self.__get_registration_guard_conf();
-                    n += 1;
-                if not 'disable_rule' in site_config[sn]:
-                    site_config[sn]['disable_rule'] = {};
-                    n += 1;
-                for rule_name in ['url', 'post', 'args', 'cookie', 'user_agent', 'header']:
-                    if not rule_name in site_config[sn]['disable_rule']:
-                        site_config[sn]['disable_rule'][rule_name] = [];
-                        n += 1;
-                continue
-            del(old_site_config[sn])
-            self.__remove_log_file(sn)
-            n += 1
-        
-        if n > 0: 
-            site_config = old_site_config.copy()
-            self.__write_site_config(site_config)
-        
+            if not 'retry_cycle' in site_config[sn]:
+                site_config[sn]['retry_cycle'] = 60;
+            if not 'cdn_header' in site_config[sn]:
+                site_config[sn]['cdn_header'] = ['x-forwarded-for', 'x-real-ip'];
+            if not 'cdn_trusted_proxy' in site_config[sn]:
+                site_config[sn]['cdn_trusted_proxy'] = [];
+            if not 'registration_guard' in site_config[sn] or type(site_config[sn]['registration_guard']) != dict:
+                site_config[sn]['registration_guard'] = self.__get_registration_guard_conf();
+            if not 'disable_rule' in site_config[sn]:
+                site_config[sn]['disable_rule'] = {};
+            for rule_name in ['url', 'post', 'args', 'cookie', 'user_agent', 'header']:
+                if not rule_name in site_config[sn]['disable_rule']:
+                    site_config[sn]['disable_rule'][rule_name] = [];
+
         config = self.get_config(None)
-        logList = os.listdir(config['logs_path'])
         mday = time.strftime('%Y-%m-%d',time.localtime());
-        for sn in siteNames:
+        for sn in site_config:
             site_config[sn]['log_size'] = 0;
             day_log = config['logs_path'] + '/' + sn + '_' + mday + '.log';
-            if os.path.exists(day_log):
+            try:
                 site_config[sn]['log_size'] = os.path.getsize(day_log)
-            
-            tmp = []
-            for logName in logList:
-                if logName.find(sn + '_') != 0: continue;
-                tmp.append(logName)
-            
-            length = len(tmp) - config['log_save'];
-            if length > 0:
-                tmp = sorted(tmp)
-                for i in range(length):
-                    filename = config['logs_path'] + '/' + tmp[i];
-                    if not os.path.exists(filename): continue
-                    os.remove(filename)
+            except OSError:
+                pass
         return site_config;
     
     def __is_ipn(self,ipn):
@@ -4644,13 +4414,33 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
     
     @__site_config_locked
     def __write_site_config(self,site_config):
+        # UI projections are never part of the persisted site policy.
+        display_fields = ('top', 'siteName', 'log_size', 'total')
+        site_config = {name: {key: value for key, value in conf.items() if key not in display_fields}
+                       for name, conf in site_config.items()}
+        config_raw = self.__policy_file_bytes(self.__path + 'config.json')
+        if config_raw is not False and json.loads(config_raw).get('compatibility_profile') == 'bt-free-waf-8.4':
+            return self.__write_site_domains(site_config)
         original = self.__repeat_config_bytes()
         candidate = json.dumps(site_config).encode('utf-8')
         if (self.__write_repeat_site_config(candidate, expected=original) is False
                 or self.__repeat_config_bytes() != candidate):
             raise OSError('站点配置写入未核实，未刷新域名或重载服务')
-        self.__write_site_domains()
-        public.serviceReload();
+        try:
+            self.__write_site_domains()
+            if self.__checked_nginx_reload() is False:
+                raise RuntimeError('站点配置生效未核实')
+        except Exception as failure:
+            try:
+                # Restore only our candidate; never overwrite a concurrent editor.
+                if (self.__write_repeat_site_config(original, expected=candidate) is False
+                        or self.__repeat_config_bytes() != original):
+                    raise OSError('站点配置恢复未核实')
+                if self.__checked_nginx_reload() is False or self.__repeat_config_bytes() != original:
+                    raise RuntimeError('恢复后的站点配置或重载未核实')
+            except Exception as restore_failure:
+                raise RuntimeError('站点配置保存或生效失败，自动恢复未确认，可能已部分处理；请检查配置和 Nginx 状态。') from restore_failure
+            raise RuntimeError('站点配置保存或生效失败，已恢复原站点配置并核实重载。') from failure
     
     def __write_log(self,msg):
         public.WriteLog(self.__log_types[0],msg)

@@ -163,7 +163,7 @@ class UpdateServiceTest(unittest.TestCase):
     def test_version_and_bridge_contract_includes_published_prereleases(self):
         result = self.service.check()
         self.assertTrue(result['status'], result)
-        self.assertEqual(updater.PLUGIN_VERSION, '0.1.8')
+        self.assertEqual(updater.PLUGIN_VERSION, '0.1.9')
         self.assertEqual(result['current_version'], '0.1')
         self.assertEqual(result['latest_version'], '0.1.1')
         self.assertEqual(result['tag'], 'v0.1.1')
@@ -173,6 +173,18 @@ class UpdateServiceTest(unittest.TestCase):
         self.assertFalse(result['error'])
         self.assertIn('签名', result['warning'])
         self.assertEqual(set(updater.MANAGED_FILES), set(FILES))
+
+    def test_published_v018_can_discover_v019_without_installing(self):
+        self.write(self.plugin / 'info.json', json.dumps({'name': 'free_waf', 'versions': '0.1.8'}).encode())
+        self.releases = [json.loads(json.dumps(self.release).replace('0.1.1', '0.1.9'))]
+        result = self.service.check()
+        self.assertTrue(result['status'], result)
+        self.assertEqual(result['current_version'], '0.1.8')
+        self.assertEqual(result['latest_version'], '0.1.9')
+        self.assertEqual(result['tag'], 'v0.1.9')
+        self.assertTrue(result['available'], result)
+        self.assertFalse(self.spawn_calls)
+        self.assertFalse(self.install_calls)
 
     def test_numeric_order_draft_filter_and_short_version_equivalence(self):
         other = dict(self.release, tag_name='v0.1.10', assets=[])
