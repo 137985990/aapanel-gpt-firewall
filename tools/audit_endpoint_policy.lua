@@ -50,7 +50,7 @@ local function fixture()
     env.write_log = function() end
     env.write_drop_ip = function() end
     env.repeat_ban_event = function(...) f.events[#f.events + 1] = {...} end
-    for _,name in ipairs({'min_route', 'total_log_worker_init', 'repeat_ban_guard', 'registration_guard',
+    for _,name in ipairs({'min_route', 'total_log_worker_init', 'manual_site_ban_guard', 'repeat_ban_guard', 'registration_guard',
         'drop', 'ip_black', 'ban_empty_ua', 'url_black', 'drop_abroad', 'user_agent', 'header_rule',
         'url', 'args', 'cookie', 'scan_black', 'post', 'php_path', 'url_path', 'url_ext',
         'url_rule_ex', 'url_tell', 'post_data'}) do
@@ -58,7 +58,7 @@ local function fixture()
         env[key] = function() f.checks[key] = (f.checks[key] or 0) + 1 end
     end
     for _,name in ipairs({'is_runtime_ban_ipv4', 'is_runtime_ban_ip', 'endpoint_normalize_ip', 'endpoint_state_ip', 'clear_endpoint_state',
-        'rate_limit_response', 'cc_counter_key', 'cc', 'cc2', 'security_verification', 'run_btwaf'}) do
+        'rate_limit_response', 'cc_counter_key', 'cc_state_key', 'cc', 'cc2', 'security_verification', 'run_btwaf'}) do
         local text = assert(source:match('\nfunction ' .. name .. '%(.-\nend'), name)
         local chunk = assert(loadstring('local config,site_config,json=config,site_config,json\n' .. text, '@' .. name))
         setfenv(chunk, env); chunk()
@@ -108,11 +108,13 @@ check('enhanced CC still enforces its fingerprint threshold', function()
     for _=1,6 do assert(f:request() == 200) end
     assert(f:request() == 429)
 end)
-check('enhanced CC aggregates fingerprints but keeps site and path boundaries', function()
+check('enhanced CC separates client fingerprints, sites and paths', function()
     local f = fixture(); local env = f.env
     env.site_config['other.example'] = {cc = {increase = true}}
     for n=1,6 do env.ip = '192.0.2.' .. n; assert(not env.cc2()) end
-    env.ip = '192.0.2.8'; env.server_name = 'other.example'; assert(not env.cc2())
+    env.ip = '192.0.2.8'; assert(not env.cc2(),'different client inherited a mixed counter')
+    for _=1,5 do assert(not env.cc2()) end
+    env.server_name = 'other.example'; assert(not env.cc2())
     env.server_name = 'fixture.example'; env.ngx.var.uri = '/other'; assert(not env.cc2())
     env.ngx.var.uri = '/login'
     local ok, value = pcall(env.cc2)

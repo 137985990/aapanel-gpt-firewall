@@ -1,3 +1,4 @@
+import ast
 import json
 import hashlib
 import os
@@ -42,6 +43,22 @@ access_by_lua_file /www/server/free_waf/waf.lua;
 log_by_lua_block { if ban_404_accumulate then ban_404_accumulate() end }
 '''
 DOMESTIC_LUA_SHA256 = 'ad3c6b78342859fd9f5fa93a50d4cda2176a16ae832580ffe9c3819a47d4e873'
+
+
+class PublishedSourceFingerprintTest(unittest.TestCase):
+    def test_published_v019_runtime_is_an_explicitly_verified_source(self):
+        source = (PLUGIN_SOURCE / 'install.sh').read_text(encoding='utf-8')
+        helper = source.split("<<'PY'\n", 1)[1].split('\nPY\n', 1)[0]
+        module = ast.parse(helper)
+        assignment = next(node for node in module.body if isinstance(node, ast.Assign)
+                          and any(isinstance(target, ast.Name) and target.id == 'KNOWN_COMMUNITY_LUA_SHA256'
+                                  for target in node.targets))
+        fingerprints = ast.literal_eval(assignment.value.args[0])
+        # Exact init.lua digest from the retained, independently checked v0.1.9 release ZIP.
+        self.assertIn('53accfb89fa4f8dbec1a7a17e0ea3bc6d8eb62bf89f188913aff788686829d9c', fingerprints)
+        self.assertIn('b35499a6338bd4ee277152e087f987f4784370dd50d91a28e19da3266a251c0a', fingerprints)
+
+
 MOCK_NGINX = r'''#!/bin/bash
 set -eu
 root="${BASH_SOURCE[0]%/www/server/nginx/sbin/nginx}"
@@ -98,7 +115,7 @@ class OfflineInstallerTest(unittest.TestCase):
         for name in ("free_waf_main.py", "ban_store.py", "report_store.py", "website_statistics.py", "update_service.py"):
             self.write(self.plugin / name, "# imported backend; prior version unavailable\n")
         self.write(self.plugin / "index.html", "<html>already imported UI</html>\n")
-        self.write_json(self.plugin / "info.json", {"name": "free_waf", "versions": "0.1.9"})
+        self.write_json(self.plugin / "info.json", {"name": "free_waf", "versions": "0.1.10"})
         self.write_json(self.plugin / "rule.json", ["scanner_signature"])
         self.write(self.runtime / "init.lua", OLD_LUA)
         self.write(self.runtime / "waf.lua", "run_btwaf()\n")
@@ -201,7 +218,7 @@ class OfflineInstallerTest(unittest.TestCase):
         self.assertEqual((self.plugin / "free_waf_main.py").read_bytes(), backend)
         status = self.status()
         self.assertEqual(status["status"], "success")
-        self.assertEqual(status["version"], "0.1.9")
+        self.assertEqual(status["version"], "0.1.10")
         self.assertEqual(status["plugin_name"], "free_waf")
         self.assertTrue(status["waf_active"])
         self.assertTrue(status["runtime_changed"])
@@ -291,7 +308,7 @@ class OfflineInstallerTest(unittest.TestCase):
                 self.assertFalse(self.calls())
 
     def test_wrong_package_identity_is_rejected(self):
-        self.write_json(self.plugin / "info.json", {"name": "gpt_firewall", "versions": "0.1.9"})
+        self.write_json(self.plugin / "info.json", {"name": "gpt_firewall", "versions": "0.1.10"})
         self.assert_failed_without_runtime_change(self.run_installer(), self.state_snapshot())
 
     def test_wrong_package_version_is_rejected(self):

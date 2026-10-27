@@ -19,7 +19,7 @@ class ReleasePackageTest(unittest.TestCase):
         spec.loader.exec_module(self.builder)
 
     def test_v011_packages_local_services_and_regressions(self):
-        self.assertEqual(self.builder.VERSION, '0.1.9')
+        self.assertEqual(self.builder.VERSION, '0.1.10')
         for name in ('website_statistics.py', 'update_service.py', 'docs/UPDATES.md'):
             self.assertIn(name, self.builder.PLUGIN_FILES)
         for name in ('tests/test_website_statistics.py', 'tests/test_update_service.py',
@@ -38,6 +38,24 @@ class ReleasePackageTest(unittest.TestCase):
             service = updater.UpdateService(Path(directory) / 'panel/plugin/free_waf', test_mode=True)
             payloads = service._payloads(Path(result['archive']).read_bytes(), self.builder.VERSION)
             self.assertEqual(set(payloads), set(self.builder.PLUGIN_FILES))
+
+    def test_forum_regressions_ship_only_in_the_source_snapshot(self):
+        names = ('tests/test_forum_regressions.py', 'tests/test_post_forwarding_runtime.py')
+        for name in names:
+            self.assertIn(name, self.builder.SOURCE_FILES)
+            self.assertNotIn(name, self.builder.PLUGIN_FILES)
+        self.assertEqual(len(self.builder.PLUGIN_FILES), 21)
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.builder.build(ROOT, Path(directory) / 'output')
+            for name in names:
+                self.assertEqual((Path(result['source']) / name).read_bytes(), (ROOT / name).read_bytes())
+
+    def test_existing_defect_regressions_do_not_expand_runtime_payload(self):
+        for name in ('tests/test_cc_scope.py', 'tests/test_report_pagination_ui.js',
+                     'tests/test_cc_config_validation.py', 'tests/test_report_backend_regressions.py'):
+            self.assertIn(name, self.builder.SOURCE_FILES)
+            self.assertNotIn(name, self.builder.PLUGIN_FILES)
+        self.assertEqual(len(self.builder.PLUGIN_FILES), 21)
 
     def test_agent_entrypoint_ships_in_source_without_expanding_upgrade_manifest(self):
         self.assertIn('AGENTS.md', self.builder.SOURCE_FILES)
@@ -77,7 +95,7 @@ class ReleasePackageTest(unittest.TestCase):
                 self.assertEqual(set(names), {'free_waf/' + name for name in self.builder.PLUGIN_FILES})
                 self.assertTrue(all('..' not in name.split('/') and not name.startswith('/') for name in names))
                 metadata = json.loads(archive.read('free_waf/info.json'))
-                self.assertEqual(metadata['versions'], '0.1.9')
+                self.assertEqual(metadata['versions'], '0.1.10')
                 self.assertIn('install.sh', ' '.join(names))
             self.assertTrue((output / 'SHA256SUMS').is_file())
 

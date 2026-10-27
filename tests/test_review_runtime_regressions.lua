@@ -79,7 +79,7 @@ local function fixture(kernel)
         local out = {}; for n in ip:gmatch('%d+') do out[#out+1] = tonumber(n) end; return out
     end
     env.encode_json_array = function(rows) return #rows == 0 and '[]' or json.encode(rows) end
-    env.ngx = {shared={free_waf=dictionary(), free_waf_drop_ip=dictionary()}, WARN=4, worker={pid=function() return 7 end},
+    env.ngx = {shared={free_waf=dictionary(), free_waf_drop_ip=dictionary(), free_waf_drop_sum=dictionary()}, WARN=4, worker={pid=function() return 7 end},
         var={http_user_agent='fixture'}, localtime=function() return 'fixture-time' end,
         time=function() return f.now end, now=function() return f.now end,
         md5=function() serial=serial+1; return string.format('%032x', serial) end,
@@ -183,7 +183,8 @@ local function fixture(kernel)
     end}
     local helpers = {'read_file','read_file_body','write_file','runtime_file_stat','runtime_lock_metadata','repeat_ban_lock','repeat_ban_unlock',
         'runtime_atomic_write','with_ip_black_lock','total_log_path','total_log_warning','total_log_schedule',
-        'total_log_flush','total_log_worker_init','inc_log','write_log','url_rule_ex','add_ip_black_exact',
+        'total_log_flush','total_log_worker_init','inc_log','write_log','get_boundary','is_form_request','post','url_rule_ex','add_ip_black_exact',
+        'is_runtime_ban_ipv4','is_runtime_ban_ip','endpoint_normalize_ip','cc_state_identity','clear_cc_state',
         'remove_permanent_ban_ip','clean_btwaf_drop_ip'}
     for _,name in ipairs(helpers) do
         local start = source:find('function '..name..'%(')
@@ -226,10 +227,129 @@ check('R03 JSON and disk-backed unknown body skip form parsing', function()
         local f=fixture(); f.env.site_config.fixture.url_rule={{'.*','needle'}}
         if kind=='json' then f.is_json=true; f.env.request_header['content-type']='application/json'
         elseif kind=='disk' then f.body_file='/fixture/body'
-        elseif kind=='large' then f.body=string.rep('x',65536)
+        elseif kind=='large' then f.body=string.rep('x',65537)
         else f.env.request_header['content-length']='invalid' end
         assert(f.env.url_rule_ex()==false)
         assert(not f.form_reads, 'unsafe form parsing: '..kind)
+    end
+end)
+check('forum current URL form ignores prior request arguments', function()
+    local f=fixture(); f.env.site_config.fixture.url_rule={{'.*','needle'}}
+    f.body='field=current'; f.env.request_args={field='previous-user'}
+    f.env.ngx.req.get_post_args=function() return {field='current'} end
+    local inspected
+    f.env.is_ngx_match=function(_,value,kind) if kind=='post' then inspected=value.field end; return false end
+    assert(f.env.url_rule_ex()==false)
+    assert(inspected=='current','URL policy reused another request form')
+    assert(f.env.request_args.field=='previous-user','URL policy overwrote shared scratch state')
+end)
+check('forum POST parser keeps form arguments local', function()
+    local f=fixture(); f.env.config.post={open=true}
+    f.env.get_boundary=function() return nil end
+    local sentinel={field='previous-user'}; f.env.request_args=sentinel
+    assert(f.env.post()==false)
+    assert(f.env.request_args==sentinel,'POST policy published request parameters into worker globals')
+    assert(f.env.content_length==nil and f.env.max_len==nil,'POST policy leaked parser scratch state')
+end)
+check('forum disk-backed POST never enters unsupported form parser', function()
+    local f=fixture(); f.env.config.post={open=true}
+    f.env.get_boundary=function() return nil end
+    f.body_file='/fixture/body'
+    f.env.ngx.req.get_post_args=function()
+        f.form_reads=(f.form_reads or 0)+1
+        return nil,'request body in temp file not supported'
+    end
+    assert(f.env.post()==false,'disk-backed request should remain available for upstream')
+    assert(not f.form_reads,'disk-backed body entered an unsupported form parser')
+end)
+check('forum POST with unknown length respects the form inspection limit', function()
+    local f=fixture(); f.env.config.post={open=true}
+    f.env.get_boundary=function() return nil end
+    f.body=string.rep('x',65537)
+    assert(f.env.post()==false)
+    assert(not f.form_reads,'unknown-length large body entered the legacy form parser')
+end)
+check('forum non-form bodies never enter either form parser', function()
+    for _,content_type in ipairs({'multipart/form-data; boundary=fixture', 'MULTIPART/FORM-DATA; BOUNDARY=fixture',
+        'image/png', 'application/octet-stream', 'text/plain', 'application/xml', 'application/json',
+        'application/vnd.api+json', {'image/png','image/png'}}) do
+        for _,name in ipairs({'post','url_rule_ex'}) do
+            local f=fixture(); f.env.config.post={open=true}
+            f.env.site_config.fixture.url_rule={{'^/form$','needle'}}
+            f.env.request_header['content-type']=content_type
+            f.env.request_header['content-length']='12'
+            f.env.is_ngx_match=function(_,_,kind) return kind=='post' end
+            assert(f.env[name]()==false and not f.blocked, name..' misclassified a non-form body')
+            assert(not f.body_reads and not f.form_reads, name..' parsed a non-form body')
+        end
+    end
+end)
+check('forum absent and mixed-case form content types retain inspection', function()
+    for _,content_type in ipairs({'absent','application/x-www-form-urlencoded',
+        ' Application/X-WWW-Form-Urlencoded ; charset=UTF-8'}) do
+        for _,name in ipairs({'post','url_rule_ex'}) do
+            local f=fixture(); f.env.config.post={open=true}
+            f.env.get_boundary=function() return nil end
+            f.env.site_config.fixture.url_rule={{'^/form$','needle'}}
+            if content_type~='absent' then f.env.request_header['content-type']=content_type end
+            f.env.request_header['content-length']='12'
+            f.env.is_ngx_match=function(_,_,kind) return kind=='post' end
+            assert(f.env[name]()==true and f.blocked, name..' skipped a supported form')
+            assert(f.form_reads==1)
+        end
+    end
+end)
+check('forum unrelated URL rules do not read POST bodies', function()
+    local f=fixture(); f.env.site_config.fixture.url_rule={{'^/other$','needle'}}
+    f.env.request_header['content-length']='12'
+    f.env.ngx_match=function() return false end
+    assert(f.env.url_rule_ex()==false)
+    assert(not f.body_reads and not f.form_reads, 'unmatched URL read and parsed a request body')
+end)
+check('forum non-form requests still enforce URL query rules', function()
+    local f=fixture(); f.env.site_config.fixture.url_rule={{'^/form$','needle'}}
+    f.env.request_header['content-type']='multipart/form-data; boundary=fixture'
+    f.env.request_header['content-length']='12'; f.env.uri_request_args={field='needle'}
+    f.env.is_ngx_match=function(_,value,kind) return kind==false and value.field=='needle' end
+    assert(f.env.url_rule_ex()==true and f.blocked)
+    assert(not f.body_reads and not f.form_reads, 'query rejection should not parse an upload')
+end)
+check('forum matching URL rules parse a supported form at most once', function()
+    local f=fixture(); f.env.site_config.fixture.url_rule={{'^/form$','absent'},{'^/form$','needle'}}
+    f.env.request_header['content-length']='12'
+    assert(f.env.url_rule_ex()==false)
+    assert(f.body_reads==1 and f.form_reads==1, 'form parsing repeated for each URL rule')
+end)
+check('forum duplicate Content-Type cannot hide a declared form body', function()
+    for _,headers in ipairs({{'application/x-www-form-urlencoded','application/x-www-form-urlencoded'},
+        {'application/json','application/x-www-form-urlencoded'},
+        {'application/x-www-form-urlencoded','image/png'},
+        {'multipart/form-data; boundary=fixture','application/x-www-form-urlencoded'},
+        {'application/x-www-form-urlencoded','multipart/form-data; boundary=fixture'},
+        {'application/x-www-form-urlencoded; boundary=fixture'}}) do
+        for _,name in ipairs({'post','url_rule_ex'}) do
+            local f=fixture(); f.env.config.post={open=true}
+            f.env.site_config.fixture.url_rule={{'^/form$','needle'}}
+            f.env.request_header['content-type']=headers
+            f.env.request_header['content-length']='12'
+            f.env.is_ngx_match=function(_,_,kind) return kind=='post' end
+            assert(f.env[name]()==true and f.blocked, name..' skipped a repeated form Content-Type')
+            assert(f.form_reads==1)
+        end
+    end
+end)
+check('forum exact 64 KiB form retains the URL-only rule independently of generic rules', function()
+    for _,length in ipairs({65535,65536}) do
+        for _,known in ipairs({true,false}) do
+            local f=fixture(); f.env.config.post={open=true}
+            f.env.site_config.fixture.url_rule={{'^/form$','needle'}}
+            f.env.post_rules={'unmatched'}
+            f.body='field=needle'..string.rep('x',length-12)
+            if known then f.env.request_header['content-length']=tostring(#f.body) end
+            f.env.is_ngx_match=function(rules,_,kind) return kind=='post' and rules=='needle' end
+            assert(f.env.post()==false and not f.blocked, 'generic rule must not mask the URL-only assertion')
+            assert(f.env.url_rule_ex()==true and f.blocked, 'URL-only rule skipped an in-memory form at '..length)
+        end
     end
 end)
 check('R07 competing Lua writer cannot read an old ban snapshot', function()

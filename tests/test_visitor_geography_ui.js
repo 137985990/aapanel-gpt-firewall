@@ -171,7 +171,7 @@ for (const exit of ['tab', 'leave', 'close', 'reinit', 'reload']) {
 }
 
 test('geography is the eighth Chinese tab, responsive and honest about IP/log coverage', () => {
-  assert.match(html, /class="waf_conter"[^>]*data-version="0\.1\.9"/);
+  assert.match(html, /class="waf_conter"[^>]*data-version="0\.1\.10"/);
   const tabs = [...html.matchAll(/class="website_stats_tab[^\"]*"[^>]*data-stats-page="([^"]+)"/g)].map(match => match[1]);
   assert.equal(tabs.length, 8); assert.equal(tabs.at(-1), 'geography');
   for (const text of ['访客地域', '独立 IP 不是人数', '网络出口', '机器人', 'API', '本地日志', '省份', '城市']) assert.ok(html.includes(text), text);

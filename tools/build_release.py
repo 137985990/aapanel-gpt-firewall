@@ -7,7 +7,7 @@ import re
 import zipfile
 
 
-VERSION = '0.1.9'
+VERSION = '0.1.10'
 PLUGIN_FILES = (
     'info.json', 'install.sh', 'free_waf_main.py', 'index.html',
     'init.lua', 'ban_store.py', 'report_store.py', 'website_statistics.py', 'update_service.py',
@@ -39,9 +39,15 @@ SOURCE_FILES = PLUGIN_FILES + (
     'tests/test_integration_repair.py', 'tests/test_integration_runtime.py', 'tests/test_integration_probe.py',
     'tests/test_task_manager.py', 'tests/test_task_manager_ui.js',
     'tests/test_repeat_ban_policy.py', 'tests/test_repeat_ban_runtime.py', 'tests/test_repeat_ban_ui.js',
+    'tests/test_repeat_ban_bulk.py', 'tests/test_repeat_ban_bulk_ui.js',
+    'tests/test_risk_advice_store.py', 'tests/test_risk_advice_backend.py',
+    'tests/test_risk_advice_runtime.py', 'tests/test_risk_advice_ui.js',
     'tests/test_review_backend_regressions.py', 'tests/test_review_ui_regressions.js',
     'tests/test_review_installer_regressions.py', 'tests/test_review_runtime_regressions.py',
     'tests/test_review_runtime_regressions.lua',
+    'tests/test_forum_regressions.py', 'tests/test_post_forwarding_runtime.py',
+    'tests/test_cc_scope.py', 'tests/test_cc_config_validation.py',
+    'tests/test_report_backend_regressions.py', 'tests/test_report_pagination_ui.js',
 )
 SECRET_PATTERNS = (
     r'(?m)^-----BEGIN (?:OPENSSH |RSA |EC )?PRIVATE KEY-----',

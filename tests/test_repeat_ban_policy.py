@@ -323,7 +323,7 @@ class RepeatBanPolicyTest(unittest.TestCase):
         del self.backend._free_waf_main__checked_nginx_reload
         with patch('subprocess.run', return_value=types.SimpleNamespace(returncode=0)) as run:
             self.assertTrue(self.save()['status'])
-        self.assertEqual([call.args[0] for call in run.call_args_list], [
+        self.assertEqual([call[0][0] for call in run.call_args_list], [
             ['/www/server/nginx/sbin/nginx', '-t'], ['/www/server/nginx/sbin/nginx', '-s', 'reload']])
         self.public.serviceReload.assert_not_called()
 
@@ -386,7 +386,7 @@ class RepeatBanPolicyTest(unittest.TestCase):
         with patch('os.fchown', create=True) as chown:
             self.assertTrue(self.save()['status'])
         self.assertEqual(chown.call_count, 1)
-        self.assertEqual(chown.call_args.args[1:], (info.st_uid, info.st_gid))
+        self.assertEqual(chown.call_args[0][1:], (info.st_uid, info.st_gid))
 
     def test_overlapping_saves_share_lock_and_old_revision_becomes_stale(self):
         entered, release = threading.Event(), threading.Event()
@@ -518,7 +518,7 @@ class RepeatBanPolicyTest(unittest.TestCase):
             with self.subTest(reset=reset):
                 result = self.call('remove_repeat_ban', siteName='fixture.example', ip='192.0.2.1', reset_counts=reset)
                 self.assertTrue(result['status'])
-                self.assertTrue(self.public.httpGet.call_args.args[0].endswith('&reset_counts=' + expected))
+                self.assertTrue(self.public.httpGet.call_args[0][0].endswith('&reset_counts=' + expected))
                 self.assertIn('\u6e05\u96f6' if expected == '1' else '\u4fdd\u7559\u7d2f\u8ba1', result['msg'])
 
     def test_invalid_reset_counts_are_rejected_before_runtime_or_file_io(self):

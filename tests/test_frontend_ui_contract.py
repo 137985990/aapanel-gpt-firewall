@@ -404,14 +404,15 @@ class FrontendUiContractTest(unittest.TestCase):
 
     def test_official_priority_reference_is_present(self):
         priority = (
-            "IP白名单 > IP黑名单 > UA白名单 > UA黑名单 > "
-            "URL关键字拦截 > URL CC防御 > URL白名单 > "
-            "URL黑名单 > 非浏览器 > User-Agent > CC防御 > Cookie > "
-            "URI过滤 > URL参数 > POST > 站点自定义防御"
+            "IP白名单 > 重复封禁升级 > 注册滥用防护 > 活动封禁 > "
+            "IP黑名单 > UA白名单 > URL白名单 > 空 UA 拦截 > "
+            "URL黑名单 > 地区限制 > CC及增强CC > UA过滤 > Header > "
+            "URI > GET参数 > Cookie > 扫描器 > POST > 站点自定义防御"
         )
-        self.assertIn("规则优先级参考", self.frontend)
+        self.assertIn("实际请求链", self.frontend)
         self.assertIn(priority, self.frontend)
-        self.assertIn("部分控制项尚未实现", self.frontend)
+        self.assertIn("UA 和 URL 白名单不能绕过此前", self.frontend)
+        self.assertIn("全局与站点开关需同时开启", self.frontend)
 
     def test_plugin_panel_uses_viewport_sized_layout(self):
         self.assertRegex(self.frontend, r"\bfit_panel_shell\s*:\s*function\s*\(")
@@ -830,7 +831,7 @@ class FrontendUiContractTest(unittest.TestCase):
             "render_overview_report",
             "get_overview_report",
             "日志搜索",
-            "HTTP详情",
+            "请求摘要",
             "get_report_search",
             "get_report_http_detail",
             "render_report_search",
@@ -860,11 +861,11 @@ class FrontendUiContractTest(unittest.TestCase):
 
         search_body = self._object_function_body("render_report_search")
         self.assertIn("get_report_search", search_body)
-        self.assertIn("escapeHTML", search_body)
+        self.assertIn("legacy_log_html", search_body)
         self.assertIn("report_http_detail", search_body)
         for field in ["row.site", "row.ip", "row.uri", "row.user_agent", "row.rule_type"]:
             with self.subTest(field=field):
-                self.assertRegex(search_body, r"escapeHTML\s*\(\s*" + re.escape(field) + r"\s*\)")
+                self.assertRegex(search_body, r"legacy_log_html\s*\(\s*" + re.escape(field) + r"\s*\)")
         for unsafe in ["add_ip_black", "add_permanent_ban", "clean_waf_drop_ip"]:
             with self.subTest(unsafe=unsafe):
                 self.assertNotIn(unsafe, search_body)
@@ -1179,10 +1180,12 @@ class FrontendUiContractTest(unittest.TestCase):
             end = min(len(self.frontend), match.end() + 6000)
             area = self.frontend[start:end]
 
-        self.assertIn("escapeHTML", area)
+        self.assertIn("legacy_log_html", area)
+        helper = self._object_function_body("legacy_log_html")
+        self.assertIn("log_text_html(this.legacy_log_text(value))", helper)
         for field in ["row[0]", "row[1]", "row[2]", "row[3]", "row[4]", "row[5]"]:
             with self.subTest(field=field):
-                self.assertRegex(area, r"escapeHTML\s*\(\s*" + re.escape(field) + r"\s*\)")
+                self.assertRegex(area, r"legacy_log_html\s*\(\s*" + re.escape(field) + r"\s*\)")
 
 
 if __name__ == "__main__":

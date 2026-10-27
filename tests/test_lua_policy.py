@@ -108,10 +108,14 @@ class LuaPolicyTest(unittest.TestCase):
 
     def test_json_post_requests_skip_legacy_form_post_rules(self):
         self.assertIn("function is_json_request", self.init_lua)
+        form = self._function_body("is_form_request")
+        self.assertIn("application/x-www-form-urlencoded", form)
+        self.assertIn("type(header) == 'table'", form)
+        self.assertIn("type(value) == 'string'", form)
         body = self._function_body("post")
-        self.assertIn("is_json_request()", body)
-        self.assertLess(body.index("is_json_request()"), body.index("ngx.req.get_post_args()"))
-        self.assertLess(body.index("is_json_request()"), body.index("is_ngx_match(post_rules,request_args,'post')"))
+        self.assertIn("if not is_form_request() then return false end", body)
+        self.assertLess(body.index("is_form_request()"), body.index("ngx.req.get_post_args()"))
+        self.assertLess(body.index("is_form_request()"), body.index("is_ngx_match(post_rules,request_args,'post')"))
 
     def test_llm_api_compatibility_is_not_domain_or_path_hardcoded(self):
         for snippet in ["customer.example.invalid", "/v1", "/chat/completions", "/responses"]:
@@ -295,6 +299,117 @@ class LuaCompatibilityRuntimeTest(unittest.TestCase):
             runtime.execute((root / "tools/audit_runtime_routes.lua").read_text(encoding="utf-8"))
         except Exception as error:
             self.fail(str(error))
+
+
+class AttackLabFixRuntimeTest(unittest.TestCase):
+    def setUp(self):
+        try:
+            from lupa.luajit21 import LuaRuntime
+        except ImportError:
+            self.skipTest('optional embedded LuaJIT unavailable')
+        from urllib.parse import unquote
+        self.lua = LuaRuntime(unpack_returned_tuples=True)
+        self.lua.globals().fixture_regex = lambda value, pattern: bool(re.search(pattern, value, re.I | re.S))
+        self.lua.globals().fixture_unescape = unquote
+        self.lua.execute('''
+            server_name='fixture'; uri='/upload/entry.php'
+            site_config={fixture={disable_php_path={'^/upload/'},disable_rule={}}}
+            config={other={status=403}}
+            ngx_match=function(value,pattern) return fixture_regex(value,pattern) end
+            ngx={unescape_uri=function(value) return fixture_unescape(value) end}
+            write_log=function() end
+            return_html=function(status) blocked=status end
+        ''')
+        source = (Path(__file__).resolve().parents[1] / 'init.lua').read_text(encoding='utf-8')
+        for name in ('php_path', 'continue_key', 'is_ngx_match'):
+            match = re.search(r'\nfunction ' + name + r'\(.*?\nend', source, re.S)
+            self.assertIsNotNone(match, name)
+            self.lua.execute(match.group(0))
+
+    def _execute(self, script):
+        try:
+            self.lua.execute(script)
+        except Exception as error:
+            self.fail(str(error))
+
+    def test_php_directory_accepts_prefix_with_or_without_trailing_slash(self):
+        for prefix in ('^/upload/', '^/upload', '^/u(?:pload|ser)/'):
+            with self.subTest(prefix=prefix):
+                self.lua.globals().prefix = prefix
+                self._execute('''
+                    site_config.fixture.disable_php_path={prefix}
+                    for _,path in ipairs({'/upload/entry.php','/upload/deep/entry.PHP'}) do
+                        uri=path; blocked=nil
+                        assert(php_path()==true and blocked==403,'protected PHP directory missed: '..path)
+                    end
+                    uri='/upload-other/entry.php'; blocked=nil
+                    assert(php_path()==false and blocked==nil,'sibling directory was overblocked')
+                ''')
+
+    def test_php_root_and_empty_directory_rules(self):
+        self._execute('''
+            site_config.fixture.disable_php_path={'^/'}
+            uri='/entry.php'; assert(php_path()==true and blocked==403)
+            site_config.fixture.disable_php_path={'',false,123}; blocked=nil
+            assert(php_path()==false and blocked==nil,'empty rule became a global PHP ban')
+        ''')
+
+    def test_file_parameter_names_are_not_unconditionally_exempt(self):
+        self._execute(r'''
+            for _,kind in ipairs({'args','post'}) do
+                for _,key in ipairs({'file','files','img'}) do
+                    assert(is_ngx_match({[[\.\./\.\./]]}, {[key]='../../etc/passwd'}, kind),
+                        'file path parameter skipped: '..kind..'/'..key)
+                end
+            end
+            assert(is_ngx_match({[[\.\./\.\./]]}, {file={'note.pdf','../../etc/passwd'}}, 'args'))
+        ''')
+
+    def test_file_parameter_normal_values_and_site_exceptions_remain_safe(self):
+        self._execute(r'''
+            local rules={[[\.\./\.\./]]}
+            for _,key in ipairs({'file','files','img'}) do
+                assert(not is_ngx_match(rules,{[key]='journal_2026.pdf'},'args'))
+                assert(not is_ngx_match(rules,{[key]='/images/photo.png'},'post'))
+            end
+            site_config.fixture.disable_rule.args={0}
+            assert(not is_ngx_match(rules,{file='../../etc/passwd'},'args'), 'site rule exception lost')
+        ''')
+
+    def test_rich_text_compatibility_is_not_silently_removed(self):
+        self._execute('''
+            for _,key in ipairs({'content','contents','body','msg'}) do
+                assert(not is_ngx_match({'SELECT'},{[key]='SELECT examples in journal text'},'post'))
+            end
+        ''')
+
+    def test_header_names_cannot_reuse_form_field_exemptions(self):
+        self._execute('''
+            for _,key in ipairs({'content','body','msg'}) do
+                assert(is_ngx_match({'lab-deny'},{[key]='lab-deny'},'header'),
+                    'Header bypassed blacklist via field name: '..key)
+            end
+        ''')
+
+    def test_repeated_post_and_header_values_are_checked_one_level(self):
+        self._execute('''
+            for _,kind in ipairs({'post','header'}) do
+                for _,values in ipairs({{'ok','lab-deny'},{'lab-deny','ok'}}) do
+                    assert(is_ngx_match({'lab-deny'},{file=values},kind),
+                        'repeated request value bypassed '..kind)
+                end
+                assert(not is_ngx_match({'lab-deny'},{file={{'lab-deny'},false,123}},kind),
+                    'nested or nonstring value was recursively scanned')
+            end
+            assert(is_ngx_match({'lab-deny'},{content={'ok','lab-deny'}},'header'))
+            assert(not is_ngx_match({'lab-deny'},{content={'ok','lab-deny'}},'post'))
+            site_config.fixture.disable_rule.post={0}
+            site_config.fixture.disable_rule.header={0}
+            for _,kind in ipairs({'post','header'}) do
+                assert(not is_ngx_match({'lab-deny'},{file={'ok','lab-deny'}},kind),
+                    'repeated values ignored site rule exceptions')
+            end
+        ''')
 
 
 if __name__ == "__main__":

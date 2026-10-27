@@ -45,6 +45,7 @@ local function fixture()
         ngx = {shared = {
             free_waf = dictionary(f.shared, f.shared_expiry),
             free_waf_drop_ip = dictionary(f.generic, f.generic_expiry),
+            free_waf_drop_sum = dictionary({}, {}),
         }},
         os = {time = function() return now end},
         ip_black_rules = f.rules,
@@ -99,6 +100,7 @@ local function fixture()
         'split', 'arrlen', 'is_ipaddr', 'trim_string', 'get_return_state',
         'is_runtime_ban_ipv4', 'is_runtime_ban_ip', 'registration_guard_state_key',
         'endpoint_normalize_ip', 'endpoint_state_ip', 'clear_endpoint_state', 'repeat_ban_state_identity',
+        'cc_state_key', 'cc_state_identity', 'clear_cc_state',
         'registration_guard_scopes', 'registration_state_ip', 'registration_state_ambiguous', 'clear_registration_state',
         'get_btwaf_drop_ip', 'remove_btwaf_drop_ip', 'with_ip_black_lock', 'clean_btwaf_drop_ip',
         'registration_guard_path_matches', 'registration_guard',

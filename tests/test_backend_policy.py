@@ -163,10 +163,14 @@ class BackendPolicyTest(unittest.TestCase):
     def test_blockade_records_and_export_are_read_only(self):
         records_body = self._function_body("get_blockade_records")
         export_body = self._function_body("export_blockade_records")
+        snapshot_body = self._function_body("__runtime_ip_snapshot")
+        self.assertIn("__runtime_ip_snapshot()", records_body)
+        self.assertIn("get_waf_drop_ip(None)", snapshot_body)
+        self.assertIn("get_blockade_records(get)", export_body)
+        self.assertNotIn("get_waf_drop_ip", export_body)
         for body in [records_body, export_body]:
             with self.subTest(body=body[:40]):
                 self.assertIn("drop_ip.log", body)
-                self.assertIn("get_waf_drop_ip", body)
                 for unsafe in [
                     "__write_rule",
                     "__write_config",
@@ -180,6 +184,7 @@ class BackendPolicyTest(unittest.TestCase):
                 ]:
                     with self.subTest(unsafe=unsafe):
                         self.assertNotIn(unsafe, body)
+                        self.assertNotIn(unsafe, snapshot_body)
 
         self.assertIn("exported_at", export_body)
         self.assertIn("active_ips", export_body)

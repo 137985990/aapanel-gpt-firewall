@@ -85,7 +85,8 @@ local function fixture(rules, extra_scopes, options)
     local ngx = {
         var = {remote_addr = '127.0.0.1', server_name = 'fixture'},
         header = {},
-        shared = {free_waf = dictionary(f.shared), free_waf_drop_ip = dictionary(f.generic)},
+        shared = {free_waf = dictionary(f.shared), free_waf_drop_ip = dictionary(f.generic),
+            free_waf_drop_sum = dictionary({})},
         re = {find = function(value, pattern) return string.find(value, pattern) end},
         unescape_uri = function(value) return value end,
         md5 = function(value)
@@ -101,6 +102,8 @@ local function fixture(rules, extra_scopes, options)
             get_uri_args = function() return f.query end,
             get_post_args = function() return f.post_args end,
             read_body = function() end,
+            get_body_file = function() return nil end,
+            get_body_data = function() return nil end,
         },
     }
     local lock_path = root .. 'rule/ip_black.json.lock'
@@ -258,6 +261,41 @@ local function fixture(rules, extra_scopes, options)
 end
 
 local tests = {}
+
+function tests.scoped_cc_enforcement_and_unban_use_the_full_loaded_runtime()
+    local f=fixture(nil,nil,{config={cc={open=true,cycle=10,endtime=60,limit=1,status=403}}})
+    local env=f.env
+    env.server_name,env.ip,env.uri,env.site_cc='fixture','192.0.2.10','/a',true
+    env.cycle,env.endtime,env.limit,env.retry=10,60,1,6
+    f.ngx.var.uri='/a'
+    assert(env.cc()==false)
+    f:assert_blocked(env.cc)
+    f.ngx.var.uri='/b'
+    f:assert_blocked(env.drop)
+    env.server_name='other'
+    assert(env.drop()==false,'CC ban crossed the site boundary')
+    local rows=f:request('/get_btwaf_drop_ip')
+    assert(#rows==1 and rows[1]=='192.0.2.10','scoped ban missing from real route')
+    assert(f:request('/remove_btwaf_drop_ip',{ip='192.0.2.10'}).status==true)
+    env.server_name,env.ip='fixture','192.0.2.10'
+    assert(env.drop()==false,'real unban route left scoped CC state')
+end
+
+function tests.failed_bulk_cleanup_preserves_scoped_cc_bans_and_history()
+    local f=fixture({exact_rule(10)})
+    local ban=f.env.cc_state_key('ban','fixture','192.0.2.10')
+    local history=f.env.cc_state_key('history','fixture','192.0.2.10')
+    f.ngx.shared.free_waf_drop_ip:set(ban,7,60)
+    f.ngx.shared.free_waf_drop_sum:set(history,3,86400)
+    f.fail_write=true
+    assert(f:request('/clean_btwaf_drop_ip').status==false)
+    assert(f.ngx.shared.free_waf_drop_ip:get(ban)==7,'failed cleanup removed scoped ban')
+    assert(f.ngx.shared.free_waf_drop_sum:get(history)==3,'failed cleanup removed CC history')
+    f.fail_write=false
+    assert(f:request('/clean_btwaf_drop_ip').status==true)
+    assert(f.ngx.shared.free_waf_drop_ip:get(ban)==nil)
+    assert(f.ngx.shared.free_waf_drop_sum:get(history)==nil)
+end
 
 local function cdn_fixture(order, overrides, config)
     local site = {
@@ -480,8 +518,10 @@ function tests.repeated_get_values_preserve_scalar_key_and_other_family_semantic
     assert(match({'needle'}, {needle = true}, 'args'), 'boolean parameter keys must still match')
     assert(not match({'needle'}, {needle = false}, 'args'), 'false-valued keys must retain existing behavior')
     assert(not match({'needle'}, {content = {'needle'}}, 'args'), 'excluded parameter keys must stay excluded')
-    assert(not match({'needle'}, {a = {'clean', 'needle'}}, 'post'), 'POST array handling is outside this GET fix')
-    assert(not match({'needle'}, {a = {'clean', 'needle'}}, 'header'), 'header array handling must not change')
+    assert(match({'needle'}, {a = {'clean', 'needle'}}, 'post'), 'repeated POST values must be inspected')
+    assert(match({'needle'}, {a = {'clean', 'needle'}}, 'header'), 'repeated header values must be inspected')
+    assert(not match({'needle'}, {a = {{'needle'},false,84}}, 'post'), 'POST arrays must not recurse')
+    assert(not match({'needle'}, {a = {{'needle'},false,84}}, 'header'), 'header arrays must not recurse')
 end
 
 function tests.empty_list_route_is_json_array_not_object_or_string()

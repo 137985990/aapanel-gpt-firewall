@@ -22,12 +22,12 @@ jobs:
         env:
           FREE_WAF_LUAJIT: /usr/bin/luajit
       - name: Frontend regressions
-        run: node --test tests/test_attack_charts.js tests/test_frontend_performance.js tests/test_statistics_v011.js tests/test_plugin_update_ui.js tests/test_endpoint_policy_ui.js tests/test_console_ui.js tests/test_task_manager_ui.js tests/test_repeat_ban_ui.js tests/test_visitor_geography_ui.js tests/test_review_ui_regressions.js
+        run: node --test tests/test_attack_charts.js tests/test_frontend_performance.js tests/test_statistics_v011.js tests/test_plugin_update_ui.js tests/test_endpoint_policy_ui.js tests/test_console_ui.js tests/test_task_manager_ui.js tests/test_repeat_ban_ui.js tests/test_repeat_ban_bulk_ui.js tests/test_visitor_geography_ui.js tests/test_review_ui_regressions.js tests/test_report_pagination_ui.js tests/test_risk_advice_ui.js
       - name: Build offline package
         run: python tools/build_release.py --output dist/ci
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: aapanel-gpt-firewall-0.1.9-upgrade
+          name: aapanel-gpt-firewall-0.1.10-upgrade
           path: |
             dist/ci/*.zip
             dist/ci/SHA256SUMS

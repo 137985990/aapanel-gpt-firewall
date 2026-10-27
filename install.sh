@@ -229,6 +229,8 @@ def fingerprint(path):
 DOMESTIC_LUA_SHA256 = 'ad3c6b78342859fd9f5fa93a50d4cda2176a16ae832580ffe9c3819a47d4e873'
 DOMESTIC_PROFILE = 'bt-free-waf-8.4'
 KNOWN_COMMUNITY_LUA_SHA256 = frozenset({
+    'b35499a6338bd4ee277152e087f987f4784370dd50d91a28e19da3266a251c0a',
+    '53accfb89fa4f8dbec1a7a17e0ea3bc6d8eb62bf89f188913aff788686829d9c',
     '817731649860903097321baa2873dc92918e3d8f0670dcb555129e66dfb0c94b',
     '570fa78d20b3803722cf0c1969d441a5cc7083e0d6e49e68b4b2518212a548ca',
     'f4e81a063d46aa985ca47f867182536623a0208d1feb9934686d7003eeb4a85d',
@@ -736,7 +738,7 @@ try:
         target = plugin / 'install-status.json'
         if target.is_symlink():
             raise ValueError('安装状态文件路径不安全')
-        data = dict(product='aapanel GPT Firewall', version='0.1.9', plugin_name='free_waf',
+        data = dict(product='aapanel GPT Firewall', version='0.1.10', plugin_name='free_waf',
                     status=outcome, operation=operation, stage=stage, message=message,
                     task_id=identity['task_id'],
                     runtime_write=json.loads(os.environ.get('GPT_FIREWALL_RUNTIME_WRITE') or 'null'),
@@ -786,8 +788,8 @@ try:
                          'website_statistics.py', 'update_service.py', 'index.html', 'info.json', 'rule.json'):
                 file(plugin / name)
             info = load(plugin / 'info.json', dict)
-            if info.get('name') != 'free_waf' or info.get('versions') != '0.1.9':
-                raise CheckError('package_identity', '需要内部标识为 free_waf、版本为 0.1.9 的兼容升级包', 'info.json')
+            if info.get('name') != 'free_waf' or info.get('versions') != '0.1.10':
+                raise CheckError('package_identity', '需要内部标识为 free_waf、版本为 0.1.10 的兼容升级包', 'info.json')
             load(plugin / 'rule.json', list)
             for name in ('init.lua', 'waf.lua', 'drop_ip.log'):
                 path = runtime / name

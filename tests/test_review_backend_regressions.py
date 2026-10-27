@@ -773,9 +773,16 @@ class ReviewBackendRegressionTest(unittest.TestCase):
         with ExitStack() as stack:
             stack.enter_context(patch('builtins.open', side_effect=opened))
             stack.enter_context(patch.object(os.path, 'exists', side_effect=lambda p: str(p) == '/www/server/free_waf/drop_ip.log'))
+            site_files = stack.enter_context(patch.object(self.backend, '_free_waf_main__bounded_waf_files', return_value=[]))
             self.backend._free_waf_main__date_list = lambda days: ['2026-10-24']
             result = self.backend.get_defense_notifications(types.SimpleNamespace(limit=10, days=1))
+            site_files.assert_called_once()
         self.assertEqual([r['uri'] for r in result['items']], ['/event-%d' % n for n in range(29, 19, -1)])
+
+    def test_drop_notification_fixture_never_scans_real_site_logs(self):
+        with patch.object(os, 'scandir') as scanned:
+            self.test_drop_notifications_sort_entire_bounded_sample()
+        scanned.assert_not_called()
 
     def test_malformed_rows_never_reach_runtime(self):
         for row in (1, {}, [1], [1, 2, 'reason', 0], [True, 'x', 'reason', 0]):

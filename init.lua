@@ -42,11 +42,235 @@ function write_file(filename,body)
 	return not not (written and flushed and closed)
 end
 
-local config = json.decode(read_file_body(cpath .. 'config.json'))
-local site_config = json.decode(read_file_body(cpath .. 'site.json'))
+local config_body = read_file_body(cpath .. 'config.json')
+local site_body = read_file_body(cpath .. 'site.json')
+local config = json.decode(config_body)
+local site_config = json.decode(site_body)
 local repeat_ban_cache = {}
+local manual_site_ban_state = {}
 local total_log_state = {}
 local other_html
+
+function manual_site_ban_normalize_ip(value)
+	local address=endpoint_normalize_ip(value)
+	if not address then return nil end
+	-- Match the Python scoped store without changing legacy global key protocols.
+	local high,low=string.match(address,'^::ffff:(%x+):(%x+)$')
+	if not high then return address end
+	high,low=tonumber(high,16),tonumber(low,16)
+	return string.format('%d.%d.%d.%d',math.floor(high/256),high%256,math.floor(low/256),low%256)
+end
+
+function manual_site_ban_valid_record(row)
+	if type(row) ~= 'table' then return false end
+	local allowed = {site=true,ip=true,started_at=true,expires_at=true,duration=true,reason=true,evidence_hash=true}
+	local count = 0
+	for key in pairs(row) do if not allowed[key] then return false end; count=count+1 end
+	if count ~= 7 then return false end
+	if type(row.site) ~= 'string' or #row.site < 1 or #row.site > 253 or not string.match(row.site,'^[%w_-][%w_.-]*$') or string.find(row.site,'..',1,true) then return false end
+	if type(row.ip) ~= 'string' or manual_site_ban_normalize_ip(row.ip) ~= row.ip then return false end
+	for _,key in ipairs({'started_at','expires_at','duration'}) do
+		local value = row[key]
+		if type(value) ~= 'number' or value ~= value or value ~= math.floor(value) or value < 1 or value > 9007199254740991 then return false end
+	end
+	if row.duration < 60 or row.duration > 315360000 or row.expires_at-row.started_at ~= row.duration then return false end
+	return row.reason == 'risk_advice' and type(row.evidence_hash) == 'string' and #row.evidence_hash == 64 and string.match(row.evidence_hash,'^[0-9a-f]+$') ~= nil
+end
+
+function manual_site_ban_decode(body)
+	if type(body) ~= 'string' or #body > 1048576 then return nil,'size_limit' end
+	local ok,value = pcall(json.decode,body)
+	if not ok or type(value) ~= 'table' or value.version ~= 1 or type(value.revision) ~= 'string' or #value.revision ~= 32 or not string.match(value.revision,'^[0-9a-f]+$') or type(value.entries) ~= 'table' or #value.entries > 4096 then return nil,'invalid_snapshot' end
+	local fields = 0
+	for key in pairs(value) do if key ~= 'version' and key ~= 'revision' and key ~= 'entries' then return nil,'invalid_snapshot' end; fields=fields+1 end
+	if fields ~= 3 then return nil,'invalid_snapshot' end
+	-- cjson erases duplicate keys and the distinction between [] and {}. Check the
+	-- bounded, shallow wire shape as well, including escaped duplicate field names.
+	local position = 1
+	local function skip() local _,last=string.find(body,'^%s*',position); position=(last or position-1)+1 end
+	local function token(character)
+		skip()
+		if string.sub(body,position,position) ~= character then return false end
+		position=position+1; return true
+	end
+	local function quoted()
+		skip()
+		if string.sub(body,position,position) ~= '"' then return nil end
+		local start=position; position=position+1
+		while position <= #body do
+			local character=string.sub(body,position,position)
+			if character == '\\' then position=position+2
+			elseif character == '"' then
+				position=position+1
+				local valid,result=pcall(json.decode,string.sub(body,start,position-1))
+				return valid and result or nil
+			else position=position+1 end
+		end
+	end
+	local function scalar(integer)
+		skip()
+		local character=string.sub(body,position,position)
+		if character == '"' then return not integer and quoted() ~= nil end
+		if character == '{' or character == '[' then return false end
+		local start=position
+		position=string.find(body,'[,%]}%s]',position) or (#body+1)
+		return position > start and (not integer or string.match(string.sub(body,start,position-1),'^%d+$') ~= nil)
+	end
+	local object,array
+	object=function(root)
+		if not token('{') then return false end
+		local seen={}
+		skip()
+		if token('}') then return true end
+		while true do
+			local key=quoted()
+			if type(key) ~= 'string' or seen[key] or not token(':') then return false end
+			seen[key]=true
+			if root and key == 'entries' then
+				if not array() then return false end
+			elseif not scalar(root and key == 'version' or not root and (key == 'started_at' or key == 'expires_at' or key == 'duration')) then return false end
+			if token('}') then return true end
+			if not token(',') then return false end
+		end
+	end
+	array=function()
+		if not token('[') then return false end
+		if token(']') then return true end
+		local count=0
+		while true do
+			count=count+1
+			if count > 4096 or not object(false) then return false end
+			if token(']') then return true end
+			if not token(',') then return false end
+		end
+	end
+	if not object(true) then return nil,'invalid_shape' end
+	skip()
+	if position <= #body then return nil,'invalid_shape' end
+	local seen,count={},0
+	for key,row in pairs(value.entries) do
+		if type(key) ~= 'number' or key < 1 or key > #value.entries or key ~= math.floor(key) or not manual_site_ban_valid_record(row) then return nil,'invalid_record' end
+		local identity=row.site .. '\0' .. row.ip
+		if seen[identity] then return nil,'duplicate_record' end
+		seen[identity],count=true,count+1
+	end
+	if count ~= #value.entries then return nil,'invalid_snapshot' end
+	return value
+end
+
+function manual_site_ban_read()
+	local available,ffi=pcall(require,'ffi')
+	if not available or ffi.os ~= 'Linux' or (ffi.arch ~= 'x64' and ffi.arch ~= 'arm64') then return nil,'read_unsupported' end
+	local prefix=ffi.arch == 'x64'
+		and 'unsigned long dev,ino,nlink; unsigned int mode,uid,gid;'
+		or 'unsigned long dev,ino; unsigned int mode,nlink,uid,gid;'
+	local declared=pcall(ffi.cdef,'struct gpt_fw_manual_stat { ' .. prefix .. [[ unsigned char tail[256]; };
+		int gpt_fw_manual_open(const char *path, int flags, ...) __asm__("open");
+		int gpt_fw_manual_openat(int dirfd, const char *path, int flags, ...) __asm__("openat");
+		int gpt_fw_manual_fstat(int fd, void *buf) __asm__("fstat");
+		long gpt_fw_manual_read(int fd, void *buf, unsigned long count) __asm__("read");
+		int gpt_fw_manual_close(int fd) __asm__("close");
+	]])
+	if not declared then return nil,'read_unsupported' end
+	local directory,descriptor
+	local function close()
+		if descriptor then ffi.C.gpt_fw_manual_close(descriptor); descriptor=nil end
+		if directory then ffi.C.gpt_fw_manual_close(directory); directory=nil end
+	end
+	local checked,body,err=pcall(function()
+		if string.sub(cpath,1,1) ~= '/' then return nil,'unsafe_directory' end
+		-- Pin every path component; no links, worker-writable parent, or writable
+		-- snapshot may supply a manual ban. Never create/chmod/chown anything here.
+		directory=ffi.C.gpt_fw_manual_open('/',720896) -- O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC
+		if directory < 0 then directory=nil; return nil,'read_failed' end
+		for part in string.gmatch(cpath,'[^/]+') do
+			if part == '.' or part == '..' then return nil,'unsafe_directory' end
+			local child=ffi.C.gpt_fw_manual_openat(directory,part,720896)
+			if child < 0 then return nil,'unsafe_directory' end
+			ffi.C.gpt_fw_manual_close(directory); directory=child
+		end
+		local metadata=ffi.new('struct gpt_fw_manual_stat[1]')
+		if ffi.C.gpt_fw_manual_fstat(directory,metadata) ~= 0 then return nil,'read_failed' end
+		local parent=metadata[0]
+		local function writable(mode) return math.floor(mode/16)%2 == 1 or math.floor(mode/2)%2 == 1 end
+		if tonumber(parent.uid) ~= 0 or math.floor(tonumber(parent.mode)/4096) ~= 4 or writable(tonumber(parent.mode)) then return nil,'unsafe_directory' end
+		descriptor=ffi.C.gpt_fw_manual_openat(directory,'manual_site_bans.json',657408) -- O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC
+		if descriptor < 0 then
+			descriptor=nil
+			return nil,ffi.errno() == 2 and 'missing' or 'read_failed'
+		end
+		if ffi.C.gpt_fw_manual_fstat(descriptor,metadata) ~= 0 then return nil,'read_failed' end
+		local file=metadata[0]
+		if tonumber(file.uid) ~= 0 or tonumber(file.nlink) ~= 1 or math.floor(tonumber(file.mode)/4096) ~= 8 or writable(tonumber(file.mode)) then return nil,'unsafe_file' end
+		local buffer=ffi.new('char[?]',1048577)
+		local size=0
+		while size <= 1048576 do
+			local count=tonumber(ffi.C.gpt_fw_manual_read(descriptor,buffer+size,1048577-size))
+			if count < 0 then return nil,'read_failed' end
+			if count == 0 then return ffi.string(buffer,size) end
+			size=size+count
+		end
+		return nil,'size_limit'
+	end)
+	close()
+	if not checked then return nil,'read_failed' end
+	return body,err
+end
+
+function manual_site_ban_load(policy_signature)
+	local checked,body,err=pcall(manual_site_ban_read)
+	local value
+	if checked and err == 'missing' then
+		value={version=1,revision=string.rep('0',32),entries={}}
+	elseif checked and body then
+		value,err=manual_site_ban_decode(body)
+	end
+	manual_site_ban_state={valid=value ~= nil,snapshot=value,by_site={},policy_signature=policy_signature}
+	if not value then
+		if ngx.log then ngx.log(ngx.WARN,'GPT Firewall manual site-ban snapshot unavailable: ' .. tostring(err or 'read_failed')) end
+		return false
+	end
+	for _,row in ipairs(value.entries) do
+		manual_site_ban_state.by_site[row.site]=manual_site_ban_state.by_site[row.site] or {}
+		manual_site_ban_state.by_site[row.site][row.ip]=row
+	end
+	return true
+end
+
+function manual_site_ban_guard()
+	if not manual_site_ban_state.valid then return false end
+	local by_ip=manual_site_ban_state.by_site[server_name]
+	local address=by_ip and manual_site_ban_normalize_ip(ip)
+	local row=address and by_ip[address]
+	local now=ngx.time()
+	if not row or row.started_at > now or row.expires_at <= now then return false end
+	ngx.header['Retry-After']=tostring(row.expires_at-now)
+	ngx.header['Cache-Control']='no-store'
+	ngx.header.content_type='text/plain; charset=utf-8'
+	ngx.status=403
+	ngx.say('Forbidden')
+	ngx.exit(403)
+	return true
+end
+
+function get_manual_site_bans()
+	local state=manual_site_ban_state
+	return {status=state.valid,valid=state.valid,policy_signature=state.policy_signature,
+		revision=state.valid and state.snapshot.revision or json.null,
+		entries=state.valid and state.snapshot.entries or json.null}
+end
+
+function manual_site_ban_response()
+	local view=get_manual_site_bans()
+	local entries=view.entries
+	view.entries=nil
+	local prefix=json.encode(view)
+	ngx.header.content_type='application/json;'
+	ngx.header['Cache-Control']='no-store'
+	ngx.status=200
+	ngx.say(string.sub(prefix,1,-2) .. ',"entries":' .. (view.valid and encode_json_array(entries) or 'null') .. '}')
+	ngx.exit(200)
+end
 
 function repeat_ban_policy(site)
 	local current = site_config[site]
@@ -703,6 +927,23 @@ function is_json_request()
 	return false
 end
 
+function is_form_request()
+	if not request_header then return false end
+	local header = request_header['content-type'] or request_header['Content-Type']
+	-- Preserve legacy headerless forms; explicit non-form bodies need their own parser.
+	if header == nil then return true end
+	local values = type(header) == 'table' and header or {header}
+	-- Do not let first/last-header differences hide a declared form from inspection.
+	for _,value in ipairs(values) do
+		if type(value) == 'string' then
+			local media_type = string.match(value, '^([^;]*)')
+			media_type = string.match(media_type, '^%s*(.-)%s*$')
+			if string.lower(media_type) == 'application/x-www-form-urlencoded' then return true end
+		end
+	end
+	return false
+end
+
 local get_html = read_file_body(config["reqfile_path"] .. '/' .. config["get"]["reqfile"])
 local post_html = read_file_body(config["reqfile_path"] .. '/' .. config["post"]["reqfile"])
 local cookie_html = read_file_body(config["reqfile_path"] .. '/' .. config["cookie"]["reqfile"])
@@ -711,7 +952,8 @@ other_html = read_file_body(config["reqfile_path"] .. '/' .. config["other"]["re
 local cnlist = json.decode(read_file_body(cpath .. '/rule/cn.json'))
 local scan_black_rules = read_file('scan_black')
 local ip_black_rules = read_file('ip_black')
-local ip_white_rules = read_file('ip_white')
+local ip_white_body = read_file_body(jpath .. 'ip_white.json')
+local ip_white_rules = ip_white_body and json.decode(ip_white_body) or {}
 local url_white_rules = read_file('url_white')
 local url_black_rules = read_file('url_black')
 local user_agent_white_rules = select_rule(read_file('user_agent_white'))
@@ -1025,6 +1267,12 @@ function drop_abroad()
 end
 
 function drop()
+	local key = cc_state_key('ban',server_name,ip)
+	if key and ngx.shared.free_waf_drop_ip:get(key) then
+		ngx.exit(config['cc']['status'])
+		return true
+	end
+	-- Existing IP-only bans retain their scope and expiry; never guess a site.
 	local count,_ = ngx.shared.free_waf_drop_ip:get(ip)
 	if not count then return false end
 	if count > retry then
@@ -1111,27 +1359,58 @@ end
 function cc_counter_key()
 	local path=ngx.var.uri or uri or '/'
 	local site=tostring(server_name or '')
-	return ngx.md5('cc:v2:' .. #site .. ':' .. site .. ':' .. tostring(ip) .. ':' .. path)
+	return ngx.md5('cc:v2:' .. #site .. ':' .. site .. ':' .. tostring(endpoint_normalize_ip(ip) or ip) .. ':' .. path)
+end
+
+function cc_state_key(kind, site, client_ip)
+	client_ip=endpoint_normalize_ip(client_ip)
+	if (kind ~= 'ban' and kind ~= 'history') or type(site) ~= 'string' or #site < 1 or #site > 253 or string.find(site,'%c') or not client_ip then return nil end
+	return 'cc:v3:' .. kind .. ':' .. #site .. ':' .. site .. ':' .. client_ip
+end
+
+function cc_state_identity(key, expected_kind)
+	if type(key) ~= 'string' then return nil end
+	local kind,length,rest=string.match(key,'^cc:v3:([^:]+):(%d+):(.*)$')
+	if not length or (kind ~= 'ban' and kind ~= 'history') or (expected_kind and kind ~= expected_kind) then return nil end
+	local size=tonumber(length)
+	if size < 1 or size > 253 or tostring(size) ~= length or string.sub(rest,size+1,size+1) ~= ':' then return nil end
+	local site,client_ip=string.sub(rest,1,size),endpoint_normalize_ip(string.sub(rest,size+2))
+	if string.find(site,'%c') or not client_ip then return nil end
+	return site,client_ip
+end
+
+function clear_cc_state(target_ips)
+	local targets={}
+	for value in pairs(target_ips or {}) do
+		local address=endpoint_normalize_ip(value)
+		if address then targets[address]=true end
+	end
+	for _,entry in ipairs({{ngx.shared.free_waf_drop_ip,'ban'},{ngx.shared.free_waf_drop_sum,'history'}}) do
+		local shared,kind=entry[1],entry[2]
+		for _,key in ipairs(shared:get_keys(0)) do
+			local _,address=cc_state_identity(key,kind)
+			if not address and kind == 'ban' then address=endpoint_normalize_ip(key) end
+			if address and (not target_ips or targets[address]) then shared:delete(key) end
+		end
+	end
 end
 
 function cc()
 	if not config['cc']['open'] or not site_cc then return false end
+	local ban_key=cc_state_key('ban',server_name,ip)
+	local history_key=cc_state_key('history',server_name,ip)
+	if not ban_key then return false end
 	local token = cc_counter_key()
 	ngx.shared.free_waf:safe_add(token,0,cycle)
 	local count = ngx.shared.free_waf:incr(token,1)
 	if count then
 		if count > limit then
-			local safe_count,_ = ngx.shared.free_waf_drop_sum:get(ip)
-			if not safe_count then
-				ngx.shared.free_waf_drop_sum:set(ip,1,86400)
-				safe_count = 1
-			else
-				ngx.shared.free_waf_drop_sum:incr(ip,1)
-			end
+			ngx.shared.free_waf_drop_sum:safe_add(history_key,0,86400)
+			ngx.shared.free_waf_drop_sum:incr(history_key,1)
 			local lock_time = tonumber(endtime) or 60
 			if lock_time <= 0 then lock_time = 60 end
 			if lock_time > 60 then lock_time = 60 end
-			if ngx.shared.free_waf_drop_ip:safe_add(ip,retry+1,lock_time) then
+			if ngx.shared.free_waf_drop_ip:safe_add(ban_key,retry+1,lock_time) then
 				write_log('cc',cycle..'秒内累计超过'..limit..'次请求,封锁' .. lock_time .. '秒')
 				write_drop_ip('cc',lock_time)
 				repeat_ban_event(server_name,ip,lock_time,'cc',ngx.var.uri or uri)
@@ -1147,28 +1426,27 @@ function cc2()
 	if not config['cc']['open'] or not site_cc then return false end
 	if not site_config[server_name] then return false end
 	if not site_config[server_name]['cc']['increase'] then return false end
+	local ban_key=cc_state_key('ban',server_name,ip)
+	local history_key=cc_state_key('history',server_name,ip)
+	if not ban_key then return false end
 	if ngx_match(uri,"\\.(jpg|png|gif|css|js|swf|ts)$","isjo") then return false end
 	local token2 = ngx.md5(method .. server_name .. tostring(request_header['user-agent']) .. tostring(request_header['host']) .. tostring(request_header['accept-language']) .. tostring(request_header['connection']) .. tostring(request_header['accept']) .. tostring(request_header['accept-encoding']) .. tostring(request_header['upgrade-insecure-requests']) .. tostring(request_header['cache-control'])) .. '_' .. 'cc2'
 	local path=ngx.var.uri or uri or '/'
 	local site=tostring(server_name or '')
-	token2 = ngx.md5('cc2:v2:'..#site..':'..site..':'..#path..':'..path..':'..token2)..'_cc2'
+	local client=endpoint_normalize_ip(ip)
+	token2 = ngx.md5('cc2:v3:'..#site..':'..site..':'..#client..':'..client..':'..#path..':'..path..':'..token2)..'_cc2'
 	local cc2_limit = limit * 3
 	ngx.shared.free_waf:safe_add(token2,0,cycle)
 	local count = ngx.shared.free_waf:incr(token2,1)
 	if count then
 		if count > cc2_limit then
-			local safe_count,_ = ngx.shared.free_waf_drop_sum:get(ip)
-			if not safe_count then
-				ngx.shared.free_waf_drop_sum:set(ip,1,86400)
-				safe_count = 1
-			else
-				ngx.shared.free_waf_drop_sum:incr(ip,1)
-			end
+			ngx.shared.free_waf_drop_sum:safe_add(history_key,0,86400)
+			local safe_count=math.max(1,(ngx.shared.free_waf_drop_sum:incr(history_key,1) or 1)-1)
 			if safe_count > retry then 
 				local lock_time = tonumber(endtime) or 60
 				if lock_time <= 0 then lock_time = 60 end
 				if lock_time > 60 then lock_time = 60 end
-				if ngx.shared.free_waf_drop_ip:safe_add(ip,retry+1,lock_time) then
+				if ngx.shared.free_waf_drop_ip:safe_add(ban_key,retry+1,lock_time) then
 					write_log('cc',cycle..'秒内累计超过'..limit..'次请求,封锁' .. lock_time .. '秒')
 					write_drop_ip('cc',lock_time)
 					repeat_ban_event(server_name,ip,lock_time,'cc',ngx.var.uri or uri)
@@ -1372,13 +1650,15 @@ end
 function post()
 	if not config['post']['open'] or not is_site_config('post') then return false end	
 	if method ~= "POST" then return false end
-	if is_json_request() then return false end
-	content_length=tonumber(request_header['content-length'])
-	max_len = 64 * 1024
+	if not is_form_request() then return false end
+	local content_length=tonumber(request_header['content-length'])
+	local max_len = 64 * 1024
 	if content_length and content_length > max_len then return false end
-	if get_boundary() then return false end
 	ngx.req.read_body()
-	request_args = ngx.req.get_post_args()
+	if ngx.req.get_body_file() then return false end
+	local body = ngx.req.get_body_data()
+	if type(body) == 'string' and #body > max_len then return false end
+	local request_args = ngx.req.get_post_args()
 	if not request_args then
 		return false
 	end
@@ -1459,10 +1739,13 @@ function php_path()
 	if site_config[server_name] == nil then return false end
 	for _,rule in ipairs(site_config[server_name]['disable_php_path'])
 	do
-		if ngx_match(uri,rule .. "/.*\\.php$","isjo") then
-			write_log('php_path','regular')
-			return_html(config['other']['status'],other_html)
-			return true
+		if type(rule) == 'string' and rule ~= '' then
+			local separator = string.sub(rule,-1) == '/' and '' or '/'
+			if ngx_match(uri,rule .. separator .. ".*\\.php$","isjo") then
+				write_log('php_path','regular')
+				return_html(config['other']['status'],other_html)
+				return true
+			end
 		end
 	end
 	return false
@@ -1498,21 +1781,9 @@ function url_rule_ex()
 	if site_config[server_name] == nil then return false end
 	local rules = site_config[server_name]['url_rule']
 	if type(rules) ~= 'table' or #rules == 0 then return false end
-	if method == "POST" and not request_args and not is_json_request() then
-		local length_header = request_header['content-length']
-		local content_length = tonumber(length_header)
-		local max_len = 64 * 1024
-		if content_length and content_length >= 0 and content_length < max_len then
-			ngx.req.read_body()
-			if not ngx.req.get_body_file() then request_args = ngx.req.get_post_args() end
-		elseif length_header == nil then
-			ngx.req.read_body()
-			local body = ngx.req.get_body_data()
-			if type(body) == 'string' and #body < max_len and not ngx.req.get_body_file() then
-				request_args = ngx.req.get_post_args()
-			end
-		end
-	end
+	-- Form arguments belong to this invocation, never a prior worker request.
+	local request_args
+	local form_checked = false
 	for _,rule in ipairs(rules)
 	do
 		if ngx_match(uri,rule[1],"isjo") then
@@ -1522,6 +1793,25 @@ function url_rule_ex()
 				return true
 			end
 			
+			if method == "POST" and not form_checked then
+				form_checked = true
+				if is_form_request() then
+					local length_header = request_header['content-length']
+					local content_length = tonumber(length_header)
+					local max_len = 64 * 1024
+					if content_length and content_length >= 0 and content_length <= max_len then
+						ngx.req.read_body()
+						if not ngx.req.get_body_file() then request_args = ngx.req.get_post_args() end
+					elseif length_header == nil then
+						ngx.req.read_body()
+						local body = ngx.req.get_body_data()
+						if type(body) == 'string' and #body <= max_len and not ngx.req.get_body_file() then
+							request_args = ngx.req.get_post_args()
+						end
+					end
+				end
+			end
+
 			if method == "POST" and request_args ~= nil then 
 				if is_ngx_match(rule[2],request_args,'post') then
 					write_log('post','regular')
@@ -1552,7 +1842,7 @@ end
 function continue_key(key)
 	key = tostring(key)
 	if string.len(key) > 64 then return false end;
-	local keys = {"content","contents","body","msg","file","files","img",""}
+	local keys = {"content","contents","body","msg",""}
 	for _,k in ipairs(keys)
 	do
 		if k == key then return false end;
@@ -1573,10 +1863,10 @@ function is_ngx_match(rules,sbody,rule_name)
 	
 	for k,body in pairs(sbody)
 	do
-		if continue_key(k) then
+		if rule_name == 'header' or continue_key(k) then
 			local values = {body}
-			-- Repeated GET parameters are one-level value arrays, not nested bodies.
-			if rule_name == 'args' and type(body) == 'table' then values = body end
+			-- Nginx exposes repeated parameters and headers as one-level value arrays.
+			if (rule_name == 'args' or rule_name == 'post' or rule_name == 'header') and type(body) == 'table' then values = body end
 			for i,rule in ipairs(rules)
 			do
 				if site_config[server_name] and rule_name then
@@ -1760,9 +2050,11 @@ end
 function get_btwaf_drop_ip()
 	local data,seen = {},{}
 	local generic = ngx.shared.free_waf_drop_ip
-	for _,client_ip in ipairs(generic:get_keys(0))
+	for _,key in ipairs(generic:get_keys(0))
 	do
-		if is_runtime_ban_ip(client_ip) and generic:get(client_ip) and not seen[client_ip] then
+		local _,scoped_ip=cc_state_identity(key,'ban')
+		local client_ip=scoped_ip or (is_runtime_ban_ip(key) and key)
+		if client_ip and generic:get(key) and not seen[client_ip] then
 			seen[client_ip] = true
 			table.insert(data, client_ip)
 		end
@@ -1805,6 +2097,7 @@ function remove_btwaf_drop_ip()
 	if registration_state_ambiguous(target_ip) then return get_return_state(false,'旧版注册封禁归属不明确，未解封；请等待到期或按作用域排查') end
 	if not repeat_ban_clear({[target_ip]=true}) then return get_return_state(false,'升级封禁清理失败，未确认解封') end
 	ngx.shared.free_waf_drop_ip:delete(target_ip)
+	clear_cc_state({[target_ip]=true})
 	-- The legacy IP-only interface revokes this IP across every guard scope.
 	clear_registration_state({[target_ip] = true})
 	clear_endpoint_state({[target_ip] = true})
@@ -1862,6 +2155,7 @@ function clean_btwaf_drop_ip()
 	do
 		ngx.shared.free_waf_drop_ip:delete(value)
 	end
+	clear_cc_state()
 	clear_registration_state(drop_map)
 	clear_endpoint_state(endpoint_map)
 	return get_return_state(true,'已解封所有封锁IP')
@@ -1920,6 +2214,7 @@ function remove_permanent_ban_ip()
 	end
 	ip_black_rules = new_rules
 	ngx.shared.free_waf_drop_ip:delete(target_ip)
+	clear_cc_state({[target_ip]=true})
 	return get_return_state(true, target_ip .. ' 已从封禁列表移除')
 	end)
 	if not ok then return get_return_state(false,'IP黑名单存储忙或不可用，未确认解封') end
@@ -1928,10 +2223,11 @@ end
 
 function min_route()
 	if ngx.var.remote_addr ~= '127.0.0.1' then return false end
+	if uri == '/get_manual_site_bans' then return manual_site_ban_response() end
 	if ngx.var.server_name == 'gpt-firewall-health.invalid' then
 		local nonce = string.match(uri or '', '^/_gpt_firewall_health/([0-9a-f]+)$')
 		if nonce and #nonce == 32 then
-			return_message(200, {product='aapanel GPT Firewall', version='0.1.9',
+			return_message(200, {product='aapanel GPT Firewall', version='0.1.10',
 				nonce=nonce, worker_pid=ngx.worker.pid()})
 		else
 			ngx.exit(404)
@@ -2053,6 +2349,7 @@ function run_btwaf()
 	end
 	
 	if ip_white() then return true end
+	manual_site_ban_guard()
 	repeat_ban_guard()
 	registration_guard(server_name, ip, method, uri, request_uri)
 	drop()
@@ -2081,3 +2378,7 @@ function run_btwaf()
 		post_data()
 	end
 end
+
+-- Capture exactly the loaded configuration and snapshot before workers fork.
+-- HTTP proof never rereads disk; changes require a checked smooth reload.
+manual_site_ban_load(ngx.md5(config_body .. '\0' .. site_body .. '\0' .. (ip_white_body or '')))

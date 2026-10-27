@@ -60,6 +60,7 @@ BROAD_UA_TOKENS = [
 ]
 
 class free_waf_main:
+    BLOCKADE_ACTIVE_NOTICE = '活动状态仅表示该 IP 是否有活动封禁，未确认本条记录或本站来源。'
     LEGACY_LOG_MAX_LINES = 20000
     LEGACY_LOG_MAX_BYTES = 8 * 1024 * 1024
     LEGACY_LOG_MAX_FILES = 64
@@ -122,13 +123,13 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         module = sys.modules.get(key)
         if (module is None or getattr(module, '__file__', None) != path
                 or getattr(module, '_source_signature', None) != signature
-                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.9'):
+                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.10'):
             spec = importlib.util.spec_from_file_location(key, path)
             module = importlib.util.module_from_spec(spec)
             # Read source explicitly: same-second upgrades must not reuse stale bytecode.
             source = spec.loader.get_source(key)
             exec(compile(source, path, 'exec', dont_inherit=True), module.__dict__)
-            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.9':
+            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.10':
                 raise ValueError('服务版本不匹配，请重新打开插件')
             module._source_signature = signature
             sys.modules[key] = module
@@ -717,7 +718,6 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         return dict(status=True, data=self.__webshell_data, coverage=dict(self.__scan_coverage))
 
     def xssencode(self, text):
-        import cgi
         list = ['`', '~', '&', '<', '>']
         ret = []
         for i in text:
@@ -914,6 +914,144 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             return self.__repeat_result(site, policy, raw)
         except Exception:
             return public.returnMsg(False, '无法读取累计封禁策略，请检查站点名称和策略格式；未修改配置。')
+
+    def __repeat_bulk_sites(self, get):
+        text = getattr(get, 'siteNames', None)
+        if type(text) is not str or len(text.encode('utf-8')) > 128 * 1024:
+            raise ValueError('站点列表须为不超过 128 KiB 的 JSON 数组字符串')
+        sites = self.__repeat_json(text)
+        if type(sites) is not list or not 1 <= len(sites) <= 500:
+            raise ValueError('每次须选择 1 至 500 个站点')
+        selected = set()
+        for site in sites:
+            self.__endpoint_site_name(site)
+            if site in selected:
+                raise ValueError('站点名称重复')
+            selected.add(site)
+        raw = self.__repeat_config_bytes()
+        config = self.__repeat_json(raw.decode('utf-8'))
+        self.__repeat_bulk_policies(sites, config)
+        return sites, config, raw
+
+    def __repeat_bulk_policies(self, sites, config):
+        if type(config) is not dict:
+            raise ValueError('站点配置不正确')
+        result = []
+        for site in sites:
+            if type(config.get(site)) is not dict:
+                raise ValueError('站点不存在或站点配置不正确')
+            policy = self.__repeat_policy(config[site].get('repeat_ban_policy', self.__repeat_defaults()))
+            result.append(dict(siteName=site, policy=policy))
+        return result
+
+    def __repeat_bulk_result(self, sites, raw):
+        import hashlib
+        config = self.__repeat_json(raw.decode('utf-8'))
+        return dict(status=True, sites=self.__repeat_bulk_policies(sites, config),
+                    revision=hashlib.sha256(raw).hexdigest())
+
+    def get_repeat_ban_policies(self, get):
+        try:
+            with self.__endpoint_transaction(create=False):
+                sites, config, raw = self.__repeat_bulk_sites(get)
+                return self.__repeat_bulk_result(sites, raw)
+        except Exception:
+            return public.returnMsg(False, '无法读取批量累计封禁策略，请检查站点列表、策略格式和配置锁；未修改配置。')
+
+    def save_repeat_ban_policies(self, get):
+        if not self.__update_request_is_post():
+            return public.returnMsg(False, '批量累计封禁策略保存仅接受面板 POST 请求。')
+        try:
+            with self.__endpoint_transaction():
+                return self.__save_repeat_bulk_locked(get)
+        except Exception:
+            return public.returnMsg(False, '配置正在修改或配置锁不可用，未保存；请稍后重试。')
+
+    def __save_repeat_bulk_locked(self, get):
+        import hashlib
+        try:
+            text = getattr(get, 'policy', None)
+            if type(text) is not str or len(text.encode('utf-8')) > 16384:
+                raise ValueError('策略须为 JSON 对象字符串')
+            ladder = self.__repeat_json(text)
+            if type(ladder) is not dict or set(ladder) != {'window_seconds', 'tiers'}:
+                raise ValueError('批量策略只能包含统计窗口和档位')
+            ladder = self.__repeat_policy(dict(ladder, enabled=False))
+            action = getattr(get, 'enabled_action', None)
+            if type(action) is not str or action not in ('preserve', 'enable', 'disable'):
+                raise ValueError('须明确选择保留、启用或停用状态')
+            sites, config, original = self.__repeat_bulk_sites(get)
+            revision = getattr(get, 'revision', None)
+            if (type(revision) is not str or not re.fullmatch(r'[0-9a-f]{64}', revision)
+                    or revision != hashlib.sha256(original).hexdigest()):
+                return public.returnMsg(False, '站点配置版本已变更或缺失，请刷新后重试；未保存。')
+            policies = {}
+            for row in self.__repeat_bulk_policies(sites, config):
+                enabled = row['policy']['enabled'] if action == 'preserve' else action == 'enable'
+                policies[row['siteName']] = dict(ladder, enabled=enabled)
+            backup = self.__repeat_stage(original, '.bak')
+            with self.__open_regular_file(backup) as stream:
+                if stream.read(len(original) + 1) != original:
+                    raise OSError('独立备份核实失败')
+            if self.__repeat_config_bytes() != original:
+                return public.returnMsg(False, '站点配置已变更，请刷新后重试；未保存，独立备份已保留。')
+            for site in sites:
+                config[site]['repeat_ban_policy'] = policies[site]
+            candidate = json.dumps(config).encode('utf-8')
+        except Exception:
+            return public.returnMsg(False, '批量策略校验或独立备份失败，未修改配置；请检查站点、档位、字段和存储权限。')
+        try:
+            if self.__write_repeat_site_config(candidate, expected=original) is False or self.__repeat_config_bytes() != candidate:
+                raise OSError('配置写入未核实')
+            if self.__checked_nginx_reload() is False:
+                raise RuntimeError('配置生效未核实')
+            actual = self.__repeat_config_bytes()
+            result = self.__repeat_bulk_result(sites, actual)
+            current = self.__repeat_json(actual.decode('utf-8'))
+            if any(current[site].get('repeat_ban_policy') != policies[site] for site in sites):
+                raise RuntimeError('重载后策略已变更')
+            return result
+        except Exception:
+            try:
+                self.__restore_repeat_bulk(sites, policies, original, candidate)
+            except Exception:
+                return public.returnMsg(False, '批量累计封禁策略保存或生效失败，自动恢复未确认，可能已部分处理；独立备份已保留，请检查所有选中站点配置和 Nginx 状态。')
+            return public.returnMsg(False, '批量累计封禁策略保存或生效失败，已恢复所有选中站点原策略并核实重载；独立备份已保留。')
+
+    def __restore_repeat_bulk(self, sites, policies, original, candidate):
+        previous = self.__repeat_json(original.decode('utf-8'))
+        current_raw = self.__repeat_config_bytes()
+        current = self.__repeat_json(current_raw.decode('utf-8'))
+        self.__repeat_bulk_policies(sites, current)
+        changed = []
+        # Validate every target before restoring any; never recover only a subset.
+        for site in sites:
+            old_site, current_site = previous[site], current[site]
+            already_restored = (('repeat_ban_policy' in current_site) == ('repeat_ban_policy' in old_site)
+                                and current_site.get('repeat_ban_policy') == old_site.get('repeat_ban_policy'))
+            if not already_restored:
+                if current_site.get('repeat_ban_policy') != policies[site]:
+                    raise ValueError('选中站点累计封禁策略已被其他操作修改')
+                changed.append(site)
+        restore = original if current_raw == candidate and current_raw != original else None
+        if restore is None and changed:
+            for site in changed:
+                if 'repeat_ban_policy' in previous[site]:
+                    current[site]['repeat_ban_policy'] = previous[site]['repeat_ban_policy']
+                else:
+                    current[site].pop('repeat_ban_policy', None)
+            restore = json.dumps(current).encode('utf-8')
+        if restore is not None:
+            if self.__write_repeat_site_config(restore, expected=current_raw) is False or self.__repeat_config_bytes() != restore:
+                raise OSError('批量配置恢复未核实')
+        if self.__checked_nginx_reload() is False:
+            raise RuntimeError('恢复生效未核实')
+        restored = self.__repeat_json(self.__repeat_config_bytes().decode('utf-8'))
+        self.__repeat_bulk_policies(sites, restored)
+        for site in sites:
+            if (('repeat_ban_policy' in restored[site]) != ('repeat_ban_policy' in previous[site])
+                    or restored[site].get('repeat_ban_policy') != previous[site].get('repeat_ban_policy')):
+                raise RuntimeError('恢复后选中站点配置已变更')
 
     def __repeat_directory(self):
         from contextlib import contextmanager
@@ -1113,6 +1251,347 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
 
     def __repeat_ban_store(self):
         return self.__ban_store_module().BanEscalationStore(self.__path + 'repeat_bans.json')
+
+    def __risk_store(self):
+        return self.__ban_store_module().ScopedBanStore(self.__path + 'manual_site_bans.json')
+
+    def __risk_log_root(self):
+        return '/www/wwwlogs/free_waf_log/'
+
+    def __risk_context(self, get):
+        import hashlib
+        site = self.__endpoint_site_name(getattr(get, 'siteName', None))
+        values = []
+        for name in ('config.json', 'site.json', 'rule/ip_white.json'):
+            with self.__open_regular_file(self.__path + name) as stream:
+                value = stream.read(2 * 1024 * 1024 + 1)
+            if len(value) > 2 * 1024 * 1024:
+                raise ValueError('防护配置超过读取上限')
+            values.append(value)
+        config, sites, whites = [self.__repeat_json(value.decode('utf-8')) for value in values]
+        if (type(config) is not dict or type(whites) is not list or type(sites) is not dict
+                or type(sites.get(site)) is not dict):
+            raise ValueError('防护配置格式不正确')
+        aliases = config.get('site_aliases', {}) if config.get('compatibility_profile') == 'bt-free-waf-8.4' else {}
+        if type(aliases) is not dict:
+            raise ValueError('域名别名格式不正确')
+        for alias, owner in aliases.items():
+            self.__endpoint_site_name(alias)
+            if owner not in sites or (alias in sites and alias != owner):
+                raise ValueError('域名别名归属不明确')
+        raw = b'\0'.join(values)
+        return dict(site=site, current=sites[site], config=config, whites=whites,
+                    white_intervals=self.__risk_white_intervals(whites),
+                    log_names=[site] + sorted(alias for alias, owner in aliases.items()
+                                              if owner == site and alias != site),
+                    revision=hashlib.sha256(raw).hexdigest(),
+                    signature=hashlib.md5(raw).hexdigest())
+
+    def get_risk_advice_sites(self, get):
+        try:
+            with self.__open_regular_file(self.__path + 'site.json') as stream:
+                raw = stream.read(2 * 1024 * 1024 + 1)
+            if len(raw) > 2 * 1024 * 1024:
+                raise ValueError('站点配置超过读取上限')
+            sites = self.__repeat_json(raw)
+            if (type(sites) is not dict or len(sites) > 5000
+                    or any(type(value) is not dict for value in sites.values())):
+                raise ValueError('站点配置不正确或超过列表上限')
+            return dict(status=True, sites=[dict(siteName=self.__endpoint_site_name(site)) for site in sorted(sites)])
+        except Exception:
+            return public.returnMsg(False, '无法读取站点列表，请检查站点配置及读取上限；未修改配置。')
+
+    def __risk_read_rows(self, context, now):
+        import datetime
+        import ipaddress
+        root = self.__risk_log_root()
+        budget = self.__legacy_log_budget()
+        budget.update(invalid_lines=0, outside_window=0, checked_candidates=0, first_seen=None, last_seen=None,
+                      requested_from=now - 86400, requested_to=now,
+                      scope='selected_site_recent_24h_denials')
+        self.__no_link_path(root)
+        dates = sorted(set(time.strftime('%Y-%m-%d', time.localtime(now - offset))
+                           for offset in (0, 86400, 90000)), reverse=True)
+        rows = []
+        analyzer = self.__ban_store_module().RiskAdviceAnalyzer
+        for date in dates:
+            for log_site in context['log_names']:
+                if (time.monotonic() > budget['deadline'] or budget['checked_candidates'] >= 4096
+                        or budget['scanned_files'] >= self.LEGACY_LOG_MAX_FILES):
+                    budget['partial'] = True
+                    break
+                budget['checked_candidates'] += 1
+                path = os.path.join(root, log_site + '_' + date + '.log')
+                if not os.path.lexists(path):
+                    continue
+                for offset, line in self.__bounded_log_rows(path, budget, opener=self.__open_regular_file):
+                    try:
+                        row = self.__repeat_json(line)
+                        if (type(row) is not list or len(row) < 6 or any(type(row[i]) is not str
+                                for i in (0, 1, 2, 3, 5)) or len(row[3]) > 8192):
+                            raise ValueError('日志字段格式不正确')
+                        parsed = datetime.datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S')
+                        ts = int(time.mktime(parsed.timetuple()))
+                        # Legacy local timestamps cannot disambiguate a repeated DST hour.
+                        alternatives = set()
+                        for dst in (0, 1):
+                            candidate = time.mktime(parsed.timetuple()[:8] + (dst,))
+                            if time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(candidate)) == row[0]:
+                                alternatives.add(int(candidate))
+                        if len(alternatives) > 1 or ts > now:
+                            raise ValueError('日志时间有歧义或在未来')
+                        if ts < now - 86400:
+                            budget['outside_window'] += 1
+                            continue
+                        if '%' in row[1] or len(row[1]) > 45:
+                            raise ValueError('日志 IP 不正确')
+                        address = ipaddress.ip_address(row[1])
+                        address = getattr(address, 'ipv4_mapped', None) or address
+                        analyzer.normalize_path(row[3])
+                        rows.append(dict(site=context['site'], ip=str(address), ts=ts,
+                                         path=row[3], rule_type=row[5]))
+                        budget['first_seen'] = ts if budget['first_seen'] is None else min(ts, budget['first_seen'])
+                        budget['last_seen'] = ts if budget['last_seen'] is None else max(ts, budget['last_seen'])
+                    except (ValueError, TypeError, OverflowError):
+                        budget['invalid_lines'] += 1
+                if budget['partial']:
+                    break
+            if budget['partial']:
+                break
+        return rows, self.__legacy_log_coverage(budget)
+
+    def __risk_white_intervals(self, whites):
+        ranges = []
+        try:
+            for rule in whites:
+                if type(rule) is not list or len(rule) != 2:
+                    raise ValueError('白名单格式不正确')
+                endpoints = []
+                for part in rule:
+                    if (type(part) is not list or len(part) != 4 or any(type(x) is not int
+                            or not 0 <= x <= 255 for x in part)):
+                        raise ValueError('白名单格式不正确')
+                    endpoints.append(sum(octet << (24 - index * 8) for index, octet in enumerate(part)))
+                if endpoints[0] > endpoints[1]:
+                    raise ValueError('白名单范围不正确')
+                ranges.append(endpoints)
+        except (ValueError, TypeError):
+            return None
+        merged = []
+        for start, end in sorted(ranges):
+            if merged and start <= merged[-1][1] + 1:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+        return ([start for start, end in merged], [end for start, end in merged])
+
+    def __risk_holds(self, context, ip):
+        import ipaddress
+        from bisect import bisect_right
+        holds = []
+        if context['config'].get('open') is not True:
+            holds.append('总防护未开启，不能确认本站封禁生效')
+        if context['current'].get('open') is not True:
+            holds.append('站点防护未开启')
+        if context['current'].get('cdn'):
+            holds.append('代理/CDN 日志缺少原始连接来源，需人工核验真实 IP')
+        address = ipaddress.ip_address(ip)
+        intervals = context['white_intervals']
+        if intervals is None:
+            holds.append('IP 白名单格式不能可靠核验')
+        elif address.version == 4:
+            starts, ends = intervals
+            offset = bisect_right(starts, int(address)) - 1
+            if offset >= 0 and int(address) <= ends[offset]:
+                holds.append('命中 IP 白名单，禁止快捷封禁')
+        return list(dict.fromkeys(holds))
+
+    def __risk_analysis(self, context):
+        now = int(time.time())
+        rows, coverage = self.__risk_read_rows(context, now)
+        items = self.__ban_store_module().RiskAdviceAnalyzer().analyze(rows, now=now)
+        items.sort(key=lambda item: (-item['recommended_seconds'], -item['strong_targets'], item['ip']))
+        coverage['items_limited'] = len(items) > 500
+        items = items[:500]
+        for item in items:
+            holds = self.__risk_holds(context, item['ip'])
+            if not item['recommended_seconds']:
+                holds.append('明确敏感目标证据未达到建议门槛，建议观察')
+            item.update(actionable=not holds, hold_reasons=holds, location='未知')
+        return now, items, coverage
+
+    def get_risk_advice(self, get):
+        try:
+            with self.__endpoint_transaction(create=False):
+                context = self.__risk_context(get)
+                now, items, coverage = self.__risk_analysis(context)
+            # Geography is optional, local and never part of severity or identity.
+            try:
+                from website_statistics import LocalGeography
+                with LocalGeography(max_lookups=500, max_seconds=0.3) as geography:
+                    for item in items:
+                        item['location'] = geography.lookup(item['ip'])['location']
+            except Exception:
+                pass
+            return dict(status=True, siteName=context['site'], analyzed_at=now, items=items,
+                        config_revision=context['revision'], coverage=coverage)
+        except Exception:
+            return public.returnMsg(False, '分析未完成：请检查站点、日志目录与防护配置；未写入或更改封禁。')
+
+    def __risk_runtime_matches(self, snapshot, signature, wait=False):
+        import http.client
+        import io
+        import socket
+        deadline = time.monotonic() + (2.5 if wait else 0.35)
+        while True:
+            connection = None
+            try:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                connection = socket.create_connection(('127.0.0.1', 39091), timeout=min(0.35, remaining))
+                connection.settimeout(min(0.35, max(0.001, deadline - time.monotonic())))
+                connection.sendall(b'GET /get_manual_site_bans HTTP/1.0\r\n'
+                                   b'Host: gpt-firewall-health.invalid\r\nConnection: close\r\n\r\n')
+                chunks, size, limit = [], 0, 1024 * 1024 + 16384
+                # Bound the complete wire read, including slowly arriving HTTP headers.
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or size > limit:
+                        raise ValueError('本地执行端响应超时或超过上限')
+                    connection.settimeout(min(0.35, remaining))
+                    chunk = connection.recv(min(65536, limit - size + 1))
+                    if time.monotonic() >= deadline:
+                        raise ValueError('本地执行端响应超时')
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    size += len(chunk)
+                wire = b''.join(chunks)
+                header_end = wire.find(b'\r\n\r\n')
+                if header_end < 0 or header_end > 16384:
+                    raise ValueError('本地执行端响应头不正确')
+
+                class BufferedResponse:
+                    def makefile(self, *args):
+                        return io.BytesIO(wire)
+
+                response = http.client.HTTPResponse(BufferedResponse())
+                response.begin()
+                body = response.read(1024 * 1024 + 1)
+                value = self.__repeat_json(body)
+                if (time.monotonic() < deadline and response.status == 200
+                        and len(body) <= 1024 * 1024 and type(value) is dict
+                        and value.get('status') is True and value.get('valid') is True
+                        and value.get('policy_signature') == signature
+                        and value.get('revision') == snapshot['revision']
+                        and value.get('entries') == snapshot['entries']):
+                    return True
+            except Exception:
+                pass
+            finally:
+                if connection is not None:
+                    connection.close()
+            if not wait or time.monotonic() >= deadline:
+                return False
+            time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+
+    def __risk_publish_result(self, snapshot, context):
+        try:
+            if os.path.lexists(self.__path + '.policy-recovery/pending.json'):
+                raise ValueError('存在未完成的策略恢复，不能重载')
+            self.__checked_nginx_reload()
+            verified = self.__risk_runtime_matches(snapshot, context['signature'], wait=True)
+        except Exception:
+            verified = False
+        return dict(status=verified, saved=True, runtime_verified=verified,
+                    verification_scope='one_local_worker_snapshot' if verified else 'unverified',
+                    msg=('已保存本站人工封禁变更，已核验本机执行端快照；不代表所有业务请求已验收。' if verified else
+                         '变更已保存，但执行端尚未确认。请检查接入与重载；不要将保存成功当作已生效。'))
+
+    def apply_risk_advice(self, get):
+        if not self.__update_request_is_post():
+            return public.returnMsg(False, '本站人工封禁仅接受面板 POST 请求。')
+        write_attempted = False
+        try:
+            import ipaddress
+            value = getattr(get, 'ip', None)
+            if type(value) is not str or len(value) > 45 or '%' in value:
+                raise ValueError('IP 格式不正确')
+            address = ipaddress.ip_address(value)
+            ip = str(getattr(address, 'ipv4_mapped', None) or address)
+            duration = getattr(get, 'duration', None)
+            if type(duration) is not str or not re.fullmatch(r'[1-9][0-9]{1,8}', duration):
+                raise ValueError('时长必须为整数秒')
+            seconds = int(duration)
+            if not 60 <= seconds <= 315360000:
+                raise ValueError('时长超过范围')
+            if seconds == 315360000 and getattr(get, 'confirm_long', None) != '1':
+                raise ValueError('10 年封禁需要单独确认')
+            fingerprint = getattr(get, 'fingerprint', None)
+            if type(fingerprint) is not str or not re.fullmatch(r'[0-9a-f]{64}', fingerprint):
+                raise ValueError('证据摘要不正确')
+            with self.__endpoint_transaction():
+                if os.path.lexists(self.__path + '.policy-recovery/pending.json'):
+                    raise ValueError('存在未完成的策略恢复')
+                context = self.__risk_context(get)
+                if getattr(get, 'config_revision', None) != context['revision']:
+                    raise ValueError('配置已变化，请重新分析确认')
+                now, items, coverage = self.__risk_analysis(context)
+                item = next((row for row in items if row['ip'] == ip), None)
+                if not item or not item['actionable'] or item['fingerprint'] != fingerprint:
+                    raise ValueError('证据或安全条件已变化，请重新分析确认')
+                if (self.__risk_context(get)['revision'] != context['revision']
+                        or os.path.lexists(self.__path + '.policy-recovery/pending.json')):
+                    raise ValueError('分析期间配置已变化或需要恢复，请重新确认')
+                store = self.__risk_store()
+                write_attempted = True
+                snapshot = store.add(context['site'], ip, seconds, fingerprint)
+                return self.__risk_publish_result(snapshot, context)
+        except Exception:
+            if write_attempted:
+                return dict(status=False, saved=None, save_uncertain=True, runtime_verified=False,
+                            verification_scope='unverified',
+                            msg='保存结果待核验：操作可能已写入，但回读或收尾失败，未继续重载。请先读取本站人工封禁核对；后续重载可能加载已写入变更，不要直接重复提交。')
+            return public.returnMsg(False, '未执行封禁：参数、证据或配置已变化，或存在安全复核项；请重新分析确认。')
+
+    def get_risk_site_bans(self, get):
+        try:
+            context = self.__risk_context(get)
+            snapshot = self.__risk_store().snapshot()
+            verified = self.__risk_runtime_matches(snapshot, context['signature'])
+            now = int(time.time())
+            rows = [row for row in snapshot['entries'] if row['site'] == context['site']
+                    and row['expires_at'] > now]
+            return dict(status=True, siteName=context['site'], entries=rows, revision=snapshot['revision'],
+                        now=now, runtime_verified=verified, site_enabled=context['current'].get('open') is True
+                        and context['config'].get('open') is True,
+                        verification_scope='one_local_worker_snapshot' if verified else 'unverified')
+        except Exception:
+            return public.returnMsg(False, '无法读取本站人工封禁；损坏或不安全的快照不会按空列表处理。')
+
+    def remove_risk_site_ban(self, get):
+        if not self.__update_request_is_post():
+            return public.returnMsg(False, '解除本站人工封禁仅接受面板 POST 请求。')
+        write_attempted = False
+        try:
+            revision = getattr(get, 'revision', None)
+            if type(revision) is not str or not re.fullmatch(r'[0-9a-f]{32}', revision):
+                raise ValueError('快照版本不正确')
+            with self.__endpoint_transaction():
+                if os.path.lexists(self.__path + '.policy-recovery/pending.json'):
+                    raise ValueError('存在未完成的策略恢复')
+                context = self.__risk_context(get)
+                store = self.__risk_store()
+                write_attempted = True
+                snapshot = store.remove(context['site'], getattr(get, 'ip', None), expected_revision=revision)
+                return self.__risk_publish_result(snapshot, context)
+        except Exception:
+            if write_attempted:
+                return dict(status=False, saved=None, save_uncertain=True, runtime_verified=False,
+                            verification_scope='unverified',
+                            msg='解除保存结果待核验：操作可能已写入，但回读或收尾失败，未继续重载。请先读取本站人工封禁核对；后续重载可能加载已写入变更，不要直接重复提交。')
+            return public.returnMsg(False, '未确认解除：请重新读取本站人工封禁记录后重试；其他封禁与累计次数未修改。')
 
     def __repeat_page(self, value, maximum):
         if type(value) is str and re.fullmatch(r'[1-9][0-9]{0,8}', value):
@@ -1331,26 +1810,64 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         self.__write_config(config)
         return public.returnMsg(True,'设置成功!');
     
+    def __cc_integer(self, value, minimum, maximum, label):
+        message = '%s必须为 %d..%d 范围内的整数。' % (label, minimum, maximum)
+        if type(value) is str:
+            if (len(value) > len(str(maximum))
+                    or not re.fullmatch(r'(?:0|[1-9][0-9]*)', value)):
+                raise ValueError(message)
+            value = int(value)
+        if type(value) is not int or not minimum <= value <= maximum:
+            raise ValueError(message)
+        return value
+
+    def __cc_config_validated(operation):
+        from functools import wraps
+
+        @wraps(operation)
+        def call(self, get):
+            # Validate before mutation decorators can create a lock or read policy.
+            try:
+                fields = (('cycle', 1, 86400, 'CC 统计周期'),
+                          ('limit', 1, 1000000, 'CC 请求次数'),
+                          ('endtime', 1, 60, 'CC 封禁时长'),
+                          ('increase', 0, 1, 'CC 增强开关'))
+                values = {name: self.__cc_integer(getattr(get, name, None), low, high, label)
+                          for name, low, high, label in fields}
+                values['increase'] = bool(values['increase'])
+                if operation.__name__ == 'set_site_cc_conf':
+                    self.__endpoint_site_name(getattr(get, 'siteName', None))
+            except ValueError as error:
+                return public.returnMsg(False, str(error))
+            return operation(self, get, values)
+        return call
+
+    @__cc_config_validated
     @__policy_mutation
-    def set_cc_conf(self,get):
+    def set_cc_conf(self, get, cc_values):
         config = self.get_config(None)
-        config['cc']['cycle'] = int(get.cycle)
-        config['cc']['limit'] = int(get.limit)
-        config['cc']['endtime'] = int(get.endtime)
-        config['cc']['increase'] = (get.increase == '1') | False
+        config['cc'].update(cc_values)
         self.__write_config(config)
-        self.__write_log('设置全局 CC 配置：' + get.cycle + ' 秒内累计请求超过 ' + get.limit + ' 次，封禁 ' + get.endtime + ' 秒，增强：' + get.increase);
+        self.__write_log('设置全局 CC 配置：%d 秒内累计请求超过 %d 次，封禁 %d 秒，增强：%d' % (
+            cc_values['cycle'], cc_values['limit'], cc_values['endtime'], cc_values['increase']))
         return public.returnMsg(True,'设置成功!');
     
+    @__cc_config_validated
     @__site_config_locked
-    def set_site_cc_conf(self,get):
-        site_config = self.get_site_config(None)
-        site_config[get.siteName]['cc']['cycle'] = int(get.cycle)
-        site_config[get.siteName]['cc']['limit'] = int(get.limit)
-        site_config[get.siteName]['cc']['endtime'] = int(get.endtime)
-        site_config[get.siteName]['cc']['increase'] = (get.increase == '1') | False
+    def set_site_cc_conf(self, get, cc_values):
+        try:
+            site_config = self.get_site_config(None)
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            return public.returnMsg(False, '站点配置读取失败或格式不正确，未修改 CC 配置。')
+        if type(site_config) is not dict or get.siteName not in site_config:
+            return public.returnMsg(False, '站点不存在或站点配置不可用，未修改 CC 配置。')
+        site = site_config[get.siteName]
+        if type(site) is not dict or type(site.get('cc')) is not dict:
+            return public.returnMsg(False, '站点 CC 配置缺失或格式不正确，未自动修复或写入。')
+        site_config[get.siteName]['cc'].update(cc_values)
         self.__write_site_config(site_config)
-        self.__write_log('设置站点 ['+get.siteName+'] CC 配置：' + get.cycle + ' 秒内累计请求超过 ' + get.limit + ' 次，封禁 ' + get.endtime + ' 秒，增强：' + get.increase);
+        self.__write_log('设置站点 [%s] CC 配置：%d 秒内累计请求超过 %d 次，封禁 %d 秒，增强：%d' % (
+            get.siteName, cc_values['cycle'], cc_values['limit'], cc_values['endtime'], cc_values['increase']))
         return public.returnMsg(True,'设置成功!');
     
     @__policy_mutation
@@ -1656,30 +2173,35 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         ))
 
         try:
-            config = json.loads(public.readFile(self.__path + 'config.json') or '{}')
+            config = json.loads(public.readFile(self.__path + 'config.json'))
         except:
-            config = {}
-        cc_conf = config.get('cc', {}) if type(config) == dict else {}
+            config = None
+        config_ok = type(config) is dict
+        cc_conf = config.get('cc', {}) if config_ok else {}
         try:
-            cc_endtime = int(cc_conf.get('endtime', 0))
-        except:
+            cc_endtime = self.__cc_integer(cc_conf.get('endtime'), 1, 60, 'CC 封禁时长')
+        except (AttributeError, ValueError):
             cc_endtime = 0
         try:
-            raw_site_config = public.readFile(self.__path + 'site.json') or '{}'
+            raw_site_config = public.readFile(self.__path + 'site.json')
             site_config = json.loads(raw_site_config)
         except:
-            site_config = {}
+            site_config = None
         bad_site_cc = []
-        for site_name in site_config:
+        site_config_ok = type(site_config) is dict
+        for site_name in site_config if site_config_ok else ():
             try:
                 site_cc = site_config[site_name].get('cc', {})
-                if type(site_cc) == dict and int(site_cc.get('endtime', 60)) != 60:
-                    bad_site_cc.append(site_name)
-            except:
-                pass
+                self.__cc_integer(site_cc.get('endtime', 60), 1, 60, 'CC 封禁时长')
+            except (AttributeError, ValueError):
+                bad_site_cc.append(site_name)
         cc_runtime_ok = ('endtime * safe_count' not in init_lua and 'local lock_time = tonumber(endtime) or 60' in init_lua)
-        cc_ok = (cc_endtime == 60 and not bad_site_cc and cc_runtime_ok)
-        detail = '全局和站点 CC 封禁时长固定为 60 秒。' if cc_ok else 'CC 配置或运行时未完全固定为 60 秒。'
+        cc_ok = (1 <= cc_endtime <= 60 and site_config_ok and not bad_site_cc and cc_runtime_ok)
+        detail = '全局和站点 CC 封禁时长均在 1..60 秒内，运行时不叠加封禁。' if cc_ok else 'CC 配置未全部满足 1..60 秒范围，或运行时仍可能叠加封禁。'
+        if not config_ok:
+            detail += ' config.json 读取失败、为空或格式无效，未确认全局配置。'
+        if not site_config_ok:
+            detail += ' site.json 读取失败、为空或格式无效，未确认站点配置。'
         if bad_site_cc:
             detail += ' 站点覆盖：' + ', '.join(bad_site_cc[:8])
         items.append(self.__safety_item(
@@ -1687,7 +2209,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             'CC封禁时长',
             cc_ok,
             detail,
-            '将全局和站点 CC endtime 保持为 60 秒，并保持运行时不叠加封禁。'
+            '将全局和站点 CC endtime 保持在 1..60 秒内，并保持运行时不叠加封禁。'
         ))
 
         try:
@@ -2275,100 +2797,112 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         self.__write_site_config(site_config)
         return public.returnMsg(True,'设置成功!');
     
+    def __legacy_display_log_row(self, row, drop_ip):
+        import ipaddress
+        import math
+        if type(row) is not list or len(row) < (5 if drop_ip else 6):
+            return None
+        if type(row[1]) is not str:
+            return None
+        try:
+            ipaddress.ip_address(row[1])
+            if drop_ip:
+                numbers = []
+                for value in (row[0], row[4]):
+                    if type(value) not in (str, int, float):
+                        return None
+                    number = float(value)
+                    if not math.isfinite(number) or not number.is_integer() or not 0 <= number <= 253402300799:
+                        return None
+                    numbers.append(int(number))
+            values = list(row[:6 if drop_ip else 7])
+            while len(values) < (6 if drop_ip else 7):
+                values.append('')
+            if any(type(value) not in (str, int, float, bool, type(None)) for value in values):
+                return None
+            values = [html.escape('' if value is None else str(value), quote=True) for value in values]
+            if drop_ip:
+                values[0], values[4] = numbers
+            return values
+        except (ValueError, TypeError, OverflowError):
+            return None
+
     def get_safe_logs(self,get):
         try:
-            import cgi
-            pythonV = sys.version_info[0]
-            if 'drop_ip' in get:
-                path = '/www/server/free_waf/drop_ip.log'
-                num = 14
+            from datetime import datetime
+            page = self.__repeat_page(getattr(get, 'p', 1), 1000000)
+            drop_ip = getattr(get, 'drop_ip', None) is not None
+            if drop_ip:
+                path = self.__path + 'drop_ip.log'
             else:
-                path = '/www/wwwlogs/free_waf_log/' + get.siteName + '_' + get.toDate + '.log'
-                num = 10
-            if not os.path.exists(path): return []
-            p = 1
-            if 'p' in get:
-                p = int(get.p)
-            start_line = (p - 1) * num
-            count = start_line + num
-            fp = open(path, 'rb')
-            buf = ""
-            try:
-                fp.seek(-1, 2)
-            except:
+                site = self.__endpoint_site_name(getattr(get, 'siteName', None))
+                day = getattr(get, 'toDate', None)
+                if type(day) is not str or not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', day):
+                    raise ValueError('invalid log date')
+                datetime.strptime(day, '%Y-%m-%d')
+                path = '/www/wwwlogs/free_waf_log/' + site + '_' + day + '.log'
+            if not os.path.exists(path):
                 return []
-            if fp.read(1) == "\n": fp.seek(-1, 2)
-            data = []
-            b = True
-            n = 0
-            c = 0
-            while c < count:
-                while True:
-                    newline_pos = str.rfind(buf, "\n")
-                    pos = fp.tell()
-                    if newline_pos != -1:
-                        if n >= start_line:
-                            line = buf[newline_pos + 1:]
-                            if line:
-                                try:
-                                    tmp_data = json.loads(html.escape(line, quote=False))
-                                    for i in range(len(tmp_data)):
-                                        if i == 7:
-                                            tmp_data[i] = str(tmp_data[i]).replace('&amp;', '&').replace('&lt;',
-                                                                                                         '<').replace(
-                                                '&gt;', '>')
-                                        else:
-                                            tmp_data[i] = html.escape(str(tmp_data[i]), quote=True)
-                                    data.append(tmp_data)
-                                except:
-                                    c -= 1
-                                    n -= 1
-                                    pass
-                            else:
-                                c -= 1
-                                n -= 1
-                        buf = buf[:newline_pos]
-                        n += 1
-                        c += 1
+            # Both legacy tables paginate in groups of ten valid records.
+            offset, data, seen, matched = (page - 1) * 10, [], set(), 0
+            _, active_identities = self.__runtime_ip_snapshot() if drop_ip else (set(), set())
+            now = time.time()
+            budget = self.__legacy_log_budget()
+            records = self.__bounded_log_rows(path, budget)
+            try:
+                for _, line in records:
+                    try:
+                        row = self.__legacy_display_log_row(json.loads(line), drop_ip)
+                    except (ValueError, TypeError, RecursionError):
+                        continue
+                    if row is None:
+                        continue
+                    if drop_ip:
+                        address = self.__runtime_ip_identity(row[1])
+                        active = row[0] <= now < row[0] + row[4] and address in active_identities and address not in seen
+                        row.append(active)
+                        if active:
+                            seen.add(address)
+                    matched += 1
+                    if matched <= offset:
+                        continue
+                    data.append(row)
+                    if len(data) == 10:
                         break
-                    else:
-                        if pos == 0:
-                            b = False
-                            break
-                        to_read = min(4096, pos)
-                        fp.seek(-to_read, 1)
-                        t_buf = fp.read(to_read)
-                        if pythonV == 3: t_buf = t_buf.decode('utf-8', errors="ignore")
-                        buf = t_buf + buf
-                        fp.seek(-to_read, 1)
-                        if pos - to_read == 0:
-                            buf = "\n" + buf
-                if not b: break
-            fp.close()
-            if 'drop_ip' in get:
-                drop_iplist = self.get_waf_drop_ip(None)
-                stime = time.time()
-                setss = []
-                for i in range(len(data)):
-                    if (float(stime) - float(data[i][0])) < float(data[i][4]) and not data[i][1] in setss:
-                        setss.append(data[i][1])
-                        data[i].append(data[i][1] in drop_iplist)
-                    else:
-                        data[i].append(False)
-        except:
-            return public.get_error_info()
-            data = []
-        return data
+            finally:
+                records.close()
+            if budget['partial']:
+                return public.returnMsg(False, '日志读取达到资源上限或文件不可读取；未确认完整结果，请缩小查询范围。')
+            return data
+        except Exception:
+            return public.returnMsg(False, '日志查询未完成，请检查站点、日期、页码和日志文件；未修改任何数据。')
     
     def get_logs_list(self,get):
-        path = '/www/wwwlogs/free_waf_log/'
-        sfind = get.siteName + '_'
-        data = []
-        for fname in os.listdir(path):
-            if fname.find(sfind) != 0: continue;
-            tmp = fname.replace(sfind,'').replace('.log','')
-            data.append(tmp)
-        return sorted(data,reverse=True);
+        from datetime import datetime
+        try:
+            site = self.__endpoint_site_name(getattr(get, 'siteName', None))
+            pattern = re.compile(re.escape(site) + r'_([0-9]{4}-[0-9]{2}-[0-9]{2})\.log')
+            try:
+                entries = os.scandir('/www/wwwlogs/free_waf_log/')
+            except FileNotFoundError:
+                return []
+            days = set()
+            deadline = time.monotonic() + self.LEGACY_LOG_MAX_SECONDS
+            with entries:
+                for index, entry in enumerate(entries):
+                    if index >= self.LEGACY_LOG_MAX_LINES or time.monotonic() > deadline:
+                        raise ValueError('log directory budget exceeded')
+                    match = pattern.fullmatch(entry.name)
+                    if not match or not entry.is_file(follow_symlinks=False):
+                        continue
+                    try:
+                        datetime.strptime(match.group(1), '%Y-%m-%d')
+                    except ValueError:
+                        continue
+                    days.add(match.group(1))
+            return sorted(days, reverse=True)
+        except Exception:
+            return public.returnMsg(False, '日志日期列表读取未完成，请检查站点、目录权限或日志数量；未修改任何数据。')
     
     def get_waf_drop_ip(self,get):
         try:
@@ -2558,14 +3092,14 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
     def __legacy_log_coverage(self, budget):
         return {key: value for key, value in budget.items() if key != 'deadline'}
 
-    def __bounded_log_rows(self, path, budget):
+    def __bounded_log_rows(self, path, budget, opener=None):
         import stat
         if budget['scanned_files'] >= self.LEGACY_LOG_MAX_FILES:
             budget['partial'] = True
             return
         budget['scanned_files'] += 1
         try:
-            with open(path, 'rb') as stream:
+            with (opener(path) if opener else open(path, 'rb')) as stream:
                 if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                     budget['partial'] = True
                     return
@@ -2683,10 +3217,12 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
 
         rows = []
         total = 0
-        if not os.path.exists(log_dir):
-            return {'rows': [], 'total': 0, 'p': p, 'limit': page_size, 'summary': {'matched': 0}}
-
         budget = self.__legacy_log_budget()
+        if not os.path.exists(log_dir):
+            return dict(rows=[], total=0, p=p, limit=page_size, has_more=False,
+                        total_exact=True, coverage=self.__legacy_log_coverage(budget),
+                        summary={'matched': 0})
+
         files = self.__bounded_waf_files(log_dir, self.__date_list(days), siteName, budget)
         records = self.__merged_waf_rows(files, budget)
         has_more = False
@@ -2780,31 +3316,45 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         except:
             return public.returnMsg(False, '日志详情读取失败')
 
-    def __parse_drop_row(self, row, active_ips):
-        while len(row) < 6:
-            row.append('')
+    def __runtime_ip_identity(self, value):
+        import ipaddress
+        if type(value) is not str or len(value) > 45 or '%' in value:
+            return None
         try:
-            start_ts = int(float(row[0]))
-        except:
-            start_ts = 0
-        try:
-            duration = int(float(row[4]))
-        except:
-            duration = 0
-        ip = str(row[1])
-        active = ip in active_ips and (duration <= 0 or int(time.time()) - start_ts < duration)
-        reason = str(row[5])
+            return str(ipaddress.ip_address(value))
+        except ValueError:
+            return None
+
+    def __runtime_ip_snapshot(self):
+        """Return valid display strings and canonical identities from one runtime query."""
+        data = self.get_waf_drop_ip(None)
+        values = data.keys() if isinstance(data, dict) else data if isinstance(data, (list, tuple, set)) else ()
+        originals, identities = set(), set()
+        for value in values:
+            identity = self.__runtime_ip_identity(value)
+            if identity is not None:
+                originals.add(value)
+                identities.add(identity)
+        return originals, identities
+
+    def __parse_drop_row(self, row, active_identities):
+        row = self.__legacy_display_log_row(row, True)
+        if row is None:
+            return None
+        start_ts, duration, ip, reason = row[0], row[4], row[1], row[5]
         reason_text = 'CC攻击' if reason == 'cc' else ('黑名单' if reason == 'ip_black' else ('人工临时封禁' if reason == 'manual_temp' else '恶意请求'))
         return {
             'start_time': start_ts,
             'start_time_text': self.__safe_text(time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_ts))) if start_ts else '',
-            'ip': self.__safe_text(ip),
-            'site': self.__safe_text(row[2]),
-            'uri': self.__safe_text(row[3]),
+            'ip': ip,
+            'site': row[2],
+            'uri': row[3],
             'duration': duration,
-            'reason': self.__safe_text(reason),
+            'reason': reason,
             'reason_text': reason_text,
-            'active': active
+            'active': self.__runtime_ip_identity(ip) in active_identities,
+            'active_scope': 'global_ip_only',
+            'active_notice': self.BLOCKADE_ACTIVE_NOTICE
         }
 
     def get_blockade_records(self, get):
@@ -2824,11 +3374,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             page_size = 10
         if page_size > 500:
             page_size = 500
-        active_data = self.get_waf_drop_ip(None)
-        if type(active_data) == dict:
-            active_ips = set(active_data.keys())
-        else:
-            active_ips = set(active_data or [])
+        active_ips, active_identities = self.__runtime_ip_snapshot()
         records = []
         budget = self.__legacy_log_budget()
         if os.path.exists(path):
@@ -2840,7 +3386,9 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                         continue
                     try:
                         row = json.loads(raw_line)
-                        records.append(self.__parse_drop_row(row, active_ips))
+                        parsed = self.__parse_drop_row(row, active_identities)
+                        if parsed is not None:
+                            records.append(parsed)
                     except:
                         pass
                 fp.close()
@@ -2855,23 +3403,30 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             'total': total,
             'p': p,
             'limit': page_size,
+            'has_more': end < total,
             'coverage': self.__legacy_log_coverage(budget),
             'total_exact': not budget['partial'],
+            'active_scope': 'global_ip_only',
+            'active_notice': self.BLOCKADE_ACTIVE_NOTICE,
             'active_ips': sorted(list(active_ips))
         }
 
     def export_blockade_records(self, get):
         """Export blockade records as JSON data for operator download."""
         path = '/www/server/free_waf/drop_ip.log'
-        active_data = self.get_waf_drop_ip(None)
         data = self.get_blockade_records(get)
         return {
             'exported_at': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
-            'active_ips': data.get('active_ips', sorted(list(active_data.keys())) if type(active_data) == dict else active_data),
+            'active_ips': data['active_ips'],
             'records': data.get('rows', []),
             'total': data.get('total', 0),
+            'p': data.get('p', 1),
+            'limit': data.get('limit', 100),
+            'has_more': data.get('has_more', False),
             'coverage': data.get('coverage', {}),
             'total_exact': data.get('total_exact', False),
+            'active_scope': data.get('active_scope', 'global_ip_only'),
+            'active_notice': data.get('active_notice', self.BLOCKADE_ACTIVE_NOTICE),
             'source': path
         }
 
@@ -2905,9 +3460,8 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         today_str = time.strftime('%Y-%m-%d', time.localtime())
         day_ago = time.time() - 86400
         first_seen_ts = 0
-        active_data = self.get_waf_drop_ip(None)
-        active_ips = set(active_data.keys()) if isinstance(active_data, dict) else set(active_data or [])
-        active_count = len(active_ips)
+        active_ips, active_identities = self.__runtime_ip_snapshot()
+        active_count = len(active_identities)
         _geo = None
         _geo_cache = {}
         _geo_type = None
@@ -3053,33 +3607,35 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                     if type(row) != list or len(row) < 6:
                         continue
                     ip = str(row[1])
-                    if ip not in blocked_map:
-                        blocked_map[ip] = {
+                    identity = self.__runtime_ip_identity(ip) or ip
+                    if identity not in blocked_map:
+                        blocked_map[identity] = {
                             'ip': self.__safe_text(ip),
                             'count_24h': 0,
                             'total_count': 0,
                             'last_time': '',
                             'reason': '',
-                            'active': ip in active_ips
+                            'active': identity in active_identities
                         }
-                    blocked_map[ip]['total_count'] += 1
+                    blocked_map[identity]['total_count'] += 1
                     try:
                         row_ts = int(float(row[0]))
                     except:
                         row_ts = 0
                     if row_ts >= day_ago:
-                        blocked_map[ip]['count_24h'] += 1
-                    if row_ts and (not blocked_map[ip]['last_time'] or row_ts > int(float(blocked_map[ip].get('_last_ts', 0) or 0))):
-                        blocked_map[ip]['_last_ts'] = row_ts
-                        blocked_map[ip]['last_time'] = self.__safe_text(time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(row_ts)))
-                        blocked_map[ip]['reason'] = self.__safe_text(row[5])
-                    blocked_map[ip]['active'] = blocked_map[ip]['active'] or ip in active_ips
+                        blocked_map[identity]['count_24h'] += 1
+                    if row_ts and (not blocked_map[identity]['last_time'] or row_ts > int(float(blocked_map[identity].get('_last_ts', 0) or 0))):
+                        blocked_map[identity]['_last_ts'] = row_ts
+                        blocked_map[identity]['last_time'] = self.__safe_text(time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(row_ts)))
+                        blocked_map[identity]['reason'] = self.__safe_text(row[5])
+                    blocked_map[identity]['active'] = blocked_map[identity]['active'] or identity in active_identities
                 fp.close()
             except:
                 pass
-        for ip in active_ips:
-            if ip not in blocked_map:
-                blocked_map[ip] = {
+        for ip in sorted(active_ips):
+            identity = self.__runtime_ip_identity(ip)
+            if identity not in blocked_map:
+                blocked_map[identity] = {
                     'ip': self.__safe_text(ip),
                     'count_24h': 0,
                     'total_count': 0,
@@ -3604,11 +4160,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
 
     def sync_rule(self, get):
         """兼容前端规则同步按钮；免费版没有可靠的云规则源，保留本地规则。"""
-        try:
-            self.sync_cnlist(None)
-        except:
-            pass
-        return public.returnMsg(True, '规则同步检查完成：本地规则已保留，国内 IP 库已尝试同步。')
+        return public.returnMsg(False, '旧版规则联网同步已停用：未连接云端，现有本地规则和国内 IP 库保持不变。')
 
     def get_gl_logs(self, get):
         import page

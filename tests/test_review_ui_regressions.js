@@ -40,6 +40,7 @@ function harness() {
         return api;
       },
       click(callback) { return api.on('click', callback); },
+      unbind(events) { return api.off(events); },
       find(child) { return $(child); }, children(child) { return $(key + ' > ' + child); },
       closest(child) { return $(child); }, first() { return api; }, last() { return api; },
       eq() { return api; }, parent() { return api; }, siblings() { return api; },
@@ -131,6 +132,42 @@ function ip(value = '192.0.2.10', site = 'a.example') {
 }
 function uri(value) { return { uri: value, count: 2, last_time: '2026-10-23 12:00:00', sites: ['a.example'], types: { args: 2 } }; }
 function switchEvent(table) { return table.config.find(column => column.fid === 'open').event; }
+
+test('forum: legacy log details display PCRE rules as text without compiling JavaScript', () => {
+  const h = harness();
+  h.waf.render_site_logs({ siteName: 'fixture.example', toDate: '2026-10-26', p: 1 });
+  const row = ['2026-10-26 12:00:00', '192.0.2.1', 'POST', '/save?x=&lt;img&gt;&amp;y=1',
+    '&lt;img src=x onerror=alert(1)&gt;', 'post', '(?i)&lt;script&gt; &gt;&gt; value:&lt;img&gt; &gt;&gt; tail'];
+  h.of('get_safe_logs').at(-1).resolve([row]);
+  const columns = h.tables.get('#site_logs_table').config;
+  const detail = columns.at(-1).group.find(action => action.title === '\u8be6\u60c5');
+  assert.doesNotThrow(() => detail.event(row, 0));
+  const content = h.dialogs.at(-1).content;
+  assert.ok(content.includes('(?i)&lt;script&gt;'));
+  assert.ok(content.includes('value:&lt;img&gt; &gt;&gt; tail'));
+  assert.ok(content.includes('/save?x=&lt;img&gt;&amp;y=1'));
+  assert.doesNotMatch(content, /<img|&amp;lt;|&amp;gt;/);
+  const address = columns.find(column => column.fid === '3').templet(row, 0);
+  assert.equal(address, '/save?x=&lt;img&gt;&amp;y=1');
+});
+
+test('forum: log entities are decoded once then escaped for text display', () => {
+  const h = harness();
+  assert.equal(h.waf.legacy_log_html('&amp;lt;img&amp;gt;'), '&amp;lt;img&amp;gt;');
+  assert.equal(h.waf.legacy_log_html('&lt;img&gt;'), '&lt;img&gt;');
+  assert.equal(h.waf.legacy_log_html('<img>'), '&lt;img&gt;');
+  assert.equal(h.waf.legacy_log_html('&#x27;quoted&#x27;=&quot;value&quot;'), '&#39;quoted&#39;=&quot;value&quot;');
+});
+
+test('forum: a log without a rule value still opens details', () => {
+  const h = harness();
+  h.waf.render_site_logs({ siteName: 'fixture.example', toDate: '2026-10-26', p: 1 });
+  const row = ['2026-10-26 12:00:00', '192.0.2.1', 'GET', '/save', '', 'url', ''];
+  h.of('get_safe_logs').at(-1).resolve([row]);
+  const actions = h.tables.get('#site_logs_table').config.at(-1).group;
+  assert.doesNotThrow(() => actions.find(action => action.title === '\u8be6\u60c5').event(row, 0));
+  assert.doesNotMatch(h.dialogs.at(-1).content, /undefined|NaN/);
+});
 
 test('R01: late A config cannot replace B or make its CC button write A', () => {
   const h = harness(), a = h.site('a.example'), b = h.site('b.example');

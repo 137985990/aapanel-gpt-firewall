@@ -321,7 +321,8 @@ class AttackGeographyTest(unittest.TestCase):
         self.assertEqual(locations['8.8.8.8']['location'], '美国 山景城')
         self.assertEqual(locations['1.1.1.1']['location'], '中国 广东')
         self.assertEqual(locations['10.0.0.1']['location_status'], 'private')
-        self.assertEqual(locations['not-an-ip']['location'], '未知')
+        self.assertNotIn('not-an-ip', locations)
+        self.assertEqual(result['active_bans'], 3)
         self.assertEqual(self.reader.get.call_args_list, [call('8.8.8.8'), call('1.1.1.1')])
 
     def test_blocked_ips_survive_missing_database_with_explicit_unknown(self):

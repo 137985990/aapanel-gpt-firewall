@@ -357,6 +357,28 @@
 	.waf-policy-form .wide{grid-column:1/-1}
 	.waf-policy-form input:not([type="checkbox"]),.waf-policy-form select,#repeat_ban_site{height:34px;width:100%;border:1px solid #cedbd2;border-radius:4px;background:#fff;padding:5px 8px;box-sizing:border-box;color:#263b32;font-size:13px}
 	#repeat_ban_site{width:240px;max-width:100%}
+	.repeat-ban-site-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px;max-height:240px;overflow:auto;padding:10px 0}
+	.repeat-ban-site-choice{display:flex;align-items:center;gap:8px;margin:0;padding:10px 12px;border:1px solid #e1e9e4;border-radius:4px;background:#f8fbf9;overflow-wrap:anywhere;font-weight:400;cursor:pointer}
+	.repeat-ban-site-choice input{flex-shrink:0;margin:0;accent-color:#289463}
+	.risk-advice-card{border-top:3px solid #289463!important;background:linear-gradient(135deg,#fff,#f7fbf8)}
+	.risk-advice-heading{display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:14px}
+	.risk-advice-heading small{font-size:11px;color:#6f8276}
+	.risk-advice-table{width:100%;min-width:1060px}
+	.risk-advice-actions{display:flex;flex-wrap:wrap;gap:5px;min-width:180px}
+	.risk-advice-tag{display:inline-block;padding:2px 7px;border:1px solid #cfe4d6;border-radius:4px;color:#28794f;background:#edf7f0;font-size:11px;margin-bottom:5px}
+	.risk-advice-tag[data-state="hold"]{color:#86652c;background:#fff8e9;border-color:#eadab7}
+	.risk-advice-detail{margin:12px 0;padding:14px;border:1px solid #d7e6dc;border-radius:6px;background:#f6faf7;overflow-wrap:anywhere}
+	.risk-advice-detail pre{white-space:pre-wrap;max-height:180px;overflow:auto;background:#fff;border:1px solid #e1e9e4;padding:10px;font-size:12px}
+	.risk-advice-form{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0}
+	.risk-advice-form label{font-size:12px;font-weight:400;margin:0}
+	#risk-advice-site,#risk-advice-custom-value,#risk-advice-custom-unit{height:34px;padding:5px 8px;border:1px solid #cedbd2;border-radius:4px;background:#fff;color:#263b32;max-width:100%}
+	#risk-advice-site{width:260px}#risk-advice-custom-value{width:130px}
+	#risk-advice-mutation{padding:8px 0;white-space:pre-wrap}
+	#risk-advice-mutation[data-state="saved"],#risk-advice-mutation[data-state="unknown"]{color:#936927}
+	@media (max-width:720px){.risk-advice-heading{flex-direction:column}.risk-advice-form label{flex-basis:100%}.risk-advice-detail{padding:10px}}
+	#repeat_ban_bulk_filter{width:260px;max-width:100%;height:34px;padding:5px 8px;border:1px solid #cedbd2;border-radius:4px}
+	#repeat_ban_bulk_snapshot{max-height:240px;overflow:auto}
+	.repeat-ban-snapshot-row{padding:8px 10px;border-bottom:1px solid #e1e9e4}
 	.repeat-ban-tier{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;align-items:end;gap:12px;padding:12px 0;border-bottom:1px solid #e1e9e4}
 	#repeat_ban_tiers{grid-column:1/-1;min-width:0}
 	#repeat_ban_table{min-width:1050px}
@@ -376,7 +398,7 @@
 	@media (max-width:720px){.waf-shell-header{padding:14px 16px;align-items:flex-start;flex-direction:column;gap:12px}.waf-brand strong{font-size:21px}.waf-brand-mark{width:35px;height:39px}.waf-shell-state{justify-content:flex-start;font-size:11px}.waf-navigation{padding:0 14px}.waf-section-tabs{gap:4px}.waf-section-tabs button{min-width:0;font-size:12px;white-space:normal;padding:11px 0}.waf_left_menu{gap:4px;padding:8px 0}.waf_left_menu li button{padding:5px 9px}.waf_rigth_body{padding:16px 12px}.waf-policy-form{grid-template-columns:1fr}.waf-policy-form .wide{grid-column:auto}.waf-policy-layout{gap:0}.waf_conter .waf-card{padding:12px}.waf_conter .waf-page-title{padding:12px}.waf_conter .waf-toolbar{gap:8px}}
 	@media (prefers-reduced-motion:no-preference){.waf_rigth_body>.item_con.active{animation:waf-page-enter .16s ease-out}@keyframes waf-page-enter{from{opacity:.5;transform:translateY(3px)}to{opacity:1;transform:none}}}
 </style>
-<div class="waf_conter" data-version="0.1.9">
+<div class="waf_conter" data-version="0.1.10">
 	<header class="waf-shell-header">
 		<div class="waf-brand"><div class="waf-brand-mark" aria-hidden="true"><svg viewBox="0 0 32 36" fill="none"><path d="M16 2 29 7v10c0 8-6 13-13 17C9 30 3 25 3 17V7L16 2Z" stroke="currentColor" stroke-width="2"/><path d="m10 17 4 4 8-9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div><strong>aapanel GPT Firewall</strong><small>网站安全控制台 · 社区维护版</small></div></div>
 		<div class="waf-shell-state"><span id="waf_config_status">读取配置中</span><span class="waf-runtime-pill" id="waf_shell_status" data-state="unverified" role="status">接入待核验</span><button type="button" class="btn btn-default btn-sm" id="runtime_status_refresh">核验接入</button></div>
@@ -616,22 +638,30 @@
 			</div>
 		</div>
 		<div class="item_con" data-type="repeat_ban">
-			<div class="waf-page-title"><h3>重复封禁升级</h3><p>按站点配置滚动窗口与升级阶梯。默认停用，只有明确启用并保存后才生效；不会自动刷新。</p></div>
+			<div class="waf-page-title"><h3>重复封禁升级</h3><p>支持单站点或多站点批量配置滚动窗口与升级阶梯。各站独立计数、独立封禁；不会自动刷新或自动启用。</p></div>
 			<div class="waf-notice-safe">仅统计同一站点、同一 IP 的独立且成功的自动封禁；已封禁期间的重复请求不计数，也不会触发升级或延长封禁。手动封禁、普通规则命中，以及仅观察或仅拒绝的请求均不计数。默认滚动 24 小时：达到 5 次对应 7 天，达到 10 次对应 30 天。</div>
 			<div class="waf-card">
-				<div class="waf-toolbar"><label for="repeat_ban_site">管理站点</label><select id="repeat_ban_site" disabled><option value="">请先加载并选择站点</option></select><button type="button" class="btn btn-default btn-sm" id="repeat_ban_sites_refresh">重新读取站点</button><button type="button" class="btn btn-default btn-sm" id="repeat_ban_policy_refresh" disabled>重读策略</button></div>
+				<div class="waf-toolbar"><button type="button" class="btn btn-success btn-sm" id="repeat_ban_mode_single" aria-pressed="true">单站点配置与记录</button><button type="button" class="btn btn-default btn-sm" id="repeat_ban_mode_bulk" aria-pressed="false">批量配置站点</button><button type="button" class="btn btn-default btn-sm" id="repeat_ban_sites_refresh">重新读取站点</button></div>
+				<div class="waf-toolbar" id="repeat_ban_single_scope"><label for="repeat_ban_site">管理站点</label><select id="repeat_ban_site" disabled><option value="">请先加载并选择站点</option></select><button type="button" class="btn btn-default btn-sm" id="repeat_ban_policy_refresh" disabled>重读策略</button></div>
+				<div id="repeat_ban_bulk_scope" style="display:none">
+					<div class="waf-toolbar"><label for="repeat_ban_bulk_filter">筛选站点</label><input id="repeat_ban_bulk_filter" type="search" placeholder="输入站点名称，不改变已选站点" /><button type="button" class="btn btn-default btn-sm" id="repeat_ban_bulk_all">全选筛选结果</button><button type="button" class="btn btn-default btn-sm" id="repeat_ban_bulk_clear">取消筛选结果</button><span id="repeat_ban_bulk_count" role="status" aria-live="polite">已选 0 个站点</span></div>
+					<div id="repeat_ban_bulk_sites" class="repeat-ban-site-grid"></div>
+					<div class="waf-toolbar"><button type="button" class="btn btn-default btn-sm" id="repeat_ban_bulk_read" disabled>读取所选站点策略</button><span class="waf-policy-meta">每次最多 500 个站点；选择不保存，未选站点不变。新建站点不会自动加入本次配置。</span></div>
+					<div id="repeat_ban_bulk_snapshot" class="waf-policy-meta">尚未读取所选站点策略。</div>
+				</div>
 				<div id="repeat_ban_status" class="waf-policy-meta" role="status" aria-live="polite">打开本页后读取站点，选定站点后才读取策略与封禁记录。</div>
 			</div>
 			<div class="waf-policy-layout">
 				<div class="waf-card">
-					<h4>本站点升级阶梯</h4>
+					<h4 id="repeat_ban_editor_title">本站点升级阶梯</h4>
 					<form id="repeat_ban_editor">
 						<fieldset class="waf-policy-form" id="repeat_ban_fields" disabled>
 							<label class="wide" for="repeat_ban_window_seconds">滚动统计窗口（秒）<input type="number" id="repeat_ban_window_seconds" min="60" max="604800" step="1" value="86400" /><small>60 至 604800 秒；86400 秒 = 24 小时。</small></label>
 							<div id="repeat_ban_tiers"></div>
 							<div class="wide waf-toolbar"><button type="button" class="btn btn-default btn-sm" id="repeat_ban_tiers_add">添加档位</button><button type="button" class="btn btn-default btn-sm" id="repeat_ban_defaults">恢复默认阶梯</button></div>
 							<small class="wide">支持 1 至 8 档，次数为 2 至 1000，时长为 60 至 31536000 秒；各档次数和时长都必须严格递增。默认预设：24 小时，5 次 / 7 天，10 次 / 30 天；恢复预设不会启用或保存。</small>
-							<label class="wide waf-policy-check" for="repeat_ban_enabled"><input type="checkbox" id="repeat_ban_enabled" />启用此站点的重复封禁升级<small>默认不勾选；读取成功前不可保存，勾选后仍需确认并保存。</small></label>
+							<label class="wide waf-policy-check" id="repeat_ban_single_enabled" for="repeat_ban_enabled"><input type="checkbox" id="repeat_ban_enabled" />启用此站点的重复封禁升级<small>默认不勾选；读取成功前不可保存，勾选后仍需确认并保存。</small></label>
+							<label class="wide" id="repeat_ban_bulk_enabled" for="repeat_ban_enabled_action" style="display:none">批量启用状态<select id="repeat_ban_enabled_action"><option value="preserve">保留各站原有启用状态</option><option value="enable">统一启用所选站点</option><option value="disable">统一停用所选站点</option></select><small>默认保留各站原状态。保存会统一覆盖所选站点的窗口和阶梯，但不清除封禁记录或累计历史。</small></label>
 						</fieldset>
 						<p id="repeat_ban_preview" class="waf-policy-meta">默认预设不是当前生效状态，请先读取站点策略。</p>
 						<div class="waf-toolbar"><button type="button" class="btn btn-success btn-sm" id="repeat_ban_save" disabled>保存策略</button></div>
@@ -647,8 +677,8 @@
 					</div>
 				</div>
 			</div>
-			<div class="waf-card">
-				<div class="waf-dashboard-head"><div><h4>本站点升级封禁记录</h4><p>原始记录仅属于所选站点；展示实际命中的档位，而非全部规则命中或请求次数。</p></div><button type="button" class="btn btn-default btn-sm" id="repeat_ban_refresh" disabled>刷新封禁记录</button></div>
+			<div class="waf-card" id="repeat_ban_records">
+				<div class="waf-dashboard-head"><div><h4>本站点升级封禁记录</h4><p>原始记录仅属于所选站点；展示实际命中的档位，而非全部规则命中或请求次数。查看或解除封禁请使用单站点模式。</p></div><button type="button" class="btn btn-default btn-sm" id="repeat_ban_refresh" disabled>刷新封禁记录</button></div>
 				<div id="repeat_ban_rows_status" class="waf-policy-meta" role="status" aria-live="polite">请先选择站点，执行状态尚未读取。</div>
 				<div id="repeat_ban_notes" class="waf-policy-meta"></div>
 				<div class="waf-policy-scroll"><table class="waf_table" id="repeat_ban_table"><thead><tr><th>站点 / IP</th><th>开始 / 到期时间（本地时区）</th><th>时长 / 剩余</th><th>触发次数 / 窗口 / 命中档位</th><th>原因 / 路径</th><th>本策略状态 / 操作</th></tr></thead><tbody id="repeat_ban_rows"><tr><td colspan="6">请先选择站点。</td></tr></tbody></table></div>
@@ -659,24 +689,24 @@
 		<div class="item_con" data-type="overall">
 			<div class="waf-page-title">
 				<h3>全局规则</h3>
-				<p>站点没有单独覆盖时，会继承这里的全局默认规则。</p>
+				<p>全局与站点开关需同时开启；全局规则与站点覆盖按各检测项执行。</p>
 			</div>
 			<div class="waf-toolbar">
 				<span>在一个基础视图中检查规则状态、响应码和可编辑规则集。</span>
-				<button class="btn btn-success update_rule" type="button" style="margin-bottom:12px;display: none;">更新规则库</button>
+				<span>旧云端规则同步已停用，保留本地规则；不会联网更新或显示同步成功。</span>
 			</div>
 			<div class="waf-card"><div id="overall_table"></div></div>
 			<ul class="waf_tips_list mtl0 c7" style="font-size: 13px;position: absolute;bottom: 20px;padding-right: 40px;">
-				<li>继承：全局设置会自动作为默认值被站点配置所继承</li>
-				<li>规则优先级参考：IP白名单 > IP黑名单 > UA白名单 > UA黑名单 > URL关键字拦截 > URL CC防御 > URL白名单 > URL黑名单 > 非浏览器 > User-Agent > CC防御 > Cookie > URI过滤 > URL参数 > POST > 站点自定义防御。</li>
-				<li>以上是功能参考顺序，并非实际执行链；GPT Firewall 部分控制项尚未实现，界面列出不代表已启用防护，请以实际配置和检查结果为准。</li>
+				<li>全局与站点开关需同时开启；CC 周期、频率和短封禁时长是新站点的初始值，已存在站点不会自动继承修改。</li>
+				<li>实际请求链：总开关及站点开关检查后，IP白名单 > 重复封禁升级 > 注册滥用防护 > 活动封禁 > IP黑名单 > UA白名单 > URL白名单 > 空 UA 拦截 > URL黑名单 > 地区限制 > CC及增强CC > UA过滤 > Header > URI > GET参数 > Cookie > 扫描器 > POST > 站点自定义防御。</li>
+				<li>命中白名单会跳过后续检测；UA 和 URL 白名单不能绕过此前的升级封禁、注册滥用防护、活动封禁或 IP 黑名单。各检测项仍受自身开关及配置约束。</li>
 			</ul>
 		</div>
 		<div class="item_con" data-type="site">
 			<div id="site_list_view">
 				<div class="waf-page-title">
 					<h3>站点防护</h3>
-					<p>单站点防护开关默认继承全局配置，也可以在站点详情中单独调整。</p>
+					<p>全局与站点开关需同时开启；站点可单独关闭检测，不能绕过已关闭的全局开关。</p>
 				</div>
 				<div class="waf-notice-safe">防护行为以当前配置和巡检结果为准。请先核对本站点的规则覆盖和 CC 防御配置，再决定是否修改。</div>
 				<div class="waf-toolbar"><span>在站点列表中查看日志，或进入单站点页面调整防护。</span></div>
@@ -965,10 +995,33 @@
 				<h3>封禁</h3>
 				<p>运行时封禁列表展示当前和历史 WAF IP 封禁记录。</p>
 			</div>
+			<section class="waf-card risk-advice-card" id="risk-advice-card" aria-labelledby="risk-advice-title">
+				<div class="risk-advice-heading"><div><h4 id="risk-advice-title">风险 IP 封禁建议</h4><p>本地日志分析，仅供人工确认；本模块不会自动封禁</p></div><small>仅分析所选站点 · 归属地不参与风险判定</small></div>
+				<div class="waf-toolbar">
+					<label for="risk-advice-site">站点</label><select id="risk-advice-site" disabled><option value="">尚未读取站点</option></select>
+					<button type="button" class="btn btn-default btn-sm" id="risk-advice-sites-refresh">重新读取站点</button>
+					<button type="button" class="btn btn-success btn-sm" id="risk-advice-analyze" disabled>分析最近 24 小时</button>
+					<span id="risk-advice-analyzed">尚未分析</span>
+				</div>
+				<p class="waf-policy-meta" id="risk-advice-status" role="status" aria-live="polite">尚未分析。请选择站点后手动分析，不会自动扫描或刷新。</p>
+				<p class="waf-policy-meta" id="risk-advice-coverage">日志覆盖范围尚未读取。</p>
+				<div class="waf-policy-scroll"><table class="waf_table risk-advice-table"><thead><tr><th>IP / 本地归属地</th><th>站点</th><th>建议类型与证据</th><th>建议时长</th><th>证据状态</th><th>人工操作</th></tr></thead><tbody id="risk-advice-rows"><tr><td colspan="6">尚未分析，不代表没有异常访问。</td></tr></tbody></table></div>
+				<div id="risk-advice-evidence" class="risk-advice-detail" style="display:none;"></div>
+				<div id="risk-advice-custom" class="risk-advice-detail" style="display:none;">
+					<h4>人工自定义封禁时长</h4><p id="risk-advice-custom-target"></p>
+					<div class="risk-advice-form"><label for="risk-advice-custom-value">封禁时长</label><input type="number" id="risk-advice-custom-value" min="1" max="315360000" step="1" value="30" /><label for="risk-advice-custom-unit">单位</label><select id="risk-advice-custom-unit"><option value="60">分钟</option><option value="3600">小时</option><option value="86400" selected>天</option></select><button type="button" class="btn btn-success btn-sm" id="risk-advice-custom-confirm">核对并确认</button><button type="button" class="btn btn-default btn-sm" id="risk-advice-custom-cancel">取消</button></div>
+					<p id="risk-advice-custom-expiry"></p><p>默认 30 天是人工选择，不是系统建议。支持 60 秒至 10 年，10 年须再次确认。</p>
+				</div>
+				<p class="waf-policy-meta" id="risk-advice-mutation" role="status" aria-live="polite"></p>
+				<div class="risk-advice-heading" style="margin-top:18px;"><div><h4>本站人工封禁</h4><p>与自动重复封禁开关独立；仅管理本模块添加的本站封禁，不清除自动计数、全局名单或其他站点的封禁。</p></div><button type="button" class="btn btn-default btn-sm" id="risk-advice-manual-refresh" disabled>刷新本站人工封禁</button></div>
+				<p class="waf-policy-meta" id="risk-advice-manual-status" role="status" aria-live="polite">请先选择站点，运行端状态未确认。</p>
+				<div class="waf-policy-scroll"><table class="waf_table"><thead><tr><th>IP</th><th>站点</th><th>开始 / 到期时间</th><th>时长与来源</th><th>操作</th></tr></thead><tbody id="risk-advice-manual-rows"><tr><td colspan="5">尚未读取本站人工封禁。</td></tr></tbody></table></div>
+				<p class="waf-policy-meta">按建议封禁、自定义时长、长期封禁（10 年）均需人工确认。证据不足或存在白名单、来源等冲突时只能查看证据、暂不处理；正常 API 请求量、空 UA 或归属地不能单独作为封禁依据。</p>
+			</section>
 			<div class="waf-notice-safe">这里可以清理运行时封禁；清理时也会清理对应的临时持久化 IP 封禁。</div>
 			<div class="waf-toolbar">
 				<button class="btn btn-success uncover_all" type="button" style="margin-bottom:12px;">解封所有</button>
-				<button class="btn btn-default" id="history_export" type="button" style="margin-bottom:12px;">导出封禁记录</button>
+				<button class="btn btn-default" id="history_export" type="button" style="margin-bottom:12px;" disabled>导出封禁记录（当前页）</button>
 				<span>谨慎使用；这是人工操作，不会自动执行。</span>
 			</div>
 			<div class="waf-card"><div id="history_table"></div></div>
@@ -977,14 +1030,15 @@
 				<div class="waf-toolbar" style="justify-content:space-between;">
 					<div>
 						<h4 style="margin-bottom:4px;">封禁明细</h4>
-						<p>从封禁日志中还原触发来源、站点、URI、时长和当前状态，便于复核误封。</p>
+						<p>有界读取封禁日志，覆盖范围可能不完整，不代表全部封禁；导出仅限当前页，重新读取时记录可能变化。IP有封禁仅表示该 IP 有活动封禁，不确认该历史记录或本站点仍在执行。</p>
 					</div>
 					<span id="history_detail_status" style="color:#667085;">未加载</span>
 				</div>
 				<table class="waf_table" style="width:100%;">
-					<thead><tr><th style="width:145px;">开始时间</th><th style="width:130px;">IP</th><th style="width:120px;">站点</th><th>URI</th><th style="width:95px;">原因</th><th style="width:90px;">时长</th><th style="width:80px;">状态</th></tr></thead>
+					<thead><tr><th style="width:145px;">开始时间</th><th style="width:130px;">IP</th><th style="width:120px;">日志站点</th><th>URI</th><th style="width:95px;">原因</th><th style="width:90px;">时长</th><th style="width:125px;">IP活动提示</th></tr></thead>
 					<tbody id="history_detail_table"><tr><td colspan="7" style="text-align:center;color:#999;padding:18px;">正在加载封禁明细...</td></tr></tbody>
 				</table>
+				<div class="waf-toolbar"><button type="button" class="btn btn-default btn-sm" id="history_detail_prev" disabled>上一页</button><span id="history_detail_page_info" role="status" aria-live="polite">尚未读取</span><button type="button" class="btn btn-default btn-sm" id="history_detail_next" disabled>下一页</button><label for="history_detail_limit">每页</label><select id="history_detail_limit"><option value="10">10 条</option><option value="50">50 条</option><option value="100" selected>100 条</option><option value="200">200 条</option><option value="500">500 条</option></select><button type="button" class="btn btn-default btn-sm" id="history_detail_refresh">刷新当前页</button></div>
 			</div>
 		</div>
 		<div class="item_con" data-type="blacklist">
@@ -1289,7 +1343,7 @@
 					</div>
 				</div>
 				<div class="waf_nav_item" data-type="report_search">
-					<div class="waf-notice-safe">日志搜索用于复核请求级拦截和 HTTP详情；这里不会自动添加黑名单或白名单。</div>
+					<div class="waf-notice-safe">日志搜索用于复核请求级拦截和请求摘要（非完整 HTTP 原文）；这里不会自动添加黑名单或白名单。翻页仅主动读取，范围受后端预算限制，日志变化可能导致跨页重复或遗漏。</div>
 					<div style="padding:15px 15px 5px 15px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
 						<select id="report_search_days" style="height:32px;border:1px solid #ddd;border-radius:3px;padding:0 8px;font-size:13px;">
 							<option value="1">今日</option>
@@ -1318,6 +1372,7 @@
 							</tr></thead>
 							<tbody id="report_search_tbody"><tr><td colspan="7" style="text-align:center;color:#999;padding:30px;">输入条件后点击搜索</td></tr></tbody>
 						</table>
+						<div class="waf-toolbar"><button type="button" class="btn btn-default btn-sm" id="report_search_prev" disabled>上一页</button><span id="report_search_page_info" role="status" aria-live="polite">尚未搜索</span><button type="button" class="btn btn-default btn-sm" id="report_search_next" disabled>下一页</button><label for="report_search_limit">每页</label><select id="report_search_limit"><option value="10">10 条</option><option value="50" selected>50 条</option><option value="100">100 条</option><option value="200">200 条</option></select></div>
 					</div>
 				</div>
 			</div>
@@ -1742,7 +1797,10 @@
 			this.stop_statistics_polling();
 			this.stop_plugin_update_status();
 			this.stop_repeat_ban_requests();
+			this.stop_risk_advice_requests();
 			this.stop_task_requests();
+			this.stop_report_requests('search');
+			this.stop_report_requests('history');
 			this._task_views = null;
 			this.clear_task_snapshot('processes','页面已关闭。');
 			this.clear_task_snapshot('network','页面已关闭。');
@@ -1895,12 +1953,15 @@
 			this.$root = $('.waf_conter').last();
 			this._requests = [];
 			this._active_page = 'home';
+			this._report_pages = {};
+			this._report_search_rows = [];
 			this.current_site_name = '';
 			this._site_detail_requests = [];
 			this._section_last = {};
 			this._configured_open = null;
 			this._repair_busy = false;
 			this.init_repeat_ban();
+			this.init_risk_advice();
 			this.init_task_manager();
 			this._tools_loaded = false;
 			this._map_expanded = false;
@@ -2222,6 +2283,7 @@
 				var _index = $(this).index();
 				$(this).addClass('active').siblings().removeClass('active');
 				$('.item_con[data-type="ipstats"] .report_nav_content .waf_nav_item:eq('+ _index +')').addClass('active').siblings().removeClass('active');
+				if(_index !== 2) _this.stop_report_requests('search');
 				if(_index === 0) _this.render_ip_stats();
 				else if(_index === 1) _this.render_uri_stats();
 				else _this.render_report_search();
@@ -2585,6 +2647,20 @@
 			_this.bind_panel_event('click', '#report_search_refresh', function(){
 				_this.render_report_search();
 			});
+			_this.bind_panel_event('change', '#report_search_days', function(){_this.reset_report_search();});
+			['input','change'].forEach(function(event){
+				_this.bind_panel_event(event, '#report_search_site, #report_search_type, #report_search_ip, #report_search_uri, #report_search_keyword', function(){_this.reset_report_search();});
+			});
+			['search','history'].forEach(function(view){
+				var prefix = view === 'search' ? '#report_search' : '#history_detail';
+				_this.bind_panel_event('click', prefix+'_prev', function(){_this.report_change_page(view,-1);});
+				_this.bind_panel_event('click', prefix+'_next', function(){_this.report_change_page(view,1);});
+				_this.bind_panel_event('change', prefix+'_limit', function(){
+					_this.report_page_state(view).p = 1;
+					_this[view === 'search' ? 'render_report_search' : 'render_blockade_records'](1);
+				});
+			});
+			_this.bind_panel_event('click', '#history_detail_refresh', function(){_this.render_blockade_records();});
 			_this.bind_panel_event('click', '.report_http_detail', function(){
 				var idx = parseInt($(this).attr('data-index'), 10);
 				var row = (_this._report_search_rows || [])[idx];
@@ -2740,6 +2816,11 @@
 			if(this._active_page === 'ipstats' && type !== 'ipstats'){
 				this.stop_attack_stats_request('ip');
 				this.stop_attack_stats_request('uri');
+				this.stop_report_requests('search');
+			}
+			if(this._active_page === 'history' && type !== 'history'){
+				this.stop_report_requests('history');
+				this.stop_risk_advice_requests();
 			}
 			if(this._active_page === 'statistics' && type !== 'statistics') this.stop_statistics_polling();
 			if(this._active_page === 'updates' && type !== 'updates') this.stop_plugin_update_status();
@@ -2999,6 +3080,7 @@
 					});
 				break;
 				case 'history': //封锁历史
+					this.load_risk_advice_sites();
 					this.render_history_data();
 					this.render_blockade_records();
 				break;
@@ -3075,7 +3157,7 @@
 				content: '<div class="other_table">\
 							<div id="site_rule_table"></div>\
 							<ul class="help-info-text c7 ptb10">\
-								<li>这里继承全局设置中已启用的规则。</li>\
+						<li>全局与站点开关需同时开启；本站点的检测设置和规则覆盖单独保存。</li>\
 								<li>这里的设置仅对当前站点有效。</li>\
 							</ul>\
 						</div>',
@@ -4105,6 +4187,17 @@
 		render_logs_pages:function(pages,p,num){
 			return '<a class="nextPage" data-page="1">首页</a>'+ (p != 1?'<a class="nextPage" data-page="'+ (p-1) +'">上一页</a>':'') + (pages == num?'<a class="nextPage" data-page="'+ (p+1) +'">下一页</a>':'')+'<span class="Pcount">第'+ p +'</span>';
 		},
+		legacy_log_text:function(value){
+			var entities={amp:'&',lt:'<',gt:'>',quot:'"','#x27':"'",'#39':"'"};
+			return String(value == null ? '' : value).replace(/&(amp|lt|gt|quot|#x27|#39);/g,function(all,key){return entities[key];});
+		},
+		legacy_log_html:function(value){
+			return this.log_text_html(this.legacy_log_text(value));
+		},
+		log_text_html:function(value){
+			var entities={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
+			return String(value == null ? '' : value).replace(/[&<>"']/g,function(character){return entities[character];});
+		},
 		// 渲染站点日志
 		render_site_logs:function(obj,callback){
 			var _this = this;
@@ -4113,7 +4206,7 @@
 					el:'#site_logs_table',
 					form_id:'site_logs_table', //用于重置
 					config:[
-						{fid:'0',width:'150px',title:'时间'},
+						{fid:'0',width:'150px',title:'时间',templet:function(row){return _this.legacy_log_html(row[0]);}},
 						{fid:'1',title:'用户IP',type:'link',event:function(row,index){
 							layer.confirm('确认将 <span style="color:red">' + row[1] + '</span> 加入 IP 黑名单？', { title: '加入IP黑名单', closeBtn: 2,icon:0}, function () {
 								_this.add_ip_black({start_ip:row[1],end_ip:row[1]},function(res){
@@ -4121,45 +4214,42 @@
 								});
 							});
 						}},
-						{fid:'2',title:'类型'},
-						{fid:'3',title:'URL地址',templet:function(row,index){return _this.escapeHTML(row[3])}},
+						{fid:'2',title:'类型',templet:function(row){return _this.legacy_log_html(row[2]);}},
+						{fid:'3',title:'URL地址',templet:function(row,index){return _this.legacy_log_html(row[3])}},
 						{title:'状态',templet:function(row,index){return '已拦截';}},
-						{fid:'5',title:'过滤器'},
+						{fid:'5',title:'过滤器',templet:function(row){return _this.legacy_log_html(row[5]);}},
 						{fid:'tools',title:'操作',width:'160px',style:'text-align: right;',group:[{
 							title:'误报处理',
 							event:function(row,index){
 								layer.open({
 									type:1,title:'误报处理建议',area:'520px',
-									content:'<div class="pd20"><p>此处不上传日志，也不自动添加全局白名单。</p><p>请先查看命中详情，再到对应站点的规则设置中调整具体规则，避免放行整个网站。</p><p>请求地址：'+_this.escapeHTML(row[3])+'</p></div>'
+									content:'<div class="pd20"><p>此处不上传日志，也不自动添加全局白名单。</p><p>请先查看命中详情，再到对应站点的规则设置中调整具体规则，避免放行整个网站。</p><p>请求地址：'+_this.legacy_log_html(row[3])+'</p></div>'
 								});
 							}
 						},{
 							title:'详情',
 							event:function(row,index){
-								var filter_rule = '',rule_arry = row[6].split(" &gt;&gt; "),incoming_value = '', risk_value = '';
-								if (rule_arry.length == 0) filter_rule = rule_arry[0]
-								incoming_value = rule_arry[1] == undefined ? '空' : rule_arry[1];
-								risk_value = incoming_value.match(new RegExp(rule_arry[0].replace(/\//g, '\\/'), 'i'));
-								risk_value = risk_value ? risk_value[0] : '空';
+								var detail = _this.legacy_log_text(row[6]), separator = detail.indexOf(' >> ');
+								var filter_rule = separator < 0 ? detail : detail.slice(0,separator);
+								var incoming_value = separator < 0 ? '空' : detail.slice(separator+4);
 								layer.open({
 									type: 1,
-									title: "[ "+ row[0] + " ] 详情",
+									title: "[ "+ _this.legacy_log_html(row[0]) + " ] 详情",
 									area: '600px',
 									closeBtn: 2,
 									shadeClose: false,
 									content: '<div class="pd15 lib-box">\
 											<table class="table" style="border:#ddd 1px solid; margin-bottom:10px">\
-											<tbody><tr><th>时间</th><td>'+ _this.escapeHTML(row[0]) + '</td><th>用户IP</th><td><a class="btlink add_log_ip_black"  title="加入黑名单">' + _this.escapeHTML(row[1]) + '</a></td></tr><tr><th>类型</th><td>' + _this.escapeHTML(row[2]) + '</td><th>过滤器</th><td>' + _this.escapeHTML(row[5]) + '</td></tr></tbody></table>\
+											<tbody><tr><th>时间</th><td>'+ _this.legacy_log_html(row[0]) + '</td><th>用户IP</th><td><a class="btlink add_log_ip_black"  title="加入黑名单">' + _this.legacy_log_html(row[1]) + '</a></td></tr><tr><th>类型</th><td>' + _this.legacy_log_html(row[2]) + '</td><th>过滤器</th><td>' + _this.legacy_log_html(row[5]) + '</td></tr></tbody></table>\
 											<div><b style="margin-left:10px">URI地址</b></div>\
-											<div class="lib-con pull-left mt10"><div class="divpre">'+ _this.escapeHTML(row[3]) + '</div></div>\
+											<div class="lib-con pull-left mt10"><div class="divpre">'+ _this.legacy_log_html(row[3]) + '</div></div>\
 											<div><b style="margin-left:10px">User-Agent</b></div>\
-											<div class="lib-con pull-left mt10"><div class="divpre">'+ _this.escapeHTML(row[4]) + '</div></div>\
+											<div class="lib-con pull-left mt10"><div class="divpre">'+ _this.legacy_log_html(row[4]) + '</div></div>\
 											<div><b style="margin-left:10px">过滤规则</b></div>\
-											<div class="lib-con pull-left mt10"><div class="divpre">'+ _this.escapeHTML(rule_arry[0]) + '</div></div>\
+											<div class="lib-con pull-left mt10"><div class="divpre">'+ _this.log_text_html(filter_rule) + '</div></div>\
 											<div><b style="margin-left:10px">传入值</b></div>\
-											<div class="lib-con pull-left mt10"><div class="divpre">'+ _this.escapeHTML(incoming_value) + '</div></div>\
-											<div><b style="margin-left:10px">风险值</b></div>\
-											<div class="lib-con pull-left mt10"><div class="divpre">'+ _this.escapeHTML(risk_value) + '</div></div>\
+											<div class="lib-con pull-left mt10"><div class="divpre">'+ _this.log_text_html(incoming_value) + '</div></div>\
+											<p class="mt10">匹配由服务器执行；此处仅展示日志，不在浏览器重新执行规则。</p>\
 										</div>',
 									success:function(){
 										$('.add_log_ip_black').click(function(){
@@ -4368,7 +4458,7 @@
 						</div>\
 						<div id="other_rule_table"></div>\
 						<ul class="waf_tips_list mtl0 c7 ptb10" style="display:'+( obj.type=='url_white'?'block':'none' )+'">\
-							<li>加入 URL 白名单的路径，大部分拦截规则均失效，包括 IP 黑名单和 URL 黑名单。</li>\
+							<li>URL 白名单仅跳过后续检测（含 URL 黑名单），不能绕过此前的升级封禁、注册滥用防护、活动封禁或 IP 黑名单。</li>\
 						</ul>\
                         <ul class="waf_tips_list mtl0 c7 ptb10" style="display:'+( obj.type=='url_black'?'block':'none' )+'">\
                             <li>URL 黑名单用于禁止用户访问指定路径；命中 URL 白名单或 IP 白名单时除外。</li>\
@@ -4539,21 +4629,21 @@
 					<div class="waf-line">\
 						<span class="name-l">周期</span>\
 						<div class="info-r">\
-							<input type="number" name="cc_cycle" value="'+ obj.cc_cycle +'" class="waf-input" />\
+							<input type="number" name="cc_cycle" value="'+ obj.cc_cycle +'" min="1" max="86400" step="1" class="waf-input" />\
 							<span class="waf_input_tips">秒</span>\
 						</div>\
 					</div>\
 					<div class="waf-line">\
 						<span class="name-l">频率</span>\
 						<div class="info-r">\
-							<input type="number" name="cc_limit" value="'+ obj.cc_limit +'" class="waf-input" />\
+							<input type="number" name="cc_limit" value="'+ obj.cc_limit +'" min="1" max="1000000" step="1" class="waf-input" />\
 							<span class="waf_input_tips">次</span>\
 						</div>\
 					</div>\
 					<div class="waf-line">\
 						<span class="name-l">封锁时间</span>\
 						<div class="info-r">\
-							<input type="number" name="cc_endtime" value="'+ obj.cc_endtime +'" class="waf-input" />\
+							<input type="number" name="cc_endtime" value="'+ obj.cc_endtime +'" min="1" max="60" step="1" class="waf-input" />\
 							<span class="waf_input_tips">秒</span>\
 						</div>\
 					</div>\
@@ -4570,7 +4660,8 @@
 						<ul class="waf_tips_list">\
 							<li class="key" style="display:'+ (obj.siteName?'none':'list-item') +'">这里设置的是初始值，新建站点会继承，已存在站点不会自动生效。</li>\
 							<li class="key" style="display:'+ (!obj.siteName?'none':'list-item') +'">这里的设置仅对当前站点有效。</li>\
-							<li><span class="waf_cc_cycle key">'+ obj.cc_cycle +'</span> 秒内同一 URL 累计请求超过 <span class="waf_cc_limit key">'+ obj.cc_limit +'</span> 次，将触发 CC 防御并封禁该 IP <span class ="waf_cc_endtime key">'+ obj.cc_endtime +'</span> 秒。</li>\
+							<li>全局与站点开关需同时开启；周期为 1-86400 秒，频率为 1-1000000 次，短封禁为 1-60 秒，均须整数。旧配置仅显示原值，不自动改写；保存前请主动核对。</li>\
+							<li><span class="waf_cc_cycle key">'+ obj.cc_cycle +'</span> 秒内同一 IP 对同一站点路径累计请求超过 <span class="waf_cc_limit key">'+ obj.cc_limit +'</span> 次，触发 CC 防御；短封禁设置为 <span class ="waf_cc_endtime key">'+ obj.cc_endtime +'</span> 秒（运行上限 60 秒），封禁影响该 IP 在该站点的所有路径。</li>\
 							<li>四种模式均为固定阈值预设，不会自动学习流量；增强限流不进行人机验证。</li>\
 							<li class="key" style="display:'+ (!obj.siteName?'none':'list-item') +'">请不要设置过于严格的CC规则,以免影响正常用户体验</li>\
 						</ul>\
@@ -4592,10 +4683,7 @@
 				yes:function(index,layero){
 					if(!current()) return false;
 					var cc_cycle = $('[name="cc_cycle"]').val(),cc_limit = $('[name="cc_limit"]').val(),cc_endtime = $('[name="cc_endtime"]').val();
-						if(cc_cycle == 0 || cc_limit == 0 || cc_endtime == 0){
-							layer.msg('规则参数不能为 0，请重新输入',{icon:1});
-							return false;
-						}
+					if(!_this.validate_cc_inputs(cc_cycle,cc_limit,cc_endtime)) return false;
 					_this[!obj.siteName?'set_cc_conf':'set_site_cc_conf']({siteName:obj.siteName,cycle:cc_cycle,limit:cc_limit,endtime:cc_endtime,is_open_global:0},function(res){
 						if(obj.siteName){
 							_this.render_site_config({siteName:obj.siteName});
@@ -4607,11 +4695,9 @@
 					});
 				},
 				btn2:function(index,layero){
+					if(!current()) return false;
 					var cc_cycle = $('[name="cc_cycle"]').val(),cc_limit = $('[name="cc_limit"]').val(),cc_endtime = $('[name="cc_endtime"]').val();
-						if(cc_cycle == 0 || cc_limit == 0 || cc_endtime == 0){
-							layer.msg('规则参数不能为 0，请重新输入',{icon:1});
-							return false;
-						}
+					if(!_this.validate_cc_inputs(cc_cycle,cc_limit,cc_endtime)) return false;
 					_this.set_cc_conf({cycle:cc_cycle,limit:cc_limit,endtime:cc_endtime,is_open_global:1},function(res){
 						_this.refresh_data_total('overall');
 						layer.close(index);
@@ -4620,6 +4706,16 @@
 					return false;
 				}
 			});
+		},
+		validate_cc_inputs:function(cycle,limit,endtime){
+			var values = [cycle,limit,endtime], maxima = [86400,1000000,60];
+			for(var i=0;i<values.length;i++){
+				if(!/^[1-9][0-9]*$/.test(String(values[i])) || !Number.isSafeInteger(Number(values[i])) || Number(values[i]) > maxima[i]){
+					layer.msg('周期须为 1-86400 秒，频率须为 1-1000000 次，短封禁须为 1-60 秒，均为正整数。',{icon:2});
+					return false;
+				}
+			}
+			return true;
 		},
 		// 设置其他规则配置视图
 		set_other_rule_view:function(row){
@@ -5632,15 +5728,11 @@
 				}
 			});
 		},
-		// 同步全局规则库
+		// 保留旧调用入口，但不再连接已停用的云端同步。
 		update_overall_rule:function(callback){
-			this.http({
-				tips:'正在从云端更新防火墙规则库，请稍候...',
-				method:'sync_rule',
-				success:function(res){
-					if(callback) callback(res);
-				}
-			});
+			var result = {status:false,msg:'旧云端规则同步已停用，保留本地规则，不会联网更新。'};
+			if(callback) callback(result);
+			return false;
 		},
 		// 获取防火墙全局配置
 		get_overall_config:function(callback){
@@ -5706,8 +5798,9 @@
 				}
 			});
 		},
-		get_report_search:function(obj,callback){
-			this.http({
+		get_report_search:function(obj,callback,error,current){
+			return this.http({
+				error:error,current:current,
 				tips:'正在搜索 WAF 日志，请稍候...',
 				method:'get_report_search',
 				data:{
@@ -5725,9 +5818,10 @@
 				}
 			});
 		},
-		get_report_http_detail:function(obj,callback){
-			this.http({
-				tips:'正在获取 HTTP详情，请稍候...',
+		get_report_http_detail:function(obj,callback,error,current){
+			return this.http({
+				error:error,current:current,
+				tips:'正在获取请求摘要，请稍候...',
 				method:'get_report_http_detail',
 				data:{siteName:obj.siteName,date:obj.date,line_no:obj.line_no,offset:obj.offset},
 				success:function(res){
@@ -5735,8 +5829,9 @@
 				}
 			});
 		},
-		get_blockade_records:function(obj,callback){
-			this.http({
+		get_blockade_records:function(obj,callback,error,current){
+			return this.http({
+				error:error,current:current,
 				tips:'正在获取封禁明细，请稍候...',
 				method:'get_blockade_records',
 				data:{p:obj.p,limit:obj.limit},
@@ -5745,11 +5840,12 @@
 				}
 			});
 		},
-		export_blockade_records:function(callback){
-			this.http({
-				tips:'正在导出封禁记录，请稍候...',
+		export_blockade_records:function(obj,callback,error,current){
+			return this.http({
+				error:error,current:current,
+				tips:'正在导出封禁记录（当前页），请稍候...',
 				method:'export_blockade_records',
-				data:{p:1,limit:500},
+				data:{p:obj.p,limit:obj.limit},
 				success:function(res){
 					if(callback) callback(res);
 				}
@@ -6107,34 +6203,114 @@
 			});
 		},
 		_report_search_rows:[],
+		report_page_state:function(view){
+			if(!this._report_pages) this._report_pages = {};
+			if(!this._report_pages[view]) this._report_pages[view] = {p:1,limit:view === 'search' ? 50 : 100,token:0,exportToken:0,loading:false,ready:false,has_more:false};
+			return this._report_pages[view];
+		},
+		stop_report_requests:function(view){
+			var state = this.report_page_state(view), pending = [state.request,state.detail,state.exportRequest];
+			// Invalidate ownership before abort, whose callbacks may run synchronously.
+			state.token++; state.exportToken++; state.detailToken = (state.detailToken || 0)+1;
+			state.request = state.detail = state.exportRequest = null;
+			state.loading = state.exporting = state.ready = state.has_more = false;
+			if(view === 'search') this._report_search_rows = [];
+			for(var i=0;i<pending.length;i++) if(pending[i]) pending[i].abort();
+		},
+		report_page_controls:function(view){
+			var state = this.report_page_state(view), prefix = view === 'search' ? '#report_search' : '#history_detail';
+			$(prefix+'_prev').prop('disabled',state.loading || state.p <= 1);
+			$(prefix+'_next').prop('disabled',state.loading || !state.ready || !state.has_more);
+			if(view === 'history') $('#history_export').prop('disabled',state.loading || !state.ready || state.exporting === true);
+		},
+		report_search_filters:function(){
+			return {days:String($('#report_search_days').val() || 7),siteName:$.trim($('#report_search_site').val()),ruleType:$.trim($('#report_search_type').val()),ip:$.trim($('#report_search_ip').val()),uri:$.trim($('#report_search_uri').val()),keyword:$.trim($('#report_search_keyword').val())};
+		},
+		reset_report_search:function(){
+			this.stop_report_requests('search');
+			var state = this.report_page_state('search');
+			state.p = 1; state.filterKey = null;
+			$('#report_search_summary').text('筛选已改变，请点击搜索；旧结果已失效。').css('color','#667085');
+			$('#report_search_tbody').html('<tr><td colspan="7">筛选已改变，请重新搜索。</td></tr>');
+			$('#report_search_page_info').text('第 1 页 · 尚未搜索');
+			this.report_page_controls('search');
+		},
+		report_change_page:function(view,delta){
+			var state = this.report_page_state(view);
+			if(state.loading || (delta > 0 && (!state.ready || !state.has_more)) || (delta < 0 && state.p <= 1)) return;
+			this[view === 'search' ? 'render_report_search' : 'render_blockade_records'](state.p+delta);
+		},
+		report_page_limit:function(view){
+			var state = this.report_page_state(view), prefix = view === 'search' ? '#report_search' : '#history_detail';
+			var value = Number($(prefix+'_limit').val()), choices = view === 'search' ? [10,50,100,200] : [10,50,100,200,500];
+			return choices.indexOf(value) === -1 ? state.limit : value;
+		},
+		start_report_read:function(view,obj){
+			if(this._destroyed || !this.$root || !this.$root[0].isConnected) return null;
+			this.stop_report_requests(view);
+			var _this = this, state = this.report_page_state(view), token = state.token, page = this._active_page, root = this.$root[0], generation = this._generation;
+			var prefix = view === 'search' ? '#report_search' : '#history_detail', table = view === 'search' ? '#report_search_tbody' : '#history_detail_table', status = view === 'search' ? '#report_search_summary' : '#history_detail_status';
+			state.p = obj.p; state.limit = obj.limit; state.loading = true;
+			function current(){
+				return !_this._destroyed && generation === _this._generation && _this.$root && _this.$root[0] === root && root.isConnected && page === _this._active_page && token === state.token && (view !== 'search' || state.filterKey === JSON.stringify(_this.report_search_filters()));
+			}
+			state.current = current;
+			$(status).text('正在读取...').css('color','#667085');
+			$(table).html('<tr><td colspan="7">正在读取记录...</td></tr>');
+			$(prefix+'_page_info').text('第 '+state.p+' 页 · 每页 '+state.limit+' 条 · 正在读取');
+			this.report_page_controls(view);
+			return {state:state,current:current,failed:function(xhr,message){
+				if(!current()) return;
+				state.loading = state.ready = state.has_more = false; state.request = null;
+				$(status).text('读取失败：'+(message || '响应格式无效')+'；不代表没有记录，请手动重试。').css('color','#d92d20');
+				$(table).html('<tr><td colspan="7">记录读取失败，请手动重试。</td></tr>');
+				$(prefix+'_page_info').text('第 '+state.p+' 页 · 每页 '+state.limit+' 条 · 读取失败');
+				_this.report_page_controls(view);
+			}};
+		},
+		report_rows_valid:function(rows,limit){
+			if(!Array.isArray(rows) || rows.length > limit) return false;
+			var fields = ['time','site','ip','uri','user_agent','rule_type','start_time_text','reason_text','reason'];
+			for(var i=0;i<rows.length;i++){
+				var row = rows[i];
+				if(!row || typeof row !== 'object' || Array.isArray(row)) return false;
+				if(row.active != null && typeof row.active !== 'boolean') return false;
+				for(var j=0;j<fields.length;j++) if(row[fields[j]] != null && typeof row[fields[j]] !== 'string') return false;
+			}
+			return true;
+		},
+		accept_report_page:function(view,res,obj){
+			if(!res || res.status === false || !this.report_rows_valid(res.rows,obj.limit) || !Number.isSafeInteger(res.total) || res.total < res.rows.length || (res.p != null && res.p !== obj.p) || (res.limit != null && res.limit !== obj.limit) || (res.has_more != null && typeof res.has_more !== 'boolean')) return false;
+			var state = this.report_page_state(view), prefix = view === 'search' ? '#report_search' : '#history_detail';
+			state.loading = false; state.ready = true; state.request = null;
+			state.has_more = typeof res.has_more === 'boolean' ? res.has_more : res.total > obj.p*obj.limit;
+			$(prefix+'_page_info').text('第 '+obj.p+' 页 · 每页 '+obj.limit+' 条'+(state.has_more ? ' · 本次范围内还有下一页' : ' · 本次范围内没有更多页，不代表范围外没有记录'));
+			this.report_page_controls(view);
+			return true;
+		},
 		report_coverage_notice:function(coverage){
 			if(!coverage) return '覆盖范围未提供，不能视为全量统计。';
 			var message=coverage.partial ? '有界读取的部分样本，不代表全量。' : '有界读取，仅代表后端声明的本次范围。';
 			if(coverage.scanned_lines!=null) message+=' 已扫描 '+coverage.scanned_lines+' 行。';
 			return message;
 		},
-		render_report_search:function(){
+		render_report_search:function(page){
 			var _this = this;
-			var obj = {
-				days:$('#report_search_days').val() || 7,
-				siteName:$.trim($('#report_search_site').val()),
-				ruleType:$.trim($('#report_search_type').val()),
-				ip:$.trim($('#report_search_ip').val()),
-				uri:$.trim($('#report_search_uri').val()),
-				keyword:$.trim($('#report_search_keyword').val()),
-				p:1,
-				limit:50
-			};
-			$('#report_search_summary').text('搜索中...');
-			$('#report_search_tbody').html('<tr><td colspan="7" style="text-align:center;color:#999;padding:30px;">正在搜索日志...</td></tr>');
-			_this.get_report_search(obj,function(res){
-				var rows = (res && res.rows) ? res.rows : [];
+			var obj = this.report_search_filters(), state = this.report_page_state('search'), key = JSON.stringify(obj), limit = this.report_page_limit('search');
+			if(state.filterKey !== key || state.limit !== limit) page = 1;
+			state.filterKey = key; obj.p = page || state.p; obj.limit = limit;
+			var read = this.start_report_read('search',obj);
+			if(!read) return;
+			state.request = _this.get_report_search(obj,function(res){
+				if(!read.current()) return;
+				if(!_this.accept_report_page('search',res,obj)){read.failed();return;}
+				var rows = res.rows;
 				_this._report_search_rows = rows;
-				var exact=res && res.total_exact===true && !(res.coverage && res.coverage.partial);
+				var exact=res.total_exact===true && res.coverage && res.coverage.partial===false;
 				var total=res && res.total!=null ? res.total : rows.length;
 				var summary=(exact ? '匹配 '+total+' 条' : '本次已读样本匹配 '+total+' 条（总数非精确，不代表全量）')+'，当前显示 '+rows.length+' 条';
 				if(res && res.has_more) summary+='；仍有更多匹配记录';
-				$('#report_search_summary').text(summary+'；'+_this.report_coverage_notice(res && res.coverage));
+				$('#report_search_summary').text(summary+'；'+_this.report_coverage_notice(res.coverage)).css('color',exact ? '#027a48' : '#b54708');
 				if(!rows.length){
 					$('#report_search_tbody').html('<tr><td colspan="7" style="text-align:center;color:#999;padding:30px;">本次读取范围内没有匹配结果，不代表范围外没有记录。</td></tr>');
 					return;
@@ -6149,77 +6325,103 @@
 					row.user_agent = row.user_agent || '';
 					row.rule_type = row.rule_type || '';
 					html += '<tr>'
-						+'<td>'+_this.escapeHTML(row.time.substring(0,16))+'</td>'
-						+'<td>'+_this.escapeHTML(row.site)+'</td>'
-						+'<td>'+_this.escapeHTML(row.ip)+'</td>'
-						+'<td><div style="word-break:break-all;font-family:monospace;font-size:12px;">'+_this.escapeHTML(row.uri)+'</div></td>'
-						+'<td><div style="word-break:break-all;font-size:12px;">'+_this.escapeHTML(row.user_agent)+'</div></td>'
-						+'<td>'+_this.escapeHTML(row.rule_type)+'</td>'
-						+'<td><button class="btn btn-default btn-xs report_http_detail" data-index="'+i+'">HTTP详情</button></td>'
+						+'<td>'+_this.legacy_log_html(row.time.substring(0,16))+'</td>'
+						+'<td>'+_this.legacy_log_html(row.site)+'</td>'
+						+'<td>'+_this.legacy_log_html(row.ip)+'</td>'
+						+'<td><div style="word-break:break-all;font-family:monospace;font-size:12px;">'+_this.legacy_log_html(row.uri)+'</div></td>'
+						+'<td><div style="word-break:break-all;font-size:12px;">'+_this.legacy_log_html(row.user_agent)+'</div></td>'
+						+'<td>'+_this.legacy_log_html(row.rule_type)+'</td>'
+						+'<td><button class="btn btn-default btn-xs report_http_detail" data-index="'+i+'">请求摘要</button></td>'
 					+'</tr>';
 				}
 				$('#report_search_tbody').html(html);
-			});
+			},read.failed,read.current);
 		},
 		show_report_http_detail:function(row){
-			var _this = this;
-			_this.get_report_http_detail({siteName:row.site,date:row.date,line_no:row.line_no,offset:row.offset},function(res){
-				var data = (res && res.data) ? res.data : row;
+			var _this = this, state = this.report_page_state('search'), token = state.token, page = this._active_page;
+			if(this._destroyed) return;
+			var detailToken = state.detailToken = (state.detailToken || 0)+1;
+			if(state.detail) state.detail.abort();
+			var current = function(){return token === state.token && detailToken === state.detailToken && page === _this._active_page && (!state.current || state.current());};
+			state.detail = _this.get_report_http_detail({siteName:row.site,date:row.date,line_no:row.line_no,offset:row.offset},function(res){
+				if(!current()) return;
+				if(!res || !res.data || typeof res.data !== 'object' || Array.isArray(res.data)){layer.msg('请求摘要读取失败，请重试。',{icon:2});return;}
+				var data = res.data;
 				layer.open({
 					type:1,
-					title:'HTTP详情',
+					title:'请求摘要',
 					area:['760px','640px'],
 					closeBtn:2,
 					shadeClose:false,
-					content:'<div class="pd20">\
+					content:'<div class="pd20"><p>非完整 HTTP 原文：这里只展示 WAF 已保存的字段和日志记录，不含完整请求头或请求体。</p>\
 						<table class="table" style="border:1px solid #ddd;margin-bottom:10px;">\
 							<tbody>\
-								<tr><th>时间</th><td>'+_this.escapeHTML(data.time || '')+'</td><th>站点</th><td>'+_this.escapeHTML(data.site || '')+'</td></tr>\
-								<tr><th>IP</th><td>'+_this.escapeHTML(data.ip || '')+'</td><th>方法</th><td>'+_this.escapeHTML(data.method || '')+'</td></tr>\
-								<tr><th>规则类型</th><td>'+_this.escapeHTML(data.rule_type || '')+'</td><th>日志行</th><td>'+_this.escapeHTML(data.line_no || '未知')+(data.offset!=null?'（字节位置 '+_this.escapeHTML(data.offset)+'）':'')+'</td></tr>\
+								<tr><th>时间</th><td>'+_this.legacy_log_html(data.time || '')+'</td><th>站点</th><td>'+_this.legacy_log_html(data.site || '')+'</td></tr>\
+								<tr><th>IP</th><td>'+_this.legacy_log_html(data.ip || '')+'</td><th>方法</th><td>'+_this.legacy_log_html(data.method || '')+'</td></tr>\
+								<tr><th>规则类型</th><td>'+_this.legacy_log_html(data.rule_type || '')+'</td><th>日志行</th><td>'+_this.escapeHTML(data.line_no || '未知')+(data.offset!=null?'（字节位置 '+_this.escapeHTML(data.offset)+'）':'')+'</td></tr>\
 							</tbody>\
 						</table>\
-						<div><b>URI</b></div><div class="divpre">'+_this.escapeHTML(data.uri || '')+'</div>\
-						<div><b>User-Agent</b></div><div class="divpre">'+_this.escapeHTML(data.user_agent || '')+'</div>\
-						<div><b>命中规则</b></div><div class="divpre">'+_this.escapeHTML(data.rule || '')+'</div>\
-						<div><b>原始记录</b></div><div class="divpre">'+_this.escapeHTML((res && res.raw) ? res.raw : (data.raw || ''))+'</div>\
+						<div><b>URI</b></div><div class="divpre">'+_this.legacy_log_html(data.uri || '')+'</div>\
+						<div><b>User-Agent</b></div><div class="divpre">'+_this.legacy_log_html(data.user_agent || '')+'</div>\
+						<div><b>命中规则</b></div><div class="divpre">'+_this.legacy_log_html(data.rule || '')+'</div>\
+						<div><b>保存的日志记录（非完整 HTTP 原文）</b></div><div class="divpre">'+_this.legacy_log_html(res.raw || data.raw || '')+'</div>\
 					</div>'
 				});
-			});
+			},function(xhr,message){if(current()) layer.msg('请求摘要读取失败：'+message,{icon:2});},current);
 		},
-		render_blockade_records:function(){
-			var _this = this;
-			$('#history_detail_status').text('加载中...').css('color','#667085');
-			_this.get_blockade_records({p:1,limit:100},function(res){
-				var rows = (res && res.rows) ? res.rows : [];
+		render_blockade_records:function(page){
+			var _this = this, state = this.report_page_state('history'), limit = this.report_page_limit('history');
+			var obj = {p:state.limit !== limit ? 1 : (page || state.p),limit:limit}, read = this.start_report_read('history',obj);
+			if(!read) return;
+			state.request = _this.get_blockade_records(obj,function(res){
+				if(!read.current()) return;
+				if(!_this.accept_report_page('history',res,obj)){read.failed();return;}
+				var rows = res.rows, exact = res.total_exact === true && res.coverage && res.coverage.partial === false;
+				var summary = (exact ? '本次读取范围共 '+res.total+' 条' : '本次已读样本 '+res.total+' 条（总数非精确，不代表全量）')+'，当前页 '+rows.length+' 条；'+_this.report_coverage_notice(res.coverage);
+				$('#history_detail_status').text(summary+' IP有封禁仅表示该 IP 有活动封禁，不确认该历史记录或本站点仍在执行。').css('color',exact ? '#027a48' : '#b54708');
 				if(!rows.length){
-					$('#history_detail_status').text('暂无记录').css('color','#667085');
-					$('#history_detail_table').html('<tr><td colspan="7" style="text-align:center;color:#999;padding:18px;">暂无封禁明细。</td></tr>');
+					$('#history_detail_table').html('<tr><td colspan="7" style="text-align:center;color:#999;padding:18px;">本次读取范围内当前页没有封禁明细，不代表范围外没有记录；可用上一页返回。</td></tr>');
 					return;
 				}
 				var html = '';
 				for(var i=0;i<rows.length;i++){
 					var row = rows[i] || {};
 					html += '<tr>'
-						+'<td>'+_this.escapeHTML(row.start_time_text || '')+'</td>'
-						+'<td>'+_this.escapeHTML(row.ip || '')+'</td>'
-						+'<td>'+_this.escapeHTML(row.site || '')+'</td>'
-						+'<td><div style="word-break:break-all;font-family:monospace;font-size:12px;">'+_this.escapeHTML(row.uri || '')+'</div></td>'
-						+'<td>'+_this.escapeHTML(row.reason_text || row.reason || '')+'</td>'
+						+'<td>'+_this.legacy_log_html(row.start_time_text || '')+'</td>'
+						+'<td>'+_this.legacy_log_html(row.ip || '')+'</td>'
+						+'<td>'+_this.legacy_log_html(row.site || '')+'</td>'
+						+'<td><div style="word-break:break-all;font-family:monospace;font-size:12px;">'+_this.legacy_log_html(row.uri || '')+'</div></td>'
+						+'<td>'+_this.legacy_log_html(row.reason_text || row.reason || '')+'</td>'
 						+'<td>'+_this.escapeHTML(row.duration || 0)+'秒</td>'
-						+'<td>'+ (row.active ? '<span style="color:#d92d20;">封禁中</span>' : '<span style="color:#667085;">已结束</span>') +'</td>'
+						+'<td>'+ (row.active ? '<span style="color:#d92d20;">IP有封禁</span>' : '<span style="color:#667085;">未确认IP有封禁</span>') +'</td>'
 					+'</tr>';
 				}
 				$('#history_detail_table').html(html);
-				$('#history_detail_status').text('共 '+(res.total || rows.length)+' 条，当前封禁 '+((res.active_ips || []).length)+' 个').css('color','#027a48');
-			});
+			},read.failed,read.current);
 		},
 		download_blockade_records:function(){
-			var _this = this;
-			_this.export_blockade_records(function(res){
-				var content = JSON.stringify(res || {}, null, 2);
-				_this.render_download_link(content, 'gpt_firewall_blockade_records.json');
-			});
+			var _this = this, state = this.report_page_state('history');
+			if(this._destroyed || !state.ready || state.loading || state.exporting || !state.current || !state.current()) return;
+			var obj = {p:state.p,limit:state.limit}, token = ++state.exportToken, pageToken = state.token;
+			state.exporting = true; this.report_page_controls('history');
+			var current = function(){return token === state.exportToken && pageToken === state.token && state.current();};
+			function failed(xhr,message){
+				if(!current()) return;
+				state.exporting = false; state.exportRequest = null;
+				$('#history_detail_status').text('当前页导出失败：'+(message || '响应格式无效')+'；请重试。').css('color','#d92d20');
+				_this.report_page_controls('history');
+			}
+			state.exportRequest = _this.export_blockade_records(obj,function(res){
+				if(!current()) return;
+				if(!res || res.status === false || !_this.report_rows_valid(res.records,obj.limit) || !Number.isSafeInteger(res.total) || res.total < res.records.length || (res.p != null && res.p !== obj.p) || (res.limit != null && res.limit !== obj.limit)){failed();return;}
+				state.exporting = false; state.exportRequest = null;
+				res.export_scope = 'current_page'; res.p = obj.p; res.limit = obj.limit;
+				res.scope_notice = '仅导出当前页；重新有界读取，非全量，可能与屏幕快照不同。active 仅表示 IP 有封禁，不确认该历史记录或本站点仍在执行。';
+				var filename = 'gpt_firewall_blockade_records.json';
+				_this.render_download_link(JSON.stringify(res,null,2), filename.replace('.json','_page_'+obj.p+'.json'));
+				$('#history_detail_status').text('已导出第 '+obj.p+' 页（每页 '+obj.limit+' 条），仅当前页、非全量；'+_this.report_coverage_notice(res.coverage)).css('color','#b54708');
+				_this.report_page_controls('history');
+			},failed,current);
 		},
 		// 安全基线巡检
 		get_safety_baseline:function(callback){
@@ -7229,16 +7431,312 @@
 				}
 			});
 		},
+		init_risk_advice:function(){
+			var _this = this;
+			this._risk_epoch = (this._risk_epoch || 0) + 1;
+			this._risk_requests = {}; this._risk_sites = []; this._risk_site = '';
+			this._risk_confirmation = null; this._risk_busy = false;
+			this.clear_risk_advice_view();
+			$('#risk-advice-site').html('<option value="">尚未读取站点</option>').val('');
+			this.bind_panel_event('change','#risk-advice-site',function(){_this.select_risk_advice_site($(this).val());});
+			this.bind_panel_event('click','#risk-advice-sites-refresh',function(){_this.load_risk_advice_sites();});
+			this.bind_panel_event('click','#risk-advice-analyze',function(){_this.analyze_risk_advice();});
+			this.bind_panel_event('click','#risk-advice-manual-refresh',function(){_this.load_risk_site_bans();});
+			this.bind_panel_event('click','.risk-advice-evidence',function(){_this.show_risk_advice_evidence($(this).attr('data-index'));});
+			this.bind_panel_event('click','.risk-advice-suggest',function(){_this.apply_risk_advice($(this).attr('data-index'),'suggest');});
+			this.bind_panel_event('click','.risk-advice-custom',function(){_this.open_risk_advice_custom($(this).attr('data-index'));});
+			this.bind_panel_event('click','.risk-advice-long',function(){_this.apply_risk_advice($(this).attr('data-index'),'long');});
+			this.bind_panel_event('click','.risk-advice-dismiss',function(){_this.dismiss_risk_advice($(this).attr('data-index'));});
+			this.bind_panel_event('click','.risk-advice-remove',function(){_this.remove_risk_site_ban($(this).attr('data-index'));});
+			this.bind_panel_event('click','#risk-advice-custom-confirm',function(){_this.apply_risk_advice(_this._risk_custom_index,'custom');});
+			this.bind_panel_event('click','#risk-advice-custom-cancel',function(){_this._risk_custom_index = null;$('#risk-advice-custom').hide();});
+			this.bind_panel_event('input','#risk-advice-custom-value',function(){_this.preview_risk_advice_custom();});
+			this.bind_panel_event('change','#risk-advice-custom-unit',function(){_this.preview_risk_advice_custom();});
+		},
+		risk_advice_alive:function(){
+			return !this._destroyed && this._active_page === 'history' && this.$root && this.$root[0].isConnected;
+		},
+		cancel_risk_advice_request:function(kind){
+			var token = (this._risk_requests || {})[kind];
+			delete this._risk_requests[kind];
+			if(token && token.xhr) token.xhr.abort();
+		},
+		stop_risk_advice_requests:function(){
+			// Invalidate before abort/close: either can synchronously invoke callbacks.
+			this._risk_epoch = (this._risk_epoch || 0) + 1;
+			var pending = this._risk_requests || {}, confirmation = this._risk_confirmation;
+			this._risk_requests = {}; this._risk_confirmation = null;
+			this._risk_ready = false; this._risk_manual_ready = false; this._risk_busy = false;
+			this._risk_custom_index = null;
+			if(confirmation && confirmation.layer !== undefined) layer.close(confirmation.layer);
+			for(var kind in pending) if(Object.prototype.hasOwnProperty.call(pending,kind) && pending[kind].xhr) pending[kind].xhr.abort();
+			$('#risk-advice-custom').hide(); $('#risk-advice-evidence').hide();
+			this.risk_advice_controls();
+		},
+		risk_advice_request:function(kind,method,data,success,failure){
+			if(!this.risk_advice_alive()) return;
+			var _this = this, epoch = this._risk_epoch, owner = this._generation, site = this._risk_site, token = {};
+			this.cancel_risk_advice_request(kind); this._risk_requests[kind] = token;
+			function current(){return _this.risk_advice_alive() && epoch === _this._risk_epoch && owner === _this._generation && site === _this._risk_site && _this._risk_requests[kind] === token;}
+			token.xhr = this.http({method:method,type:'POST',data:data,load:2,msg:false,check:true,current:current,
+				success:function(res){if(current() && !token.handled){token.handled = true;success(res);}},
+				error:function(xhr,message){if(current() && !token.handled){token.handled = true;failure(message);}},
+				complete:function(){if(current()){delete _this._risk_requests[kind];_this.risk_advice_controls();}}
+			});
+			this.risk_advice_controls();
+		},
+		clear_risk_advice_view:function(){
+			this._risk_report = null; this._risk_ready = false; this._risk_dismissed = {};
+			this._risk_manual_rows = []; this._risk_manual_ready = false; this._risk_manual_revision = null;
+			this._risk_clock_offset = null; this._risk_custom_index = null;
+			$('#risk-advice-status').text('尚未分析。请选择站点后手动分析，不会自动扫描或刷新。');
+			$('#risk-advice-analyzed').text('尚未分析');
+			$('#risk-advice-coverage').text('日志覆盖范围尚未读取。');
+			$('#risk-advice-evidence').html('').hide(); $('#risk-advice-custom').hide();
+			$('#risk-advice-mutation').text('').attr('data-state','');
+			$('#risk-advice-manual-status').text('请先选择站点，运行端状态未确认。');
+			this.risk_advice_controls();
+		},
+		risk_advice_controls:function(){
+			var alive = this.risk_advice_alive(), requests = this._risk_requests || {}, locked = !!this._risk_busy || !!this._risk_confirmation;
+			$('#risk-advice-site').prop('disabled',!alive || !this._risk_sites || !this._risk_sites.length || !!requests.sites);
+			$('#risk-advice-sites-refresh').prop('disabled',!alive || !!requests.sites);
+			$('#risk-advice-analyze').prop('disabled',!alive || !this._risk_site || locked || !!requests.analysis);
+			$('#risk-advice-manual-refresh').prop('disabled',!alive || !this._risk_site || locked || !!requests.manual);
+			$('#risk-advice-custom-confirm').prop('disabled',!this.risk_advice_actionable(this._risk_custom_index));
+			$('#risk-advice-custom-value').prop('disabled',locked); $('#risk-advice-custom-unit').prop('disabled',locked);
+			this.render_risk_advice(); this.render_risk_site_bans();
+		},
+		load_risk_advice_sites:function(){
+			if(!this.risk_advice_alive() || (this._risk_requests || {}).sites) return;
+			this.stop_risk_advice_requests(); this._risk_site = ''; this._risk_sites = [];
+			this.clear_risk_advice_view();
+			$('#risk-advice-site').html('<option value="">正在读取站点...</option>').val('');
+			var _this = this;
+			function failed(message){$('#risk-advice-status').text('站点读取失败：'+message+'；请手动重读，未开始日志分析。');}
+			this.risk_advice_request('sites','get_risk_advice_sites',{},function(res){
+				if(!res || res.status !== true || !Array.isArray(res.sites)){failed(res && res.msg || '站点格式不可用');return;}
+				var options = '<option value="">请选择站点</option>';
+				for(var i=0;i<res.sites.length;i++){
+					var name = res.sites[i] && res.sites[i].siteName;
+					if(typeof name !== 'string' || !name || _this._risk_sites.indexOf(name) !== -1) continue;
+					_this._risk_sites.push(name); options += '<option value="'+_this.endpoint_text(name)+'">'+_this.endpoint_text(name)+'</option>';
+				}
+				$('#risk-advice-site').html(options).val('');
+				$('#risk-advice-status').text(_this._risk_sites.length ? '尚未分析。请选择站点后点击分析最近 24 小时。' : '暂无可配置站点，请核对站点配置后重读。');
+			},failed);
+		},
+		select_risk_advice_site:function(site){
+			if(!this.risk_advice_alive()) return;
+			var uncertain = this._risk_busy;
+			this.stop_risk_advice_requests(); this._risk_site = this._risk_sites.indexOf(site) !== -1 ? site : '';
+			$('#risk-advice-site').val(this._risk_site); this.clear_risk_advice_view();
+			if(uncertain) $('#risk-advice-mutation').text('已切换站点；此前服务器操作可能仍在处理，返回原站点后请手动读取核对，不要重复提交。').attr('data-state','unknown');
+			if(this._risk_site) this.load_risk_site_bans();
+		},
+		risk_advice_time:function(seconds){
+			if(!Number.isSafeInteger(seconds) || seconds <= 0 || seconds > 8640000000000) return '未知';
+			var date = new Date(seconds * 1000);
+			return isNaN(date.getTime()) ? '未知' : date.toLocaleString('zh-CN',{hour12:false})+'（本机时区）';
+		},
+		risk_advice_now:function(){return Math.floor(Date.now()/1000)+(this._risk_clock_offset || 0);},
+		risk_advice_duration:function(seconds){
+			if(seconds === 315360000) return '10 年';
+			if(seconds === 86400) return '24 小时';
+			return this.repeat_ban_duration(seconds);
+		},
+		risk_advice_report_valid:function(res){
+			if(!res || res.status !== true || res.siteName !== this._risk_site || !/^[0-9a-f]{64}$/.test(res.config_revision || '') || !Number.isSafeInteger(res.analyzed_at) || !Array.isArray(res.items) || res.items.length > 4096) return false;
+			for(var i=0;i<res.items.length;i++){
+				var row = res.items[i];
+				if(!row || row.site !== this._risk_site || typeof row.ip !== 'string' || !row.ip || !/^[0-9a-f]{64}$/.test(row.fingerprint || '') || typeof row.name !== 'string' || typeof row.actionable !== 'boolean' || [0,86400,604800].indexOf(row.recommended_seconds) === -1 || !Array.isArray(row.hold_reasons) || !Array.isArray(row.samples)) return false;
+				var counts = ['related_rows','strong_targets','raw_targets','first_seen','last_seen'];
+				for(var c=0;c<counts.length;c++) if(!Number.isSafeInteger(row[counts[c]]) || row[counts[c]] < 0) return false;
+				if(!row.family_counts || typeof row.family_counts !== 'object' || Array.isArray(row.family_counts)) return false;
+				for(var family in row.family_counts) if(Object.prototype.hasOwnProperty.call(row.family_counts,family) && (!Number.isSafeInteger(row.family_counts[family]) || row.family_counts[family] < 0)) return false;
+				if(row.samples.some(function(value){return typeof value !== 'string';}) || row.hold_reasons.some(function(value){return typeof value !== 'string';})) return false;
+			}
+			return true;
+		},
+		analyze_risk_advice:function(){
+			if(!this.risk_advice_alive() || !this._risk_site || this._risk_busy || this._risk_confirmation || this._risk_requests.analysis) return;
+			this._risk_ready = false; this._risk_report = null; this._risk_dismissed = {}; this._risk_custom_index = null;
+			$('#risk-advice-custom').hide(); $('#risk-advice-evidence').html('').hide();
+			$('#risk-advice-status').text('正在有界分析所选站点最近 24 小时的拒绝日志；不会自动封禁。');
+			$('#risk-advice-analyzed').text('正在分析'); $('#risk-advice-coverage').text('正在读取实际日志覆盖范围。');
+			var _this = this;
+			function failed(message){$('#risk-advice-status').text('分析失败：'+message+'；不能据此认为没有异常，请手动重试。');$('#risk-advice-analyzed').text('本次分析失败');$('#risk-advice-coverage').text('本次日志覆盖范围未确认。');}
+			this.risk_advice_request('analysis','get_risk_advice',{siteName:this._risk_site},function(res){
+				if(!_this.risk_advice_report_valid(res)){failed(res && res.msg || '站点、证据或版本格式不匹配');return;}
+				_this._risk_report = res; _this._risk_ready = true;
+				$('#risk-advice-analyzed').text('分析时间：'+_this.risk_advice_time(res.analyzed_at));
+				$('#risk-advice-coverage').text(_this.risk_advice_coverage(res.coverage));
+				$('#risk-advice-status').text(res.items.length ? '本次读取发现 '+res.items.length+' 个来源的证据条目；仅供人工复核，不代表入侵成功，不能直接按请求量判断恶意。' : '本次读取未产生建议，不代表没有异常访问；请结合日志覆盖范围判断。');
+			},failed);
+		},
+		risk_advice_coverage:function(coverage){
+			if(!coverage || typeof coverage !== 'object') return '服务端未提供日志覆盖范围，完整性未知。';
+			var text = coverage.partial === true ? '部分日志样本（不完整）' : '有界读取结果（不代表完整覆盖）';
+			var fields = [['scanned_files','文件'],['scanned_lines','行'],['scanned_bytes','字节'],['invalid_lines','无效行']];
+			for(var i=0;i<fields.length;i++){
+				var value = coverage[fields[i][0]];
+				text += ' · '+fields[i][1]+'：'+(Number.isSafeInteger(value) && value >= 0 ? value : '未知');
+			}
+			text += '。请求区间：'+this.risk_advice_time(coverage.requested_from || coverage.cutoff)+' 至 '+this.risk_advice_time(coverage.requested_to)+'；实际记录区间：'+this.risk_advice_time(coverage.first_seen)+' 至 '+this.risk_advice_time(coverage.last_seen)+'。';
+			if(coverage.items_limited === true) text += ' 建议列表已达上限，未展示所有来源。';
+			if(typeof coverage.notice === 'string' && coverage.notice) text += ' '+coverage.notice;
+			return text;
+		},
+		risk_advice_item:function(index){
+			if(!/^\d+$/.test(String(index)) || !this._risk_report) return null;
+			var row = this._risk_report.items[Number(index)];
+			return row && row.site === this._risk_site && !this._risk_dismissed[String(index)] ? row : null;
+		},
+		risk_advice_actionable:function(index){
+			var row = this.risk_advice_item(index);
+			return !!row && this.risk_advice_alive() && this._risk_ready && this._risk_manual_ready && !this._risk_requests.manual && !this._risk_requests.analysis && !this._risk_busy && !this._risk_confirmation && row.actionable === true && !row.hold_reasons.length && row.recommended_seconds > 0;
+		},
+		render_risk_advice:function(){
+			var html = '', rows = this._risk_report && this._risk_report.items || [], esc = this.endpoint_text;
+			for(var i=0;i<rows.length;i++){
+				var row = this.risk_advice_item(i); if(!row) continue;
+				var enabled = this.risk_advice_actionable(i), disabled = enabled ? '' : ' disabled', observe = row.recommended_seconds === 0;
+				var state = observe ? '证据不足，建议观察' : !row.actionable || row.hold_reasons.length ? '需人工复核：'+(row.hold_reasons.join('；') || '来源或配置未确认') : !this._risk_ready ? '建议已失效，请重新分析' : !this._risk_manual_ready ? '本站人工封禁尚未确认' : '证据门槛已达到，仍需人工判断';
+				html += '<tr><td><strong>'+esc(row.ip)+'</strong><br>'+esc(typeof row.location === 'string' && row.location ? row.location : '归属地未知（仅本地查询）')+'</td><td>'+esc(row.site)+'</td><td><span class="risk-advice-tag" data-state="'+(observe || !row.actionable ? 'hold' : 'review')+'">'+esc(observe ? '证据不足，建议观察' : row.name)+'</span><br>相关拒绝记录 '+row.related_rows+' 条<br>敏感目标 '+row.strong_targets+' 个（去重）<br>'+esc(this.risk_advice_time(row.first_seen))+' 至 '+esc(this.risk_advice_time(row.last_seen))+'</td><td>'+esc(observe ? '建议观察' : this.risk_advice_duration(row.recommended_seconds))+'</td><td>'+esc(state)+'</td><td><div class="risk-advice-actions"><button type="button" class="btn btn-default btn-xs risk-advice-evidence" data-index="'+i+'">查看证据</button><button type="button" class="btn btn-success btn-xs risk-advice-suggest" data-index="'+i+'"'+disabled+'>按建议封禁</button><button type="button" class="btn btn-default btn-xs risk-advice-custom" data-index="'+i+'"'+disabled+'>自定义时长</button><button type="button" class="btn btn-default btn-xs risk-advice-long" data-index="'+i+'"'+disabled+'>长期封禁（10 年）</button><button type="button" class="btn btn-default btn-xs risk-advice-dismiss" data-index="'+i+'"'+(this._risk_busy || this._risk_confirmation ? ' disabled' : '')+'>暂不处理</button></div></td></tr>';
+			}
+			$('#risk-advice-rows').html(html || '<tr><td colspan="6">'+(this._risk_requests && this._risk_requests.analysis ? '正在分析，尚未产生结果。' : this._risk_report ? '本次无待处理建议；暂不处理仅隐藏本次条目，重新分析可再查看。不代表没有异常。' : '尚未分析，不代表没有异常访问。')+'</td></tr>');
+		},
+		show_risk_advice_evidence:function(index){
+			var row = this.risk_advice_item(index); if(!this.risk_advice_alive() || !row) return;
+			var esc = this.endpoint_text, labels = {env:'环境文件',repository:'版本库',git:'版本库',credentials:'凭据文件',credential:'凭据文件',backup:'敏感备份',database_backup:'数据库备份'}, families = [];
+			for(var key in row.family_counts) if(Object.prototype.hasOwnProperty.call(row.family_counts,key)) families.push(esc(Object.prototype.hasOwnProperty.call(labels,key) ? labels[key] : key)+'：'+row.family_counts[key]);
+			$('#risk-advice-evidence').html('<h4>证据详情：'+esc(row.name)+'</h4><p>本站：'+esc(row.site)+' · IP：'+esc(row.ip)+'。原始不同路径 '+row.raw_targets+' 个；规范化后敏感目标 '+row.strong_targets+' 个；相关拒绝日志 '+row.related_rows+' 条。日志行不等于独立攻击，也不能证明入侵成功。</p><p>类别（去重目标）：'+families.join('；')+'</p><p>'+esc(this.risk_advice_time(row.first_seen))+' 至 '+esc(this.risk_advice_time(row.last_seen))+'</p><p>'+esc(row.hold_reasons.join('；'))+'</p><pre>'+row.samples.map(function(sample){return esc(sample);}).join('\n')+'</pre><p>证据指纹：'+esc(row.fingerprint)+'。路径样例来自本地分析，不包含完整请求。</p>').show();
+		},
+		dismiss_risk_advice:function(index){
+			if(!this.risk_advice_alive() || this._risk_busy || this._risk_confirmation || !this.risk_advice_item(index)) return;
+			this._risk_dismissed[String(index)] = true; this._risk_custom_index = null;
+			$('#risk-advice-custom').hide(); $('#risk-advice-evidence').hide(); this.risk_advice_controls();
+		},
+		open_risk_advice_custom:function(index){
+			if(!this.risk_advice_actionable(index)) return;
+			this._risk_custom_index = String(index);
+			$('#risk-advice-custom-target').text('仅本站「'+this._risk_site+'」，IP「'+this.risk_advice_item(index).ip+'」。不会影响其他站点。');
+			$('#risk-advice-custom-value').val(30); $('#risk-advice-custom-unit').val('86400');
+			this.preview_risk_advice_custom(); $('#risk-advice-custom').show(); this.risk_advice_controls();
+		},
+		risk_advice_custom_seconds:function(){
+			var raw = String($('#risk-advice-custom-value').val()), unit = String($('#risk-advice-custom-unit').val());
+			if(!/^\d+$/.test(raw) || ['60','3600','86400'].indexOf(unit) === -1) return null;
+			var seconds = Number(raw)*Number(unit);
+			return Number.isSafeInteger(seconds) && seconds >= 60 && seconds <= 315360000 ? seconds : null;
+		},
+		preview_risk_advice_custom:function(){
+			var seconds = this.risk_advice_custom_seconds();
+			$('#risk-advice-custom-expiry').text(seconds === null ? '请输入有效整数时长，范围为 60 秒至 10 年。' : '人工自定义 '+this.risk_advice_duration(seconds)+'；预计到期：'+this.risk_advice_time(this.risk_advice_now()+seconds)+'。实际到期以服务器保存为准；已有更长封禁不会缩短。');
+		},
+		confirm_risk_advice_action:function(message,title,action){
+			if(!this.risk_advice_alive() || this._risk_busy || this._risk_confirmation) return;
+			var _this = this, epoch = this._risk_epoch, owner = this._generation, site = this._risk_site, token = {};
+			this._risk_confirmation = token; this.risk_advice_controls();
+			function current(){return _this.risk_advice_alive() && epoch === _this._risk_epoch && owner === _this._generation && site === _this._risk_site && _this._risk_confirmation === token;}
+			function cancel(){if(!current()) return;_this._risk_confirmation = null;if(token.layer !== undefined) layer.close(token.layer);_this.risk_advice_controls();}
+			token.layer = layer.confirm(message,{title:title,btn:['确认','取消'],icon:0,closeBtn:2,cancel:cancel,end:cancel},function(index){
+				if(!current()) return;
+				_this._risk_confirmation = null; layer.close(index); action(); _this.risk_advice_controls();
+			},cancel);
+		},
+		apply_risk_advice:function(index,mode){
+			if(!this.risk_advice_actionable(index) || ['suggest','custom','long'].indexOf(mode) === -1) return;
+			var row = this.risk_advice_item(index), seconds = mode === 'long' ? 315360000 : mode === 'custom' ? this.risk_advice_custom_seconds() : row.recommended_seconds;
+			if(seconds === null){$('#risk-advice-status').text('未提交：封禁时长须为有效整数，范围为 60 秒至 10 年。');return;}
+			var _this = this, data = {siteName:this._risk_site,ip:row.ip,fingerprint:row.fingerprint,config_revision:this._risk_report.config_revision,duration:String(seconds),confirm_long:seconds === 315360000 ? '1' : '0'};
+			var existing = this._risk_manual_rows.filter(function(entry){return entry.ip === row.ip && entry.expires_at > _this.risk_advice_now()+seconds;});
+			var details = '仅封本站「'+this.endpoint_text(row.site)+'」，IP「'+this.endpoint_text(row.ip)+'」，'+(mode === 'suggest' ? '按证据建议 ' : '人工自定义 ')+this.risk_advice_duration(seconds)+'。<br>预计到期：'+this.endpoint_text(this.risk_advice_time(this.risk_advice_now()+seconds))+'；实际以服务器保存为准。<br>'+(existing.length ? '已有更长封禁，到期 '+this.endpoint_text(this.risk_advice_time(existing[0].expires_at))+'；不会缩短。<br>' : '若已有更长封禁，保留较晚到期时间，不会缩短。<br>')+'影响此 IP 对本站整站的访问，其他站点不受影响。遵守 IP 白名单及总防护、本站开关；共享出口或代理可能误封。不会修改自动升级计数或全局名单。保存不代表运行端或实际请求已验证。';
+			this.confirm_risk_advice_action(details,'确认本站人工封禁',function(){
+				if(!_this.risk_advice_actionable(index) || !_this._risk_report || data.config_revision !== _this._risk_report.config_revision || row !== _this.risk_advice_item(index)) return;
+				if(seconds === 315360000){
+					_this.confirm_risk_advice_action('再次确认：这是有限的 10 年长期封禁。<br>'+details+'<br>请选择确认继续，或取消重新选择较短时长。','再次确认 10 年封禁',function(){if(_this.risk_advice_actionable(index)) _this.write_risk_advice('apply_risk_advice',data);});
+				}else _this.write_risk_advice('apply_risk_advice',data);
+			});
+		},
+		write_risk_advice:function(method,data){
+			if(!this.risk_advice_alive() || this._risk_busy || this._risk_confirmation || !this._risk_manual_ready || data.siteName !== this._risk_site) return;
+			this.cancel_risk_advice_request('analysis'); this.cancel_risk_advice_request('manual');
+			this._risk_busy = true; this._risk_ready = false; this._risk_manual_ready = false;
+			this._risk_custom_index = null; $('#risk-advice-custom').hide();
+			$('#risk-advice-status').text('人工操作提交后，旧建议不再用于下一次封禁；请重新分析后确认。');
+			if(!this._risk_report) $('#risk-advice-analyzed').text('分析已取消，请重新分析');
+			$('#risk-advice-mutation').text('正在提交本站人工操作；切换页面不会撤销服务器已开始的处理，请勿重复提交。').attr('data-state','unknown');
+			var _this = this;
+			this.risk_advice_request('write',method,data,function(res){
+				_this._risk_busy = false;
+				var saved = !!res && res.saved === true, verified = saved && res.runtime_verified === true && res.verification_scope === 'one_local_worker_snapshot';
+				var text = (saved ? '配置已保存。' : '未确认保存。')+(verified ? '运行端快照已核验（单个本机工作进程）；不代表全部工作进程或实际请求拦截已验证。' : '运行端未核验；不能确认实际执行情况。');
+				if(res && typeof res.msg === 'string') text += ' '+res.msg;
+				text += ' 请重新分析后再做新的封禁；如有疑问先读取本站人工封禁核对，不要重复提交。';
+				$('#risk-advice-mutation').text(text).attr('data-state',verified ? 'observed' : saved ? 'saved' : 'unknown');
+				if(saved) _this.load_risk_site_bans();
+			},function(message){
+				_this._risk_busy = false;
+				$('#risk-advice-mutation').text('操作结果未确认：'+message+'。服务器可能已处理，请先手动读取本站人工封禁核对；不要直接重复提交。运行端未核验。').attr('data-state','unknown');
+			});
+		},
+		load_risk_site_bans:function(){
+			if(!this.risk_advice_alive() || !this._risk_site || this._risk_busy || this._risk_confirmation || this._risk_requests.manual) return;
+			this._risk_manual_ready = false; this._risk_manual_rows = []; this._risk_manual_revision = null;
+			$('#risk-advice-manual-status').text('正在读取本站人工封禁与运行端快照，不会自动刷新。');
+			var _this = this;
+			function failed(message){$('#risk-advice-manual-status').text('本站人工封禁读取失败：'+message+'；运行端未确认，不代表没有封禁。');}
+			this.risk_advice_request('manual','get_risk_site_bans',{siteName:this._risk_site},function(res){
+				if(!res || res.status !== true || res.siteName !== _this._risk_site || !/^[0-9a-f]{32}$/.test(res.revision || '') || !Array.isArray(res.entries) || res.entries.length > 4096 || !Number.isSafeInteger(res.now) || typeof res.site_enabled !== 'boolean' || typeof res.runtime_verified !== 'boolean'){failed(res && res.msg || '站点或快照格式不匹配');return;}
+				for(var i=0;i<res.entries.length;i++){
+					var row = res.entries[i];
+					if(!row || row.site !== _this._risk_site || typeof row.ip !== 'string' || !row.ip || row.reason !== 'risk_advice' || !/^[0-9a-f]{64}$/.test(row.evidence_hash || '') || !Number.isSafeInteger(row.started_at) || !Number.isSafeInteger(row.expires_at) || !Number.isSafeInteger(row.duration) || row.started_at < 0 || row.expires_at <= row.started_at || row.duration < 60 || row.duration > 315360000){failed('封禁记录无效或站点不匹配');return;}
+				}
+				_this._risk_clock_offset = res.now - Math.floor(Date.now()/1000);
+				_this._risk_manual_rows = res.entries; _this._risk_manual_revision = res.revision; _this._risk_manual_ready = true;
+				var observation = res.runtime_verified === true && res.verification_scope === 'one_local_worker_snapshot' ? '单个本机工作进程快照已核验；不代表全部工作进程或实际请求拦截已验证。' : '运行端未核验；不能确认实际执行情况。';
+				$('#risk-advice-manual-status').text((res.site_enabled ? '本站防护配置开启；仍须核验实际执行。' : '本站防护已关闭：即使快照已加载，也不代表正在执行封禁。')+observation+' 服务器时间：'+_this.risk_advice_time(res.now)+'。此列表与自动升级开关独立。');
+			},failed);
+		},
+		render_risk_site_bans:function(){
+			var html = '', rows = this._risk_manual_rows || [], locked = !this.risk_advice_alive() || !this._risk_manual_ready || this._risk_busy || this._risk_confirmation || (this._risk_requests || {}).manual;
+			for(var i=0;i<rows.length;i++){
+				var row = rows[i], expired = row.expires_at <= this.risk_advice_now();
+				html += '<tr><td>'+this.endpoint_text(row.ip)+'</td><td>'+this.endpoint_text(row.site)+'</td><td>'+this.endpoint_text(this.risk_advice_time(row.started_at))+'<br>到期：'+this.endpoint_text(this.risk_advice_time(row.expires_at))+(expired ? '<br>已到期（以读取时服务器时间判断）' : '')+'</td><td>'+this.endpoint_text(this.risk_advice_duration(row.duration))+'<br>风险建议 · 人工确认</td><td><button type="button" class="btn btn-default btn-xs risk-advice-remove" data-index="'+i+'"'+(locked ? ' disabled' : '')+'>解除本站人工封禁</button></td></tr>';
+			}
+			$('#risk-advice-manual-rows').html(html || '<tr><td colspan="5">'+(this._risk_manual_ready ? '本次快照没有本站人工封禁；不代表没有其他类型封禁。' : '本站人工封禁尚未确认，请选择站点或手动刷新。')+'</td></tr>');
+		},
+		remove_risk_site_ban:function(index){
+			if(!this.risk_advice_alive() || !this._risk_manual_ready || this._risk_busy || this._risk_confirmation || this._risk_requests.manual || !/^\d+$/.test(String(index))) return;
+			var row = this._risk_manual_rows[Number(index)]; if(!row || row.site !== this._risk_site) return;
+			var _this = this, data = {siteName:this._risk_site,ip:row.ip,revision:this._risk_manual_revision};
+			this.confirm_risk_advice_action('确认解除本站「'+this.endpoint_text(row.site)+'」、IP「'+this.endpoint_text(row.ip)+'」的人工封禁？仅移除此模块记录，不清除自动升级计数、全局名单或其他站点的封禁，也不能保证该 IP 不再被其他规则拦截。','确认解除本站人工封禁',function(){
+				if(_this._risk_manual_ready && data.revision === _this._risk_manual_revision && row === _this._risk_manual_rows[Number(index)]) _this.write_risk_advice('remove_risk_site_ban',data);
+			});
+		},
 		init_repeat_ban:function(){
 			var _this = this;
 			this._repeat_requests = {};
 			this._repeat_epoch = (this._repeat_epoch || 0) + 1;
 			this._repeat_sites = [];
 			this._repeat_site = '';
+			this._repeat_mode = 'single';
+			this._repeat_selected = [];
+			this._repeat_bulk_policies = [];
 			this._repeat_busy = false;
 			this._repeat_confirmation = null;
 			this._repeat_defaults = {enabled:false,window_seconds:86400,tiers:[{threshold:5,ban_seconds:604800},{threshold:10,ban_seconds:2592000}]};
+			this.repeat_ban_mode_view();
 			this.clear_repeat_ban_view();
+			this.bind_panel_event('click','#repeat_ban_mode_single',function(){_this.set_repeat_ban_mode('single');});
+			this.bind_panel_event('click','#repeat_ban_mode_bulk',function(){_this.set_repeat_ban_mode('bulk');});
+			this.bind_panel_event('input','#repeat_ban_bulk_filter',function(){_this.render_repeat_ban_bulk_sites();});
+			this.bind_panel_event('click','#repeat_ban_bulk_all',function(){_this.select_repeat_ban_bulk_filtered(true);});
+			this.bind_panel_event('click','#repeat_ban_bulk_clear',function(){_this.select_repeat_ban_bulk_filtered(false);});
+			this.bind_panel_event('change','.repeat-ban-site-check',function(){_this.toggle_repeat_ban_bulk_site($(this).attr('data-index'),$(this).prop('checked') === true);});
+			this.bind_panel_event('click','#repeat_ban_bulk_read',function(){_this.load_repeat_ban_bulk();});
+			this.bind_panel_event('change','#repeat_ban_enabled_action',function(){_this.preview_repeat_ban();});
 			this.bind_panel_event('change','#repeat_ban_site',function(){_this.select_repeat_ban_site($(this).val());});
 			this.bind_panel_event('click','#repeat_ban_sites_refresh',function(){_this.load_repeat_ban_sites();});
 			this.bind_panel_event('click','#repeat_ban_policy_refresh',function(){_this.load_repeat_ban_policy();});
@@ -7259,11 +7757,138 @@
 				_this.render_repeat_ban_tiers([{threshold:5,ban_seconds:604800},{threshold:10,ban_seconds:2592000}]);
 			});
 		},
+		repeat_ban_mode_view:function(){
+			var bulk = this._repeat_mode === 'bulk';
+			$('#repeat_ban_mode_single').attr('aria-pressed',String(!bulk)).removeClass(bulk ? 'btn-success' : 'btn-default').addClass(bulk ? 'btn-default' : 'btn-success');
+			$('#repeat_ban_mode_bulk').attr('aria-pressed',String(bulk)).removeClass(bulk ? 'btn-default' : 'btn-success').addClass(bulk ? 'btn-success' : 'btn-default');
+			if(bulk){
+				$('#repeat_ban_single_scope').hide(); $('#repeat_ban_single_enabled').hide(); $('#repeat_ban_records').hide();
+				$('#repeat_ban_bulk_scope').show(); $('#repeat_ban_bulk_enabled').show();
+			}else{
+				$('#repeat_ban_single_scope').show(); $('#repeat_ban_single_enabled').show(); $('#repeat_ban_records').show();
+				$('#repeat_ban_bulk_scope').hide(); $('#repeat_ban_bulk_enabled').hide();
+			}
+			$('#repeat_ban_editor_title').text(bulk ? '所选站点统一升级阶梯' : '本站点升级阶梯');
+			$('#repeat_ban_save').text(bulk ? '保存到所选站点' : '保存策略');
+		},
+		set_repeat_ban_mode:function(mode){
+			if(!this.repeat_ban_alive() || this._repeat_busy || this._repeat_confirmation || !this._repeat_sites.length || (mode !== 'single' && mode !== 'bulk') || mode === this._repeat_mode) return;
+			this.stop_repeat_ban_requests();
+			this._repeat_mode = mode; this._repeat_site = ''; this._repeat_selected = [];
+			$('#repeat_ban_site').val(''); $('#repeat_ban_bulk_filter').val('');
+			this.clear_repeat_ban_view(); this.repeat_ban_mode_view(); this.render_repeat_ban_bulk_sites();
+			$('#repeat_ban_status').text(mode === 'bulk' ? '请勾选站点，再点击读取所选站点策略；不会自动保存或启用。' : '请选择站点后读取策略与封禁记录，不会自动刷新。');
+		},
+		repeat_ban_bulk_unlocked:function(){
+			return this.repeat_ban_alive() && this._repeat_mode === 'bulk' && !this._repeat_busy && !this._repeat_confirmation;
+		},
+		render_repeat_ban_bulk_sites:function(){
+			var filter = String($('#repeat_ban_bulk_filter').val() || '').trim().toLowerCase(), html = '';
+			for(var i=0;i<this._repeat_sites.length;i++){
+				var name = this._repeat_sites[i];
+				if(filter && name.toLowerCase().indexOf(filter) === -1) continue;
+				html += '<label class="repeat-ban-site-choice"><input type="checkbox" class="repeat-ban-site-check" data-index="'+i+'"'+(this._repeat_selected.indexOf(name) !== -1 ? ' checked' : '')+' /><span>'+this.endpoint_text(name)+'</span></label>';
+			}
+			$('#repeat_ban_bulk_sites').html(html || '<p class="waf-policy-meta">没有符合筛选条件的站点。</p>');
+			$('#repeat_ban_bulk_count').text('已选 '+this._repeat_selected.length+' / '+this._repeat_sites.length+' 个站点（单次最多 500 个）');
+			this.repeat_ban_controls();
+		},
+		change_repeat_ban_bulk_selection:function(selected){
+			if(!this.repeat_ban_bulk_unlocked()) return;
+			if(selected.length > 500){$('#repeat_ban_status').text('单次最多选择 500 个站点，请缩小筛选范围后再选择。');this.render_repeat_ban_bulk_sites();return;}
+			if(JSON.stringify(selected) === JSON.stringify(this._repeat_selected)) return;
+			this.stop_repeat_ban_requests(); this._repeat_selected = selected;
+			this.clear_repeat_ban_view(); this.render_repeat_ban_bulk_sites();
+			$('#repeat_ban_status').text('已选 '+selected.length+' 个站点；请读取所选站点策略后编辑，尚未保存。');
+		},
+		toggle_repeat_ban_bulk_site:function(index,checked){
+			if(!this.repeat_ban_bulk_unlocked() || !/^\d+$/.test(String(index)) || Number(index) >= this._repeat_sites.length) return;
+			var name = this._repeat_sites[Number(index)], selected = this._repeat_selected.slice(), position = selected.indexOf(name);
+			if(checked && position === -1) selected.push(name);
+			if(!checked && position !== -1) selected.splice(position,1);
+			var sites = this._repeat_sites;
+			selected.sort(function(a,b){return sites.indexOf(a)-sites.indexOf(b);});
+			this.change_repeat_ban_bulk_selection(selected);
+		},
+		select_repeat_ban_bulk_filtered:function(checked){
+			if(!this.repeat_ban_bulk_unlocked()) return;
+			var selected = this._repeat_selected, filter = String($('#repeat_ban_bulk_filter').val() || '').trim().toLowerCase();
+			this.change_repeat_ban_bulk_selection(this._repeat_sites.filter(function(name){
+				return (!filter || name.toLowerCase().indexOf(filter) !== -1) ? checked : selected.indexOf(name) !== -1;
+			}));
+		},
+		repeat_ban_policy_key:function(policy,activation){
+			return JSON.stringify({enabled:activation ? policy.enabled : false,window_seconds:policy.window_seconds,tiers:policy.tiers.map(function(tier){return {threshold:tier.threshold,ban_seconds:tier.ban_seconds};})});
+		},
+		repeat_ban_bulk_response:function(res){
+			if(!res || res.status !== true || typeof res.revision !== 'string' || !/^[0-9a-f]{64}$/.test(res.revision) || !Array.isArray(res.sites) || res.sites.length !== this._repeat_selected.length || !res.sites.length) return false;
+			for(var i=0;i<res.sites.length;i++) if(!res.sites[i] || res.sites[i].siteName !== this._repeat_selected[i] || !this.repeat_ban_policy_valid(res.sites[i].policy)) return false;
+			return true;
+		},
+		render_repeat_ban_bulk_snapshot:function(res){
+			var html = '', _this = this;
+			for(var i=0;i<res.sites.length;i++){
+				var row = res.sites[i], policy = row.policy;
+				html += '<div class="repeat-ban-snapshot-row"><strong>'+this.endpoint_text(row.siteName)+'</strong> · '+(policy.enabled ? '已启用' : '已停用')+' · 滚动 '+this.repeat_ban_duration(policy.window_seconds)+'<br>'+policy.tiers.map(function(tier){return tier.threshold+' 次 → '+_this.repeat_ban_duration(tier.ban_seconds);}).join('；')+'</div>';
+			}
+			$('#repeat_ban_bulk_snapshot').html(html);
+		},
+		load_repeat_ban_bulk:function(){
+			if(!this.repeat_ban_bulk_unlocked() || !this._repeat_selected.length) return;
+			var _this = this;
+			this._repeat_ready = false; this._repeat_revision = null; this._repeat_bulk_policies = [];
+			$('#repeat_ban_bulk_snapshot').text('正在读取所选站点策略；启用状态尚未确认。');
+			$('#repeat_ban_status').text('正在一次读取 '+this._repeat_selected.length+' 个站点，读取成功前不能保存。');
+			this.repeat_ban_controls();
+			function failed(message){
+				$('#repeat_ban_bulk_snapshot').text('读取失败，所选站点的当前状态未知。');
+				$('#repeat_ban_status').text('批量策略读取失败：'+message+'；未保存，请手动重读。');
+				_this.repeat_ban_controls();
+			}
+			this.repeat_ban_request('policy','get_repeat_ban_policies',{siteNames:JSON.stringify(this._repeat_selected)},function(res){
+				if(!_this.repeat_ban_bulk_response(res)){failed((res && res.msg) || '站点、版本或阶梯格式不匹配');return;}
+				_this._repeat_revision = res.revision; _this._repeat_bulk_policies = res.sites; _this._repeat_ready = true;
+				var first = res.sites[0].policy, mixed = res.sites.some(function(row){return _this.repeat_ban_policy_key(row.policy,false) !== _this.repeat_ban_policy_key(first,false);});
+				var states = res.sites.some(function(row){return row.policy.enabled !== first.enabled;}), draft = mixed ? _this._repeat_defaults : first;
+				$('#repeat_ban_window_seconds').val(draft.window_seconds); $('#repeat_ban_enabled_action').val('preserve');
+				_this.render_repeat_ban_tiers(draft.tiers); _this.render_repeat_ban_bulk_snapshot(res);
+				$('#repeat_ban_status').text('已读取 '+res.sites.length+' 个站点。'+(mixed ? '所选站点的窗口或阶梯不一致，编辑区展示默认预设，不代表当前统一生效。' : '窗口和阶梯一致。')+(states ? '各站启用状态不同，默认保留。' : '默认保留各站原有启用状态。')+'保存将覆盖所选站点的窗口和阶梯；各站独立计数，不合并。');
+			},failed);
+		},
+		save_repeat_ban_bulk:function(policy){
+			var action = $('#repeat_ban_enabled_action').val(), _this = this;
+			if(!this.repeat_ban_editable() || ['preserve','enable','disable'].indexOf(action) === -1 || this._repeat_bulk_policies.length !== this._repeat_selected.length) return;
+			this.preview_repeat_ban();
+			var expected = this._repeat_bulk_policies.map(function(row){return {siteName:row.siteName,policy:{enabled:action === 'preserve' ? row.policy.enabled : action === 'enable',window_seconds:policy.window_seconds,tiers:policy.tiers}};});
+			var data = {siteNames:JSON.stringify(this._repeat_selected),revision:this._repeat_revision,enabled_action:action,policy:JSON.stringify({window_seconds:policy.window_seconds,tiers:policy.tiers})};
+			var label = action === 'preserve' ? '保留各站原有启用状态' : action === 'enable' ? '统一启用所选站点' : '统一停用所选站点';
+			var targets = this._repeat_selected.map(function(name){return _this.endpoint_text(name);}).join('、');
+			this.confirm_repeat_ban_action('确认将编辑区的窗口和全部阶梯覆盖到以下 '+this._repeat_selected.length+' 个站点？<div style="max-height:150px;overflow:auto;overflow-wrap:anywhere;margin:10px 0">'+targets+'</div><strong>'+label+'</strong>。<br>'+this.endpoint_text($('#repeat_ban_preview').text())+'<br>各站独立计数，不合并历史；未选站点不变，不清空封禁记录。仅独立且成功的自动封禁累计，封禁期间重试不计数。启用后升级封禁影响该 IP 对本站点整站的访问；IP 白名单优先，共享出口可能误封。停用不删除历史记录，重新启用仍有效的长封禁可能再次执行。','确认批量覆盖所选站点策略',function(){_this.write_repeat_ban_bulk(data,expected);});
+		},
+		write_repeat_ban_bulk:function(data,expected){
+			if(!this.repeat_ban_bulk_unlocked() || !this._repeat_ready || data.siteNames !== JSON.stringify(this._repeat_selected) || data.revision !== this._repeat_revision) return;
+			this.cancel_repeat_ban_request('policy'); this._repeat_busy = true; this.repeat_ban_controls();
+			$('#repeat_ban_status').text('正在批量保存 '+expected.length+' 个站点，请勿重复提交；切换页面不会撤销服务器操作。');
+			var _this = this;
+			function failed(message){
+				_this._repeat_busy = false; _this._repeat_ready = false; _this._repeat_revision = null;
+				$('#repeat_ban_status').text('批量保存失败或结果未确认：'+message+'；保留编辑。服务器可能已处理，请先重新读取所选站点策略核对，不要直接重复提交。');
+				$('#repeat_ban_bulk_snapshot').text('以下状态未确认，请重读；提交前的策略快照不能作为当前生效证据。');
+				_this.repeat_ban_controls();
+			}
+			this.repeat_ban_request('write','save_repeat_ban_policies',data,function(res){
+				if(!_this.repeat_ban_bulk_response(res) || res.sites.some(function(row,index){return _this.repeat_ban_policy_key(row.policy,true) !== _this.repeat_ban_policy_key(expected[index].policy,true);})){failed((res && res.msg) || '未返回全部所选站点的预期保存结果');return;}
+				_this._repeat_busy = false; _this._repeat_revision = res.revision; _this._repeat_bulk_policies = res.sites;
+				$('#repeat_ban_enabled_action').val('preserve'); _this.render_repeat_ban_bulk_snapshot(res); _this.preview_repeat_ban();
+				$('#repeat_ban_status').text('批量保存成功，已核对 '+res.sites.length+' 个站点的策略；各站仍独立计数、独立封禁。');
+				_this.repeat_ban_controls();
+			},failed);
+		},
 		repeat_ban_alive:function(){
 			return !this._destroyed && this._active_page === 'repeat_ban' && this.$root && this.$root[0].isConnected;
 		},
 		repeat_ban_editable:function(){
-			return this.repeat_ban_alive() && !!this._repeat_site && this._repeat_ready && !this._repeat_busy && !this._repeat_confirmation;
+			return this.repeat_ban_alive() && (this._repeat_mode === 'bulk' ? this._repeat_selected.length > 0 : !!this._repeat_site) && this._repeat_ready && !this._repeat_busy && !this._repeat_confirmation;
 		},
 		cancel_repeat_ban_request:function(kind){
 			var token = (this._repeat_requests || {})[kind];
@@ -7312,6 +7937,14 @@
 			$('#repeat_ban_sites_refresh').prop('disabled',!!this._repeat_busy || !!this._repeat_confirmation);
 			$('#repeat_ban_prev').prop('disabled',locked || !this._repeat_rows_ready || this._repeat_rows_loading || this._repeat_page <= 1);
 			$('#repeat_ban_next').prop('disabled',locked || !this._repeat_rows_ready || this._repeat_rows_loading || this._repeat_page * 50 >= this._repeat_total);
+			var batchLocked = !this.repeat_ban_bulk_unlocked();
+			$('.repeat-ban-site-check').prop('disabled',batchLocked);
+			$('#repeat_ban_bulk_filter').prop('disabled',batchLocked);
+			$('#repeat_ban_bulk_all').prop('disabled',batchLocked);
+			$('#repeat_ban_bulk_clear').prop('disabled',batchLocked);
+			$('#repeat_ban_bulk_read').prop('disabled',batchLocked || !this._repeat_selected.length);
+			$('#repeat_ban_mode_single').prop('disabled',!!this._repeat_busy || !!this._repeat_confirmation || !this._repeat_sites.length);
+			$('#repeat_ban_mode_bulk').prop('disabled',!!this._repeat_busy || !!this._repeat_confirmation || !this._repeat_sites.length);
 		},
 		repeat_ban_policy_valid:function(policy){
 			if(!policy || typeof policy.enabled !== 'boolean' || !Number.isInteger(policy.window_seconds) || policy.window_seconds < 60 || policy.window_seconds > 604800 || !Array.isArray(policy.tiers) || policy.tiers.length < 1 || policy.tiers.length > 8) return false;
@@ -7360,9 +7993,13 @@
 			var tiers = this.repeat_ban_draft(), text = [];
 			for(var i=0;i<tiers.length;i++) text.push('第 '+(i+1)+' 档：'+(tiers[i].threshold || '待填写')+' 次 / '+this.repeat_ban_duration(Number(tiers[i].ban_seconds)));
 			$('#repeat_ban_preview').text('编辑预览（不是生效确认）：滚动 '+this.repeat_ban_duration(Number($('#repeat_ban_window_seconds').val()))+'；'+text.join('；')+'。变更仅在保存成功后生效。');
+			if(this._repeat_mode === 'bulk') $('#repeat_ban_preview').append(' 本次覆盖 '+this._repeat_selected.length+' 个已选站点；'+($('#repeat_ban_enabled_action').val() === 'enable' ? '统一启用。' : $('#repeat_ban_enabled_action').val() === 'disable' ? '统一停用。' : '保留各站原有启用状态。'));
 		},
 		clear_repeat_ban_view:function(){
 			this._repeat_ready = false; this._repeat_revision = null;
+			this._repeat_bulk_policies = [];
+			$('#repeat_ban_enabled_action').val('preserve');
+			$('#repeat_ban_bulk_snapshot').text('尚未读取所选站点策略。');
 			this._repeat_rows = []; this._repeat_rows_ready = false; this._repeat_rows_loading = false;
 			this._repeat_page = 1; this._repeat_total = 0;
 			$('#repeat_ban_enabled').prop('checked',false);
@@ -7377,7 +8014,9 @@
 			if(!this.repeat_ban_alive() || this._repeat_busy || this._repeat_confirmation) return;
 			this.stop_repeat_ban_requests();
 			this._repeat_site = ''; this._repeat_sites = [];
+			this._repeat_selected = [];
 			this.clear_repeat_ban_view();
+			this.render_repeat_ban_bulk_sites();
 			$('#repeat_ban_site').html('<option value="">正在读取站点...</option>').val('').prop('disabled',true);
 			$('#repeat_ban_status').text('正在读取站点，请稍候。');
 			var _this = this;
@@ -7397,11 +8036,12 @@
 					options += '<option value="'+_this.endpoint_text(name)+'">'+_this.endpoint_text(name)+'</option>';
 				}
 				$('#repeat_ban_site').html(options).val('').prop('disabled',!_this._repeat_sites.length);
+				_this.render_repeat_ban_bulk_sites();
 				$('#repeat_ban_status').text(_this._repeat_sites.length ? '请选择站点后读取策略与封禁记录，不会自动刷新。' : '暂无可配置站点，请核对站点配置后重新读取。');
 			},failed);
 		},
 		select_repeat_ban_site:function(site){
-			if(!this.repeat_ban_alive()) return;
+			if(!this.repeat_ban_alive() || this._repeat_mode === 'bulk') return;
 			this.stop_repeat_ban_requests();
 			this._repeat_site = this._repeat_sites.indexOf(site) !== -1 ? site : '';
 			$('#repeat_ban_site').val(this._repeat_site);
@@ -7458,6 +8098,7 @@
 			if(!numeric || !this.repeat_ban_policy_valid(policy)){
 				$('#repeat_ban_status').text('未保存：窗口须为 60 至 604800 秒的整数；支持 1 至 8 档，次数须为 2 至 1000、时长须为 60 至 31536000 秒的整数，且各档次数和时长均严格递增。');return;
 			}
+			if(this._repeat_mode === 'bulk'){this.save_repeat_ban_bulk(policy);return;}
 			var _this = this, data = {siteName:this._repeat_site,policy:JSON.stringify(policy),revision:this._repeat_revision};
 			if(!policy.enabled){this.write_repeat_ban('save_repeat_ban_policy',data);return;}
 			this.confirm_repeat_ban_action('确认启用站点「'+this.endpoint_text(this._repeat_site)+'」的重复封禁升级？即使违规来自单个接口，升级也会影响此 IP 对整个站点的访问，其他站点不受影响。仅独立且成功的自动封禁计数，封禁期间重复请求不计数、不触发升级。默认解封保留滚动计数，再次独立自动封禁继续累计；只有明确选择“解封并清零”才重置计数。IP 白名单优先；共享出口或代理可能导致正常用户误封。请核对编辑预览中的窗口与各档次数、时长。','启用本站点整站升级封禁',function(){_this.write_repeat_ban('save_repeat_ban_policy',data);});

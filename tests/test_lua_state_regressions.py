@@ -77,6 +77,15 @@ class LuaStateRegressionsTest(unittest.TestCase):
 
 
 class EmbeddedRetiredPolicyTest(unittest.TestCase):
+    def test_registration_listing_and_cleanup_in_embedded_luajit(self):
+        try:
+            from lupa.luajit21 import LuaRuntime
+        except ImportError:
+            self.skipTest('optional embedded LuaJIT unavailable')
+        runtime = LuaRuntime(unpack_returned_tuples=True)
+        runtime.globals().WAF_RUNTIME_SOURCE = (ROOT / 'init.lua').read_text(encoding='utf-8')
+        runtime.execute((ROOT / 'tools/audit_registration_state.lua').read_text(encoding='utf-8'))
+
     def test_retired_policy_and_shared_cc_in_embedded_luajit(self):
         try:
             from lupa.luajit21 import LuaRuntime

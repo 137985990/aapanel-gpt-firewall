@@ -163,7 +163,7 @@ class UpdateServiceTest(unittest.TestCase):
     def test_version_and_bridge_contract_includes_published_prereleases(self):
         result = self.service.check()
         self.assertTrue(result['status'], result)
-        self.assertEqual(updater.PLUGIN_VERSION, '0.1.9')
+        self.assertEqual(updater.PLUGIN_VERSION, '0.1.10')
         self.assertEqual(result['current_version'], '0.1')
         self.assertEqual(result['latest_version'], '0.1.1')
         self.assertEqual(result['tag'], 'v0.1.1')
@@ -182,6 +182,18 @@ class UpdateServiceTest(unittest.TestCase):
         self.assertEqual(result['current_version'], '0.1.8')
         self.assertEqual(result['latest_version'], '0.1.9')
         self.assertEqual(result['tag'], 'v0.1.9')
+        self.assertTrue(result['available'], result)
+        self.assertFalse(self.spawn_calls)
+        self.assertFalse(self.install_calls)
+
+    def test_published_v019_can_discover_v0110_without_installing(self):
+        self.write(self.plugin / 'info.json', json.dumps({'name': 'free_waf', 'versions': '0.1.9'}).encode())
+        self.releases = [json.loads(json.dumps(self.release).replace('0.1.1', '0.1.10'))]
+        result = self.service.check()
+        self.assertTrue(result['status'], result)
+        self.assertEqual(result['current_version'], '0.1.9')
+        self.assertEqual(result['latest_version'], '0.1.10')
+        self.assertEqual(result['tag'], 'v0.1.10')
         self.assertTrue(result['available'], result)
         self.assertFalse(self.spawn_calls)
         self.assertFalse(self.install_calls)
