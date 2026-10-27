@@ -371,7 +371,8 @@
 	.risk-advice-detail pre{white-space:pre-wrap;max-height:180px;overflow:auto;background:#fff;border:1px solid #e1e9e4;padding:10px;font-size:12px}
 	.risk-advice-form{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0}
 	.risk-advice-form label{font-size:12px;font-weight:400;margin:0}
-	#risk-advice-site,#risk-advice-custom-value,#risk-advice-custom-unit{height:34px;padding:5px 8px;border:1px solid #cedbd2;border-radius:4px;background:#fff;color:#263b32;max-width:100%}
+	#risk-advice-site,#risk-advice-custom-value,#risk-advice-custom-unit,.risk-advice-filter{height:34px;padding:5px 8px;border:1px solid #cedbd2;border-radius:4px;background:#fff;color:#263b32;max-width:100%}
+	.risk-advice-filter{width:160px}#risk-advice-site-coverage td{overflow-wrap:anywhere}
 	#risk-advice-site{width:260px}#risk-advice-custom-value{width:130px}
 	#risk-advice-mutation{padding:8px 0;white-space:pre-wrap}
 	#risk-advice-mutation[data-state="saved"],#risk-advice-mutation[data-state="unknown"]{color:#936927}
@@ -996,16 +997,25 @@
 				<p>运行时封禁列表展示当前和历史 WAF IP 封禁记录。</p>
 			</div>
 			<section class="waf-card risk-advice-card" id="risk-advice-card" aria-labelledby="risk-advice-title">
-				<div class="risk-advice-heading"><div><h4 id="risk-advice-title">风险 IP 封禁建议</h4><p>本地日志分析，仅供人工确认；本模块不会自动封禁</p></div><small>仅分析所选站点 · 归属地不参与风险判定</small></div>
+				<div class="risk-advice-heading"><div><h4 id="risk-advice-title">风险 IP 封禁建议</h4><p>本地日志分析，仅供人工确认；本模块不会自动封禁</p></div><small>手动逐站点有界读取 · 归属地不参与风险判定</small></div>
 				<div class="waf-toolbar">
 					<label for="risk-advice-site">站点</label><select id="risk-advice-site" disabled><option value="">尚未读取站点</option></select>
 					<button type="button" class="btn btn-default btn-sm" id="risk-advice-sites-refresh">重新读取站点</button>
 					<button type="button" class="btn btn-success btn-sm" id="risk-advice-analyze" disabled>分析最近 24 小时</button>
+					<button type="button" class="btn btn-default btn-sm" id="risk-advice-stop" disabled>停止查询（保留已完成结果）</button>
 					<span id="risk-advice-analyzed">尚未分析</span>
 				</div>
 				<p class="waf-policy-meta" id="risk-advice-status" role="status" aria-live="polite">尚未分析。请选择站点后手动分析，不会自动扫描或刷新。</p>
 				<p class="waf-policy-meta" id="risk-advice-coverage">日志覆盖范围尚未读取。</p>
+				<div id="risk-advice-all" style="display:none;">
+					<p class="waf-policy-meta" id="risk-advice-progress" role="status" aria-live="polite"></p>
+					<div class="waf-toolbar"><label for="risk-advice-filter-site">站点</label><input id="risk-advice-filter-site" class="risk-advice-filter" type="text" maxlength="256" /><label for="risk-advice-filter-ip">IP</label><input id="risk-advice-filter-ip" class="risk-advice-filter" type="text" maxlength="256" /><label for="risk-advice-filter-location">归属地</label><input id="risk-advice-filter-location" class="risk-advice-filter" type="text" maxlength="256" /><label for="risk-advice-filter-reason">原因</label><input id="risk-advice-filter-reason" class="risk-advice-filter" type="text" maxlength="256" /></div>
+					<p class="waf-policy-meta">筛选仅匹配已保留样本，不会重新读取日志；同一 IP 在不同站点保留为独立条目。汇总只读，不能跨站封禁。</p>
+					<div class="waf-policy-scroll"><table class="waf_table"><thead><tr><th>站点</th><th>处理状态 / 日志覆盖范围（非完整性证明）</th></tr></thead><tbody id="risk-advice-site-coverage"></tbody></table></div>
+					<div class="waf-toolbar"><button type="button" class="btn btn-default btn-sm" id="risk-advice-coverage-prev">覆盖上一页</button><span id="risk-advice-coverage-info"></span><button type="button" class="btn btn-default btn-sm" id="risk-advice-coverage-next">覆盖下一页</button></div>
+				</div>
 				<div class="waf-policy-scroll"><table class="waf_table risk-advice-table"><thead><tr><th>IP / 本地归属地</th><th>站点</th><th>建议类型与证据</th><th>建议时长</th><th>证据状态</th><th>人工操作</th></tr></thead><tbody id="risk-advice-rows"><tr><td colspan="6">尚未分析，不代表没有异常访问。</td></tr></tbody></table></div>
+				<div class="waf-toolbar" id="risk-advice-pagination" style="display:none;"><button type="button" class="btn btn-default btn-sm" id="risk-advice-prev">上一页</button><span id="risk-advice-page-info"></span><button type="button" class="btn btn-default btn-sm" id="risk-advice-next">下一页</button></div>
 				<div id="risk-advice-evidence" class="risk-advice-detail" style="display:none;"></div>
 				<div id="risk-advice-custom" class="risk-advice-detail" style="display:none;">
 					<h4>人工自定义封禁时长</h4><p id="risk-advice-custom-target"></p>
@@ -7433,7 +7443,7 @@
 		},
 		init_risk_advice:function(){
 			var _this = this;
-			this._risk_epoch = (this._risk_epoch || 0) + 1;
+			this.stop_risk_advice_requests();
 			this._risk_requests = {}; this._risk_sites = []; this._risk_site = '';
 			this._risk_confirmation = null; this._risk_busy = false;
 			this.clear_risk_advice_view();
@@ -7441,6 +7451,13 @@
 			this.bind_panel_event('change','#risk-advice-site',function(){_this.select_risk_advice_site($(this).val());});
 			this.bind_panel_event('click','#risk-advice-sites-refresh',function(){_this.load_risk_advice_sites();});
 			this.bind_panel_event('click','#risk-advice-analyze',function(){_this.analyze_risk_advice();});
+			this.bind_panel_event('click','#risk-advice-stop',function(){if(_this.risk_advice_alive() && _this._risk_all && _this._risk_all.running) _this.stop_risk_advice_requests();});
+			this.bind_panel_event('input','.risk-advice-filter',function(){if(_this.risk_advice_alive() && _this._risk_site === '*' && _this._risk_all){_this._risk_all.page = 1;_this.render_all_risk_advice();}});
+			this.bind_panel_event('click','#risk-advice-prev',function(){_this.page_all_risk_advice(-1,false);});
+			this.bind_panel_event('click','#risk-advice-next',function(){_this.page_all_risk_advice(1,false);});
+			this.bind_panel_event('click','#risk-advice-coverage-prev',function(){_this.page_all_risk_advice(-1,true);});
+			this.bind_panel_event('click','#risk-advice-coverage-next',function(){_this.page_all_risk_advice(1,true);});
+			this.bind_panel_event('click','.risk-advice-review',function(){_this.review_all_risk_advice($(this).attr('data-index'));});
 			this.bind_panel_event('click','#risk-advice-manual-refresh',function(){_this.load_risk_site_bans();});
 			this.bind_panel_event('click','.risk-advice-evidence',function(){_this.show_risk_advice_evidence($(this).attr('data-index'));});
 			this.bind_panel_event('click','.risk-advice-suggest',function(){_this.apply_risk_advice($(this).attr('data-index'),'suggest');});
@@ -7464,28 +7481,40 @@
 		stop_risk_advice_requests:function(){
 			// Invalidate before abort/close: either can synchronously invoke callbacks.
 			this._risk_epoch = (this._risk_epoch || 0) + 1;
+			var queue = this._risk_all;
+			if(queue && queue.running){
+				queue.running = false; queue.cancelled = true;
+				clearTimeout(queue.timer); queue.timer = null;
+				if(queue.sites[queue.index] && queue.sites[queue.index].state === 'reading') queue.sites[queue.index].state = 'pending';
+			}
 			var pending = this._risk_requests || {}, confirmation = this._risk_confirmation;
 			this._risk_requests = {}; this._risk_confirmation = null;
 			this._risk_ready = false; this._risk_manual_ready = false; this._risk_busy = false;
+			this._risk_review_pending = false;
 			this._risk_custom_index = null;
 			if(confirmation && confirmation.layer !== undefined) layer.close(confirmation.layer);
 			for(var kind in pending) if(Object.prototype.hasOwnProperty.call(pending,kind) && pending[kind].xhr) pending[kind].xhr.abort();
 			$('#risk-advice-custom').hide(); $('#risk-advice-evidence').hide();
 			this.risk_advice_controls();
 		},
-		risk_advice_request:function(kind,method,data,success,failure){
-			if(!this.risk_advice_alive()) return;
+		risk_advice_request:function(kind,method,data,success,failure,completed){
+			if(!this.risk_advice_alive() || data.siteName === '*') return;
 			var _this = this, epoch = this._risk_epoch, owner = this._generation, site = this._risk_site, token = {};
 			this.cancel_risk_advice_request(kind); this._risk_requests[kind] = token;
 			function current(){return _this.risk_advice_alive() && epoch === _this._risk_epoch && owner === _this._generation && site === _this._risk_site && _this._risk_requests[kind] === token;}
 			token.xhr = this.http({method:method,type:'POST',data:data,load:2,msg:false,check:true,current:current,
 				success:function(res){if(current() && !token.handled){token.handled = true;success(res);}},
 				error:function(xhr,message){if(current() && !token.handled){token.handled = true;failure(message);}},
-				complete:function(){if(current()){delete _this._risk_requests[kind];_this.risk_advice_controls();}}
+				complete:function(){if(current()){delete _this._risk_requests[kind];if(completed && token.handled) completed();_this.risk_advice_controls();}}
 			});
 			this.risk_advice_controls();
 		},
 		clear_risk_advice_view:function(){
+			this._risk_all = null;
+			$('#risk-advice-progress').text(''); $('#risk-advice-site-coverage').html('');
+			$('#risk-advice-page-info').text(''); $('#risk-advice-coverage-info').text('');
+			$('#risk-advice-filter-site').val(''); $('#risk-advice-filter-ip').val('');
+			$('#risk-advice-filter-location').val(''); $('#risk-advice-filter-reason').val('');
 			this._risk_report = null; this._risk_ready = false; this._risk_dismissed = {};
 			this._risk_manual_rows = []; this._risk_manual_ready = false; this._risk_manual_revision = null;
 			this._risk_clock_offset = null; this._risk_custom_index = null;
@@ -7495,14 +7524,20 @@
 			$('#risk-advice-evidence').html('').hide(); $('#risk-advice-custom').hide();
 			$('#risk-advice-mutation').text('').attr('data-state','');
 			$('#risk-advice-manual-status').text('请先选择站点，运行端状态未确认。');
+			if(this._risk_site === '*'){
+				$('#risk-advice-coverage').text('按站点读取顺序保留前 2000 条，每页 50 条；仅筛选已保留样本，并非全站风险排序。达到上限后，后续站点的条目可能全部未展示；未展示条目与未处理站点将单独提示。处理站点数不代表日志完整覆盖。');
+				$('#risk-advice-manual-status').text('全部站点汇总只读；请进入本站复核后重新读取快照并手动分析，不能执行全局封禁。');
+			}
 			this.risk_advice_controls();
 		},
 		risk_advice_controls:function(){
-			var alive = this.risk_advice_alive(), requests = this._risk_requests || {}, locked = !!this._risk_busy || !!this._risk_confirmation;
+			var alive = this.risk_advice_alive(), requests = this._risk_requests || {}, locked = !!this._risk_busy || !!this._risk_confirmation, all = this._risk_site === '*', running = !!this._risk_all && this._risk_all.running;
 			$('#risk-advice-site').prop('disabled',!alive || !this._risk_sites || !this._risk_sites.length || !!requests.sites);
 			$('#risk-advice-sites-refresh').prop('disabled',!alive || !!requests.sites);
-			$('#risk-advice-analyze').prop('disabled',!alive || !this._risk_site || locked || !!requests.analysis);
-			$('#risk-advice-manual-refresh').prop('disabled',!alive || !this._risk_site || locked || !!requests.manual);
+			$('#risk-advice-analyze').prop('disabled',!alive || !this._risk_site || locked || !!requests.analysis || running || (all && !this._risk_sites.length));
+			$('#risk-advice-stop').prop('disabled',!alive || !all || !running);
+			$('#risk-advice-manual-refresh').prop('disabled',!alive || !this._risk_site || all || locked || !!requests.manual);
+			if(all){$('#risk-advice-all').show();$('#risk-advice-pagination').show();}else{$('#risk-advice-all').hide();$('#risk-advice-pagination').hide();}
 			$('#risk-advice-custom-confirm').prop('disabled',!this.risk_advice_actionable(this._risk_custom_index));
 			$('#risk-advice-custom-value').prop('disabled',locked); $('#risk-advice-custom-unit').prop('disabled',locked);
 			this.render_risk_advice(); this.render_risk_site_bans();
@@ -7516,23 +7551,24 @@
 			function failed(message){$('#risk-advice-status').text('站点读取失败：'+message+'；请手动重读，未开始日志分析。');}
 			this.risk_advice_request('sites','get_risk_advice_sites',{},function(res){
 				if(!res || res.status !== true || !Array.isArray(res.sites)){failed(res && res.msg || '站点格式不可用');return;}
-				var options = '<option value="">请选择站点</option>';
+				var options = '<option value="">请选择站点</option><option value="*">全部站点</option>';
 				for(var i=0;i<res.sites.length;i++){
 					var name = res.sites[i] && res.sites[i].siteName;
-					if(typeof name !== 'string' || !name || _this._risk_sites.indexOf(name) !== -1) continue;
+					if(typeof name !== 'string' || !name || name === '*' || _this._risk_sites.indexOf(name) !== -1) continue;
 					_this._risk_sites.push(name); options += '<option value="'+_this.endpoint_text(name)+'">'+_this.endpoint_text(name)+'</option>';
 				}
 				$('#risk-advice-site').html(options).val('');
 				$('#risk-advice-status').text(_this._risk_sites.length ? '尚未分析。请选择站点后点击分析最近 24 小时。' : '暂无可配置站点，请核对站点配置后重读。');
 			},failed);
 		},
-		select_risk_advice_site:function(site){
+		select_risk_advice_site:function(site,reviewPending){
 			if(!this.risk_advice_alive()) return;
 			var uncertain = this._risk_busy;
-			this.stop_risk_advice_requests(); this._risk_site = this._risk_sites.indexOf(site) !== -1 ? site : '';
+			this.stop_risk_advice_requests(); this._risk_site = site === '*' || this._risk_sites.indexOf(site) !== -1 ? site : '';
+			this._risk_review_pending = reviewPending === true;
 			$('#risk-advice-site').val(this._risk_site); this.clear_risk_advice_view();
 			if(uncertain) $('#risk-advice-mutation').text('已切换站点；此前服务器操作可能仍在处理，返回原站点后请手动读取核对，不要重复提交。').attr('data-state','unknown');
-			if(this._risk_site) this.load_risk_site_bans();
+			if(this._risk_site && this._risk_site !== '*') this.load_risk_site_bans();
 		},
 		risk_advice_time:function(seconds){
 			if(!Number.isSafeInteger(seconds) || seconds <= 0 || seconds > 8640000000000) return '未知';
@@ -7545,11 +7581,12 @@
 			if(seconds === 86400) return '24 小时';
 			return this.repeat_ban_duration(seconds);
 		},
-		risk_advice_report_valid:function(res){
-			if(!res || res.status !== true || res.siteName !== this._risk_site || !/^[0-9a-f]{64}$/.test(res.config_revision || '') || !Number.isSafeInteger(res.analyzed_at) || !Array.isArray(res.items) || res.items.length > 4096) return false;
+		risk_advice_report_valid:function(res,site){
+			site = site || this._risk_site;
+			if(site === '*' || !res || res.status !== true || res.siteName !== site || !/^[0-9a-f]{64}$/.test(res.config_revision || '') || !Number.isSafeInteger(res.analyzed_at) || !Array.isArray(res.items) || res.items.length > 4096) return false;
 			for(var i=0;i<res.items.length;i++){
 				var row = res.items[i];
-				if(!row || row.site !== this._risk_site || typeof row.ip !== 'string' || !row.ip || !/^[0-9a-f]{64}$/.test(row.fingerprint || '') || typeof row.name !== 'string' || typeof row.actionable !== 'boolean' || [0,86400,604800].indexOf(row.recommended_seconds) === -1 || !Array.isArray(row.hold_reasons) || !Array.isArray(row.samples)) return false;
+				if(!row || row.site !== site || typeof row.ip !== 'string' || !row.ip || !/^[0-9a-f]{64}$/.test(row.fingerprint || '') || typeof row.name !== 'string' || typeof row.actionable !== 'boolean' || [0,86400,604800].indexOf(row.recommended_seconds) === -1 || !Array.isArray(row.hold_reasons) || !Array.isArray(row.samples)) return false;
 				var counts = ['related_rows','strong_targets','raw_targets','first_seen','last_seen'];
 				for(var c=0;c<counts.length;c++) if(!Number.isSafeInteger(row[counts[c]]) || row[counts[c]] < 0) return false;
 				if(!row.family_counts || typeof row.family_counts !== 'object' || Array.isArray(row.family_counts)) return false;
@@ -7559,7 +7596,8 @@
 			return true;
 		},
 		analyze_risk_advice:function(){
-			if(!this.risk_advice_alive() || !this._risk_site || this._risk_busy || this._risk_confirmation || this._risk_requests.analysis) return;
+			if(!this.risk_advice_alive() || !this._risk_site || this._risk_busy || this._risk_confirmation || this._risk_requests.analysis || (this._risk_all && this._risk_all.running)) return;
+			if(this._risk_site === '*'){this.analyze_all_risk_advice();return;}
 			this._risk_ready = false; this._risk_report = null; this._risk_dismissed = {}; this._risk_custom_index = null;
 			$('#risk-advice-custom').hide(); $('#risk-advice-evidence').html('').hide();
 			$('#risk-advice-status').text('正在有界分析所选站点最近 24 小时的拒绝日志；不会自动封禁。');
@@ -7568,15 +7606,100 @@
 			function failed(message){$('#risk-advice-status').text('分析失败：'+message+'；不能据此认为没有异常，请手动重试。');$('#risk-advice-analyzed').text('本次分析失败');$('#risk-advice-coverage').text('本次日志覆盖范围未确认。');}
 			this.risk_advice_request('analysis','get_risk_advice',{siteName:this._risk_site},function(res){
 				if(!_this.risk_advice_report_valid(res)){failed(res && res.msg || '站点、证据或版本格式不匹配');return;}
-				_this._risk_report = res; _this._risk_ready = true;
+				_this._risk_report = res; _this._risk_ready = true; _this._risk_review_pending = false;
 				$('#risk-advice-analyzed').text('分析时间：'+_this.risk_advice_time(res.analyzed_at));
 				$('#risk-advice-coverage').text(_this.risk_advice_coverage(res.coverage));
 				$('#risk-advice-status').text(res.items.length ? '本次读取发现 '+res.items.length+' 个来源的证据条目；仅供人工复核，不代表入侵成功，不能直接按请求量判断恶意。' : '本次读取未产生建议，不代表没有异常访问；请结合日志覆盖范围判断。');
 			},failed);
 		},
+		analyze_all_risk_advice:function(){
+			if(!this._risk_sites.length){$('#risk-advice-status').text('暂无可分析站点，请手动重新读取站点。');return;}
+			this.stop_risk_advice_requests(); this.clear_risk_advice_view();
+			var _this = this, epoch = this._risk_epoch, owner = this._generation;
+			var queue = this._risk_all = {running:true,cancelled:false,index:0,success:0,failed:0,omitted:0,rows:[],page:1,coveragePage:1,timer:null,
+				sites:this._risk_sites.map(function(site){return {site:site,state:'pending',coverage:'',omitted:0};})};
+			function current(){return _this.risk_advice_alive() && _this._risk_site === '*' && _this._risk_all === queue && queue.running && epoch === _this._risk_epoch && owner === _this._generation;}
+			function readNext(){
+				if(!current()) return;
+				var entry = queue.sites[queue.index];
+				if(!entry || entry.state !== 'pending' || _this._risk_requests.analysis) return;
+				entry.state = 'reading';
+				function failed(message){if(!current()) return;entry.state = 'failure';entry.coverage = '读取失败，覆盖范围未知：'+message;queue.failed++;}
+				_this.risk_advice_request('analysis','get_risk_advice',{siteName:entry.site},function(res){
+					if(!current()) return;
+					if(!_this.risk_advice_report_valid(res,entry.site)){failed(res && res.msg || '站点、证据或版本格式不匹配');return;}
+					entry.state = 'success'; entry.coverage = '分析时间：'+_this.risk_advice_time(res.analyzed_at)+'。'+_this.risk_advice_coverage(res.coverage);
+					var retained = res.items.slice(0,Math.max(0,2000-queue.rows.length));
+					queue.rows = queue.rows.concat(retained); entry.omitted = res.items.length-retained.length;
+					queue.omitted += entry.omitted; queue.success++;
+				},failed,function(){
+					if(!current()) return;
+					queue.index++;
+					if(queue.index >= queue.sites.length){queue.running = false;return;}
+					// Advance only after complete, and yield without creating a polling loop.
+					var timer = queue.timer = setTimeout(function(){
+						if(!current() || queue.timer !== timer) return;
+						queue.timer = null; readNext();
+					},75);
+				});
+			}
+			readNext();
+		},
+		page_all_risk_advice:function(step,coverage){
+			if(!this.risk_advice_alive() || this._risk_site !== '*' || !this._risk_all) return;
+			var key = coverage ? 'coveragePage' : 'page';
+			this._risk_all[key] += step; this.render_all_risk_advice();
+		},
+		render_all_risk_advice:function(){
+			var queue = this._risk_all, esc = this.endpoint_text;
+			if(!queue){
+				$('#risk-advice-rows').html('<tr><td colspan="6">尚未分析，请手动开始全部站点查询。</td></tr>');
+				$('#risk-advice-prev,#risk-advice-next,#risk-advice-coverage-prev,#risk-advice-coverage-next').prop('disabled',true);
+				return;
+			}
+			var pending = queue.sites.length-queue.success-queue.failed, entry = queue.sites[queue.index];
+			var status = (queue.running ? '正在逐站查询' : queue.cancelled ? '已停止查询' : '本轮查询已结束')+'；成功 '+queue.success+'，失败 '+queue.failed+'，未处理 '+pending+'（共 '+queue.sites.length+' 个站点）。';
+			if(queue.running && entry) status += ' 当前站点：'+entry.site+'。';
+			status += ' 已保留 '+queue.rows.length+' / 2000 条，未展示 '+queue.omitted+' 条（汇总上限）；各站点服务端截断另见覆盖范围。处理站点数不代表日志完整覆盖，失败或未处理不代表没有异常。';
+			$('#risk-advice-progress').text(status);
+			$('#risk-advice-status').text('全部站点仅在手动开始后串行读取，不会自动封禁或轮询；已完成结果保留至重新分析、切换站点或重读站点。');
+			$('#risk-advice-analyzed').text(queue.running ? '正在逐站分析' : queue.cancelled ? '查询已停止，保留已完成结果' : '本轮有界查询结束（不是完整日志统计）');
+			var fields = ['site','ip','location','reason'], filters = fields.map(function(key){return String($('#risk-advice-filter-'+key).val() || '').toLowerCase();});
+			var matches = [];
+			for(var i=0;i<queue.rows.length;i++){
+				var row = queue.rows[i], values = [row.site,row.ip,row.location || '',row.name+' '+row.hold_reasons.join(' ')];
+				if(values.every(function(value,index){return String(value).toLowerCase().indexOf(filters[index]) !== -1;})) matches.push(i);
+			}
+			var pages = Math.max(1,Math.ceil(matches.length/50)), html = '';
+			queue.page = Math.max(1,Math.min(queue.page,pages));
+			for(var n=(queue.page-1)*50;n<Math.min(queue.page*50,matches.length);n++){
+				var index = matches[n], sample = queue.rows[index];
+				html += '<tr><td><strong>'+esc(sample.ip)+'</strong><br>'+esc(typeof sample.location === 'string' && sample.location ? sample.location : '归属地未知（仅本地查询）')+'</td><td>'+esc(sample.site)+'</td><td>'+esc(sample.name)+'<br>相关拒绝记录 '+sample.related_rows+' 条<br>敏感目标 '+sample.strong_targets+' 个（去重）<br>'+esc(this.risk_advice_time(sample.first_seen))+' 至 '+esc(this.risk_advice_time(sample.last_seen))+'</td><td>'+esc(sample.recommended_seconds ? this.risk_advice_duration(sample.recommended_seconds) : '建议观察')+'</td><td>汇总只读；须进入本站重新分析<br>'+esc(sample.hold_reasons.join('；'))+'</td><td><div class="risk-advice-actions"><button type="button" class="btn btn-default btn-xs risk-advice-evidence" data-index="'+index+'">查看证据</button><button type="button" class="btn btn-default btn-xs risk-advice-review" data-index="'+index+'">进入本站复核</button></div></td></tr>';
+			}
+			$('#risk-advice-rows').html(html || '<tr><td colspan="6">已保留样本中无匹配条目，不代表没有异常；请核对未处理站点、未展示条目和各站点日志覆盖范围。</td></tr>');
+			$('#risk-advice-page-info').text('第 '+queue.page+' / '+pages+' 页；匹配 '+matches.length+' / 已保留 '+queue.rows.length+' 条（每页 50 条）');
+			$('#risk-advice-prev').prop('disabled',queue.page <= 1); $('#risk-advice-next').prop('disabled',queue.page >= pages);
+			var coveragePages = Math.max(1,Math.ceil(queue.sites.length/50)), coverage = '';
+			queue.coveragePage = Math.max(1,Math.min(queue.coveragePage,coveragePages));
+			for(var s=(queue.coveragePage-1)*50;s<Math.min(queue.coveragePage*50,queue.sites.length);s++){
+				var site = queue.sites[s], label = site.state === 'success' ? '读取成功（非完整性证明）' : site.state === 'failure' ? '读取失败' : site.state === 'reading' ? '正在读取；完整性未知' : '未处理；覆盖范围未知';
+				coverage += '<tr><td>'+esc(site.site)+'</td><td>'+label+'。'+esc(site.coverage)+(site.state === 'success' ? ' 汇总未展示 '+site.omitted+' 条。' : '')+'</td></tr>';
+			}
+			$('#risk-advice-site-coverage').html(coverage);
+			$('#risk-advice-coverage-info').text('第 '+queue.coveragePage+' / '+coveragePages+' 页；共 '+queue.sites.length+' 个站点（每页 50 个）');
+			$('#risk-advice-coverage-prev').prop('disabled',queue.coveragePage <= 1); $('#risk-advice-coverage-next').prop('disabled',queue.coveragePage >= coveragePages);
+		},
+		review_all_risk_advice:function(index){
+			if(!this.risk_advice_alive() || this._risk_site !== '*') return;
+			var row = this.risk_advice_item(index);
+			if(!row || row.site === '*' || this._risk_sites.indexOf(row.site) === -1) return;
+			// Do not promote aggregate evidence to actionable state, even if apparently fresh.
+			this.select_risk_advice_site(row.site,true);
+			$('#risk-advice-status').text('已进入本站复核。汇总证据可能陈旧或过期，不用于封禁；请手动点击分析最近 24 小时重新分析，并等待本站人工封禁快照读取完成。有效分析完成前，封禁与解除均不可操作。');
+		},
 		risk_advice_coverage:function(coverage){
 			if(!coverage || typeof coverage !== 'object') return '服务端未提供日志覆盖范围，完整性未知。';
-			var text = coverage.partial === true ? '部分日志样本（不完整）' : '有界读取结果（不代表完整覆盖）';
+			var text = coverage.partial === true ? '部分日志样本（不完整）' : coverage.partial === false ? '有界读取结果（不代表完整覆盖）' : '日志完整性未知（有界读取）';
 			var fields = [['scanned_files','文件'],['scanned_lines','行'],['scanned_bytes','字节'],['invalid_lines','无效行']];
 			for(var i=0;i<fields.length;i++){
 				var value = coverage[fields[i][0]];
@@ -7588,15 +7711,18 @@
 			return text;
 		},
 		risk_advice_item:function(index){
-			if(!/^\d+$/.test(String(index)) || !this._risk_report) return null;
+			if(!/^\d+$/.test(String(index))) return null;
+			if(this._risk_site === '*') return this._risk_all && this._risk_all.rows[Number(index)] || null;
+			if(!this._risk_report) return null;
 			var row = this._risk_report.items[Number(index)];
 			return row && row.site === this._risk_site && !this._risk_dismissed[String(index)] ? row : null;
 		},
 		risk_advice_actionable:function(index){
 			var row = this.risk_advice_item(index);
-			return !!row && this.risk_advice_alive() && this._risk_ready && this._risk_manual_ready && !this._risk_requests.manual && !this._risk_requests.analysis && !this._risk_busy && !this._risk_confirmation && row.actionable === true && !row.hold_reasons.length && row.recommended_seconds > 0;
+			return !!row && this._risk_site !== '*' && !this._risk_review_pending && this.risk_advice_alive() && this._risk_ready && this._risk_manual_ready && !this._risk_requests.manual && !this._risk_requests.analysis && !this._risk_busy && !this._risk_confirmation && row.actionable === true && !row.hold_reasons.length && row.recommended_seconds > 0;
 		},
 		render_risk_advice:function(){
+			if(this._risk_site === '*'){this.render_all_risk_advice();return;}
 			var html = '', rows = this._risk_report && this._risk_report.items || [], esc = this.endpoint_text;
 			for(var i=0;i<rows.length;i++){
 				var row = this.risk_advice_item(i); if(!row) continue;
@@ -7613,7 +7739,7 @@
 			$('#risk-advice-evidence').html('<h4>证据详情：'+esc(row.name)+'</h4><p>本站：'+esc(row.site)+' · IP：'+esc(row.ip)+'。原始不同路径 '+row.raw_targets+' 个；规范化后敏感目标 '+row.strong_targets+' 个；相关拒绝日志 '+row.related_rows+' 条。日志行不等于独立攻击，也不能证明入侵成功。</p><p>类别（去重目标）：'+families.join('；')+'</p><p>'+esc(this.risk_advice_time(row.first_seen))+' 至 '+esc(this.risk_advice_time(row.last_seen))+'</p><p>'+esc(row.hold_reasons.join('；'))+'</p><pre>'+row.samples.map(function(sample){return esc(sample);}).join('\n')+'</pre><p>证据指纹：'+esc(row.fingerprint)+'。路径样例来自本地分析，不包含完整请求。</p>').show();
 		},
 		dismiss_risk_advice:function(index){
-			if(!this.risk_advice_alive() || this._risk_busy || this._risk_confirmation || !this.risk_advice_item(index)) return;
+			if(!this.risk_advice_alive() || this._risk_site === '*' || this._risk_busy || this._risk_confirmation || !this.risk_advice_item(index)) return;
 			this._risk_dismissed[String(index)] = true; this._risk_custom_index = null;
 			$('#risk-advice-custom').hide(); $('#risk-advice-evidence').hide(); this.risk_advice_controls();
 		},
@@ -7635,14 +7761,14 @@
 			$('#risk-advice-custom-expiry').text(seconds === null ? '请输入有效整数时长，范围为 60 秒至 10 年。' : '人工自定义 '+this.risk_advice_duration(seconds)+'；预计到期：'+this.risk_advice_time(this.risk_advice_now()+seconds)+'。实际到期以服务器保存为准；已有更长封禁不会缩短。');
 		},
 		confirm_risk_advice_action:function(message,title,action){
-			if(!this.risk_advice_alive() || this._risk_busy || this._risk_confirmation) return;
+			if(!this.risk_advice_alive() || this._risk_review_pending || this._risk_busy || this._risk_confirmation) return;
 			var _this = this, epoch = this._risk_epoch, owner = this._generation, site = this._risk_site, token = {};
 			this._risk_confirmation = token; this.risk_advice_controls();
 			function current(){return _this.risk_advice_alive() && epoch === _this._risk_epoch && owner === _this._generation && site === _this._risk_site && _this._risk_confirmation === token;}
 			function cancel(){if(!current()) return;_this._risk_confirmation = null;if(token.layer !== undefined) layer.close(token.layer);_this.risk_advice_controls();}
 			token.layer = layer.confirm(message,{title:title,btn:['确认','取消'],icon:0,closeBtn:2,cancel:cancel,end:cancel},function(index){
 				if(!current()) return;
-				_this._risk_confirmation = null; layer.close(index); action(); _this.risk_advice_controls();
+				_this._risk_confirmation = null; layer.close(index); if(!_this._risk_review_pending) action(); _this.risk_advice_controls();
 			},cancel);
 		},
 		apply_risk_advice:function(index,mode){
@@ -7660,7 +7786,7 @@
 			});
 		},
 		write_risk_advice:function(method,data){
-			if(!this.risk_advice_alive() || this._risk_busy || this._risk_confirmation || !this._risk_manual_ready || data.siteName !== this._risk_site) return;
+			if(!this.risk_advice_alive() || this._risk_site === '*' || this._risk_review_pending || this._risk_busy || this._risk_confirmation || !this._risk_manual_ready || data.siteName !== this._risk_site) return;
 			this.cancel_risk_advice_request('analysis'); this.cancel_risk_advice_request('manual');
 			this._risk_busy = true; this._risk_ready = false; this._risk_manual_ready = false;
 			this._risk_custom_index = null; $('#risk-advice-custom').hide();
@@ -7682,7 +7808,7 @@
 			});
 		},
 		load_risk_site_bans:function(){
-			if(!this.risk_advice_alive() || !this._risk_site || this._risk_busy || this._risk_confirmation || this._risk_requests.manual) return;
+			if(!this.risk_advice_alive() || !this._risk_site || this._risk_site === '*' || this._risk_busy || this._risk_confirmation || this._risk_requests.manual) return;
 			this._risk_manual_ready = false; this._risk_manual_rows = []; this._risk_manual_revision = null;
 			$('#risk-advice-manual-status').text('正在读取本站人工封禁与运行端快照，不会自动刷新。');
 			var _this = this;
@@ -7700,7 +7826,7 @@
 			},failed);
 		},
 		render_risk_site_bans:function(){
-			var html = '', rows = this._risk_manual_rows || [], locked = !this.risk_advice_alive() || !this._risk_manual_ready || this._risk_busy || this._risk_confirmation || (this._risk_requests || {}).manual;
+			var html = '', rows = this._risk_manual_rows || [], locked = !this.risk_advice_alive() || this._risk_review_pending || !this._risk_manual_ready || this._risk_busy || this._risk_confirmation || (this._risk_requests || {}).manual;
 			for(var i=0;i<rows.length;i++){
 				var row = rows[i], expired = row.expires_at <= this.risk_advice_now();
 				html += '<tr><td>'+this.endpoint_text(row.ip)+'</td><td>'+this.endpoint_text(row.site)+'</td><td>'+this.endpoint_text(this.risk_advice_time(row.started_at))+'<br>到期：'+this.endpoint_text(this.risk_advice_time(row.expires_at))+(expired ? '<br>已到期（以读取时服务器时间判断）' : '')+'</td><td>'+this.endpoint_text(this.risk_advice_duration(row.duration))+'<br>风险建议 · 人工确认</td><td><button type="button" class="btn btn-default btn-xs risk-advice-remove" data-index="'+i+'"'+(locked ? ' disabled' : '')+'>解除本站人工封禁</button></td></tr>';
@@ -7708,11 +7834,11 @@
 			$('#risk-advice-manual-rows').html(html || '<tr><td colspan="5">'+(this._risk_manual_ready ? '本次快照没有本站人工封禁；不代表没有其他类型封禁。' : '本站人工封禁尚未确认，请选择站点或手动刷新。')+'</td></tr>');
 		},
 		remove_risk_site_ban:function(index){
-			if(!this.risk_advice_alive() || !this._risk_manual_ready || this._risk_busy || this._risk_confirmation || this._risk_requests.manual || !/^\d+$/.test(String(index))) return;
+			if(!this.risk_advice_alive() || this._risk_site === '*' || this._risk_review_pending || !this._risk_manual_ready || this._risk_busy || this._risk_confirmation || this._risk_requests.manual || !/^\d+$/.test(String(index))) return;
 			var row = this._risk_manual_rows[Number(index)]; if(!row || row.site !== this._risk_site) return;
 			var _this = this, data = {siteName:this._risk_site,ip:row.ip,revision:this._risk_manual_revision};
 			this.confirm_risk_advice_action('确认解除本站「'+this.endpoint_text(row.site)+'」、IP「'+this.endpoint_text(row.ip)+'」的人工封禁？仅移除此模块记录，不清除自动升级计数、全局名单或其他站点的封禁，也不能保证该 IP 不再被其他规则拦截。','确认解除本站人工封禁',function(){
-				if(_this._risk_manual_ready && data.revision === _this._risk_manual_revision && row === _this._risk_manual_rows[Number(index)]) _this.write_risk_advice('remove_risk_site_ban',data);
+				if(!_this._risk_review_pending && _this._risk_manual_ready && data.revision === _this._risk_manual_revision && row === _this._risk_manual_rows[Number(index)]) _this.write_risk_advice('remove_risk_site_ban',data);
 			});
 		},
 		init_repeat_ban:function(){

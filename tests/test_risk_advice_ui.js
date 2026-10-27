@@ -321,3 +321,330 @@ test('server strings are escaped once in selectors, rows, evidence and confirmat
   }
   assert.equal(JSON.stringify(data), before);
 });
+
+function allSites(sites = [site, other]) {
+  const h = open(sites);
+  // Drain the existing shell's one-time update check before counting queue requests.
+  h.tick(10000);
+  assert.match(h.$('#risk-advice-site').html(), /value="\*"[^>]*>全部站点/);
+  select(h, '*');
+  assert.equal(h.waf._risk_site, '*');
+  return h;
+}
+function startAll(sites) {
+  const h = allSites(sites); h.fire('#risk-advice-analyze');
+  assert.equal(h.of('get_risk_advice').length, 1);
+  return h;
+}
+function siteReport(name, extra = {}) {
+  return report({siteName: name, items: [item({site: name})], ...extra});
+}
+function allRows(h) { return h.$('#risk-advice-rows').html(); }
+function progress(h) { return h.$('#risk-advice-progress').text(); }
+function nextSite(h) { h.tick(100); return h.of('get_risk_advice').at(-1); }
+function noRiskWrites(h) {
+  for (const method of ['apply_risk_advice', 'remove_risk_site_ban', 'add_ip_black', 'add_permanent_ban',
+    'remove_ip_black', 'remove_repeat_ban']) assert.equal(h.of(method).length, 0, method);
+}
+
+test('all-site controls disclose bounded read-only samples and never scan on selection or timers', () => {
+  const h = allSites();
+  for (const id of ['risk-advice-stop', 'risk-advice-progress', 'risk-advice-filter-site', 'risk-advice-filter-ip',
+    'risk-advice-filter-location', 'risk-advice-filter-reason', 'risk-advice-page-info', 'risk-advice-prev',
+    'risk-advice-next', 'risk-advice-site-coverage', 'risk-advice-coverage-info', 'risk-advice-coverage-next']) {
+    assert.ok(html.includes('id="' + id + '"'), id);
+  }
+  assert.match(h.$('#risk-advice-coverage').text(), /2000[\s\S]*50[\s\S]*样本/);
+  assert.match(h.$('#risk-advice-coverage').text(), /按站点读取顺序[\s\S]*前 2000[\s\S]*并非全站风险排序/);
+  assert.match(h.$('#risk-advice-manual-status').text(), /只读|复核/);
+  h.fire('#risk-advice-manual-refresh'); h.tick(600000);
+  assert.equal(h.of('get_risk_advice').length, 0);
+  assert.equal(h.of('get_risk_site_bans').length, 0); noRiskWrites(h);
+});
+
+test('zero sites and a server-supplied sentinel cannot trigger any backend query', () => {
+  for (const sites of [[], ['*', '*', '']]) {
+    const h = allSites(sites); h.fire('#risk-advice-analyze'); h.tick(600000);
+    assert.equal(h.of('get_risk_advice').length, 0);
+    assert.equal(h.of('get_risk_site_bans').length, 0);
+    assert.match(h.$('#risk-advice-status').text(), /暂无|没有可/);
+    noRiskWrites(h);
+  }
+});
+
+test('all sites run serial POST reads, yield cancellably, and continue after a failed site', () => {
+  const third = 'c.example', h = startAll([site, other, third, site]);
+  h.fire('#risk-advice-analyze'); assert.equal(h.of('get_risk_advice').length, 1);
+  const first = h.of('get_risk_advice')[0];
+  assert.equal(first.options.type, 'POST'); assert.equal(first.options.data.siteName, site);
+  h.tick(1000); assert.equal(h.of('get_risk_advice').length, 1, 'one in flight');
+  first.resolve(report());
+  assert.equal(h.of('get_risk_advice').length, 1, 'must yield after completion');
+  assert.match(progress(h), /成功 1[\s\S]*失败 0[\s\S]*未处理 2/);
+  assert.equal(h.$('#risk-advice-analyze').prop('disabled'), true);
+  nextSite(h).reject();
+  assert.match(progress(h), /成功 1[\s\S]*失败 1[\s\S]*未处理 1/);
+  nextSite(h).resolve(siteReport(third, {coverage: undefined}));
+  assert.match(progress(h), /成功 2[\s\S]*失败 1[\s\S]*未处理 0/);
+  const coverage = h.$('#risk-advice-site-coverage').html();
+  assert.match(coverage, /a.example[\s\S]*部分[\s\S]*b.example[\s\S]*失败[\s\S]*c.example[\s\S]*未知/);
+  assert.match(progress(h), /不代表[\s\S]*完整/);
+  assert.equal(h.$('#risk-advice-stop').prop('disabled'), true);
+  assert.equal(h.$('#risk-advice-analyze').prop('disabled'), false);
+  h.tick(600000); assert.equal(h.of('get_risk_advice').length, 3);
+  assert.equal(h.of('get_risk_site_bans').length, 0); noRiskWrites(h);
+  assert.ok(h.of('get_risk_advice').every(r => r.options.type === 'POST' && r.options.data.siteName !== '*'));
+});
+
+test('serial queue waits for complete, ignores duplicate callbacks, and never has two in flight', () => {
+  const h = startAll(), first = h.of('get_risk_advice')[0];
+  first.options.success(report()); first.options.success(report());
+  first.options.error({}, 'timeout'); h.tick(1000);
+  assert.equal(h.of('get_risk_advice').length, 1);
+  first.resolve(report()); first.options.complete({}, 'success');
+  nextSite(h).resolve(siteReport(other));
+  assert.equal(h.of('get_risk_advice').length, 2);
+  assert.match(progress(h), /成功 2[\s\S]*失败 0/);
+});
+
+for (const between of [false, true]) test('stop retains completed rows and rejects stale work, between sites=' + between, () => {
+  const h = startAll([site, other, 'c.example']); h.of('get_risk_advice')[0].resolve(report());
+  let stale, timer;
+  if (between) timer = h.timers.get(h.waf._risk_all.timer).callback;
+  else stale = nextSite(h);
+  h.fire('#risk-advice-stop');
+  assert.match(allRows(h), /203\.0\.113\.25/);
+  assert.match(progress(h), /已停止[\s\S]*成功 1[\s\S]*失败 0[\s\S]*未处理 2/);
+  const before = allRows(h), summary = progress(h), count = h.requests.length;
+  if (stale) {
+    assert.ok(stale.aborted);
+    stale.options.success(siteReport(other)); stale.options.error({}, 'timeout'); stale.options.complete({}, 'success');
+  }
+  if (timer) timer(); h.tick(600000);
+  assert.equal(h.requests.length, count); assert.equal(allRows(h), before); assert.equal(progress(h), summary);
+  assert.match(h.$('#risk-advice-site-coverage').html(), /未处理/); noRiskWrites(h);
+  h.fire('#risk-advice-analyze'); assert.equal(h.of('get_risk_advice').at(-1).options.data.siteName, site);
+  assert.doesNotMatch(allRows(h), /203\.0\.113\.25/, 'manual restart resets old samples');
+});
+
+function transitionAll(h, kind) {
+  if (kind === 'site') select(h, other);
+  if (kind === 'leave') { h.navigate('home'); h.navigate('history'); }
+  if (kind === 'close') h.close();
+  if (kind === 'reinit') h.waf.init();
+  if (kind === 'risk-reinit') h.waf.init_risk_advice();
+  if (kind === 'reload') h.reload();
+  if (kind === 'reread') h.fire('#risk-advice-sites-refresh');
+}
+for (const kind of ['site', 'leave', 'close', 'reinit', 'risk-reinit', 'reload', 'reread']) {
+  for (const between of [false, true]) test('all-site stale callbacks cannot request/repaint/write after ' + kind + ', yield=' + between, () => {
+    const h = startAll(); let stale = h.of('get_risk_advice')[0], timer;
+    if (between) { stale.resolve(report()); timer = h.timers.get(h.waf._risk_all.timer).callback; }
+    transitionAll(h, kind);
+    if (!between) assert.ok(stale.aborted);
+    const count = h.requests.length, before = [allRows(h), progress(h), h.$('#risk-advice-site-coverage').html(), h.$('#risk-advice-status').text()];
+    stale.options.success(report()); stale.options.error({}, 'timeout'); stale.options.complete({}, 'success');
+    if (timer) timer(); h.tick(100);
+    assert.equal(h.requests.length, count);
+    assert.deepEqual([allRows(h), progress(h), h.$('#risk-advice-site-coverage').html(), h.$('#risk-advice-status').text()], before);
+    action(h, 'suggest'); action(h, 'custom'); action(h, 'long'); action(h, 'remove'); noRiskWrites(h);
+  });
+}
+
+test('same IP keeps separate site evidence, counters and coverage; all-site actions are read-only', () => {
+  const h = startAll(); h.of('get_risk_advice')[0].resolve(report());
+  nextSite(h).resolve(siteReport(other, {items: [item({site: other, related_rows: 7, strong_targets: 2,
+    raw_targets: 2, family_counts: {env: 2}, fingerprint: 'd'.repeat(64), samples: ['/other-only']})]}));
+  assert.equal((allRows(h).match(/<strong>203\.0\.113\.25<\/strong>/g) || []).length, 2);
+  assert.match(allRows(h), /a.example[\s\S]*120[\s\S]*b.example[\s\S]*7/);
+  assert.doesNotMatch(allRows(h), /risk-advice-(suggest|custom|long|remove|dismiss)/);
+  assert.match(allRows(h), /进入本站复核/);
+  action(h, 'evidence', 0); assert.match(h.$('#risk-advice-evidence').html(), /120[\s\S]*50/);
+  action(h, 'evidence', 1); assert.match(h.$('#risk-advice-evidence').html(), /b.example[\s\S]*7[\s\S]*other-only/);
+  assert.doesNotMatch(h.$('#risk-advice-evidence').html(), /\/\.env|50|敏感目标 55/);
+  for (const kind of ['suggest', 'custom', 'long', 'dismiss', 'remove']) action(h, kind, 1);
+  h.waf._risk_manual_ready = true;
+  h.waf.write_risk_advice('apply_risk_advice', {siteName: '*', ip});
+  assert.equal(h.confirms.length, 0); noRiskWrites(h);
+});
+
+test('invalid cross-site/version/evidence reports fail only that site and never enter aggregate samples', () => {
+  for (const bad of [siteReport(other), report({items: [item({site: other})]}), report({config_revision: ''}),
+    report({items: [item({fingerprint: ''})]}), {status: false, msg: '<img onerror=bad>'}]) {
+    const h = startAll(); h.of('get_risk_advice')[0].resolve(bad);
+    assert.match(progress(h), /成功 0[\s\S]*失败 1[\s\S]*未处理 1/);
+    assert.doesNotMatch(allRows(h), /203\.0\.113\.25/);
+    nextSite(h).resolve(siteReport(other));
+    assert.match(progress(h), /成功 1[\s\S]*失败 1[\s\S]*未处理 0/); noRiskWrites(h);
+  }
+});
+
+test('aggregate strings and per-site coverage are escaped once without changing server evidence', () => {
+  const dirty = '<img src=x onerror="bad">&\'', h = startAll([dirty]);
+  const data = siteReport(dirty, {coverage: {partial: true, notice: dirty}, items: [item({site: dirty,
+    name: dirty, location: dirty, samples: [dirty], hold_reasons: [dirty], family_counts: {[dirty]: 4}})]});
+  const before = JSON.stringify(data); h.of('get_risk_advice')[0].resolve(data); action(h, 'evidence');
+  for (const text of [allRows(h), h.$('#risk-advice-site-coverage').html(), h.$('#risk-advice-evidence').html()]) {
+    assert.match(text, /&lt;img/); assert.doesNotMatch(text, /<img|&amp;lt;/);
+  }
+  assert.equal(JSON.stringify(data), before); noRiskWrites(h);
+});
+
+test('aggregate caps storage at 2000 rows, renders 50, filters samples literally and paginates without reads', () => {
+  const h = startAll();
+  const rows = Array.from({length: 2001}, (_, n) => item({ip: '203.0.113.' + n,
+    name: n === 55 ? 'literal[.] reason' : 'ordinary', location: n === 55 ? '测试地域' : '未知',
+    hold_reasons: n === 55 ? ['冲突原因'] : []}));
+  h.of('get_risk_advice')[0].resolve(report({items: rows}));
+  nextSite(h).resolve(siteReport(other));
+  assert.equal(h.waf._risk_all.rows.length, 2000);
+  assert.match(progress(h), /2000[\s\S]*未展示 2/);
+  assert.match(h.$('#risk-advice-site-coverage').html(), /a.example[\s\S]*未展示 1[\s\S]*b.example[\s\S]*未展示 1/);
+  assert.equal((allRows(h).match(/<tr>/g) || []).length, 50);
+  assert.match(h.$('#risk-advice-page-info').text(), /1 \/ 40[\s\S]*2000/);
+  h.fire('#risk-advice-prev'); assert.match(h.$('#risk-advice-page-info').text(), /1 \/ 40/);
+  h.fire('#risk-advice-next'); assert.match(allRows(h), /203\.0\.113\.50/);
+  const reads = h.requests.length;
+  const filter = (id, value) => {h.$('#risk-advice-filter-' + id).val(value);h.fire('.risk-advice-filter', 'input');};
+  filter('site', site); filter('ip', '.55'); filter('location', '测试地域'); filter('reason', '[.]');
+  assert.match(h.$('#risk-advice-page-info').text(), /1 \/ 1[\s\S]*匹配 1/);
+  assert.match(allRows(h), /203\.0\.113\.55/);
+  filter('reason', '冲突原因'); assert.match(allRows(h), /203\.0\.113\.55/);
+  filter('reason', '.*'); assert.match(h.$('#risk-advice-page-info').text(), /匹配 0/);
+  filter('reason', ''); filter('location', ''); filter('ip', ''); filter('site', other);
+  assert.match(h.$('#risk-advice-page-info').text(), /匹配 0/, 'filters cannot see omitted rows');
+  assert.match(h.$('#risk-advice-coverage').text(), /样本[\s\S]*未展示/);
+  h.fire('#risk-advice-next'); h.tick(600000); assert.equal(h.requests.length, reads); noRiskWrites(h);
+});
+
+test('per-site coverage is paginated including unprocessed sites rather than building a huge DOM', () => {
+  const sites = Array.from({length: 121}, (_, n) => 's' + n + '.example'), h = startAll(sites);
+  assert.equal((h.$('#risk-advice-site-coverage').html().match(/<tr>/g) || []).length, 50);
+  assert.match(h.$('#risk-advice-coverage-info').text(), /1 \/ 3[\s\S]*121/);
+  h.fire('#risk-advice-coverage-next'); assert.match(h.$('#risk-advice-site-coverage').html(), /s50.example/);
+  h.fire('#risk-advice-coverage-next'); h.fire('#risk-advice-coverage-next');
+  assert.equal((h.$('#risk-advice-site-coverage').html().match(/<tr>/g) || []).length, 21);
+  assert.match(h.$('#risk-advice-coverage-info').text(), /3 \/ 3/);
+  h.fire('#risk-advice-coverage-prev'); assert.match(h.$('#risk-advice-coverage-info').text(), /2 \/ 3/);
+  assert.equal(h.of('get_risk_advice').length, 1);
+});
+
+test('review cancels queue, selects the exact row site and requires a fresh manual analysis before any write', () => {
+  const h = startAll([site, other, 'c.example']); h.of('get_risk_advice')[0].resolve(report());
+  nextSite(h).resolve(siteReport(other, {analyzed_at: now - 86400}));
+  const queued = h.timers.get(h.waf._risk_all.timer).callback;
+  for (const index of ['-1', '99', '1x']) action(h, 'review', index);
+  assert.equal(h.waf._risk_site, '*');
+  action(h, 'review', 1);
+  assert.equal(h.waf._risk_site, other); assert.equal(h.$('#risk-advice-site').val(), other);
+  assert.equal(h.of('get_risk_advice').length, 2, 'review must not auto-scan');
+  const snapshot = h.of('get_risk_site_bans').at(-1); assert.equal(snapshot.options.data.siteName, other);
+  assert.match(h.$('#risk-advice-status').text(), /过期|陈旧|失效/);
+  assert.match(h.$('#risk-advice-status').text(), /手动[\s\S]*重新分析/);
+  action(h, 'suggest'); noRiskWrites(h);
+  snapshot.resolve(bans([], {siteName: other})); action(h, 'suggest'); noRiskWrites(h);
+  queued(); assert.equal(h.of('get_risk_advice').length, 2);
+  h.fire('#risk-advice-analyze'); h.of('get_risk_advice').at(-1).resolve(siteReport(other));
+  action(h, 'suggest'); confirm(h);
+  const write = h.of('apply_risk_advice')[0]; assert.equal(write.options.data.siteName, other);
+  assert.equal(write.options.data.config_revision, revision); assert.equal(write.options.data.fingerprint, fingerprint);
+  assert.equal(h.of('add_ip_black').length, 0); assert.equal(h.of('add_permanent_ban').length, 0);
+  assert.ok(h.requests.every(r => !r.options.data || r.options.data.siteName !== '*'));
+});
+
+test('stale single-site confirmations are invalidated on all-site selection and rereading sites', () => {
+  for (const kind of ['all', 'reread']) {
+    const h = loaded(); action(h, 'long'); confirm(h); const stale = h.confirms.at(-1);
+    if (kind === 'all') select(h, '*'); else h.fire('#risk-advice-sites-refresh');
+    stale.yes(1); noRiskWrites(h);
+  }
+});
+
+function pendingReview() {
+  const h = startAll([site]); h.of('get_risk_advice')[0].resolve(report());
+  action(h, 'review'); h.of('get_risk_site_bans').at(-1).resolve(bans([active()]));
+  return h;
+}
+
+test('aggregate review keeps existing manual bans read-only until fresh valid analysis', () => {
+  const h = pendingReview();
+  assert.match(h.$('#risk-advice-manual-rows').html(), /risk-advice-remove[^>]* disabled/);
+  action(h, 'remove'); h.waf.remove_risk_site_ban(0);
+  assert.equal(h.confirms.length, 0); noRiskWrites(h);
+  assert.equal(h.waf._risk_review_pending, true);
+  h.fire('#risk-advice-analyze');
+  assert.equal(h.waf._risk_review_pending, true, 'starting analysis is not successful review');
+  h.of('get_risk_advice').at(-1).resolve(report({items: []}));
+  assert.equal(h.waf._risk_review_pending, false, 'a valid empty report also completes review');
+  assert.doesNotMatch(h.$('#risk-advice-manual-rows').html(), /risk-advice-remove[^>]* disabled/);
+  action(h, 'remove'); confirm(h);
+  const write = h.of('remove_risk_site_ban')[0];
+  assert.deepEqual(JSON.parse(JSON.stringify(write.options.data)), {siteName: site, ip, revision: banRevision});
+});
+
+test('aggregate review blocks a directly invoked removal handler with a ready snapshot', () => {
+  const h = pendingReview(); h.waf.remove_risk_site_ban(0);
+  assert.equal(h.confirms.length, 0); noRiskWrites(h);
+});
+
+for (const method of ['remove_risk_site_ban', 'apply_risk_advice']) {
+  test('aggregate review guards the central mutation entry before fresh analysis: ' + method, () => {
+    const h = pendingReview();
+    h.waf.write_risk_advice(method, {siteName: site, ip, revision: banRevision,
+      config_revision: revision, fingerprint, duration: '86400', confirm_long: '0'});
+    noRiskWrites(h);
+    assert.equal(h.waf._risk_busy, false);
+  });
+}
+
+test('failed or invalid analysis and refreshing the manual snapshot never clear aggregate review gate', () => {
+  const h = pendingReview();
+  h.fire('#risk-advice-manual-refresh'); h.of('get_risk_site_bans').at(-1).resolve(bans([active()]));
+  assert.equal(h.waf._risk_review_pending, true);
+  for (const data of [null, {status: false}, report({siteName: other}), report({config_revision: ''}),
+    report({items: [item({site: other})]})]) {
+    h.fire('#risk-advice-analyze');
+    const request = h.of('get_risk_advice').at(-1);
+    if (data === null) request.reject(); else request.resolve(data);
+    assert.equal(h.waf._risk_review_pending, true);
+    assert.match(h.$('#risk-advice-manual-rows').html(), /risk-advice-remove[^>]* disabled/);
+    action(h, 'remove'); assert.equal(h.confirms.length, 0); noRiskWrites(h);
+  }
+});
+
+test('delayed removal confirmation rechecks the pending-review gate before dispatch', () => {
+  const h = loaded(report(), [active()]); action(h, 'remove'); const delayed = h.confirms.at(-1);
+  // Exercise the confirmation's gate independently of epoch/site invalidation.
+  h.waf._risk_review_pending = true; h.waf.risk_advice_controls();
+  delayed.yes(1); noRiskWrites(h);
+});
+
+test('old removal confirmation and stale analysis cannot bypass a new aggregate-derived review', () => {
+  const h = loaded(report(), [active()]); action(h, 'remove'); const delayed = h.confirms.at(-1);
+  delayed.cancel(); h.fire('#risk-advice-analyze'); const oldAnalysis = h.of('get_risk_advice').at(-1);
+  select(h, '*'); h.fire('#risk-advice-analyze'); h.of('get_risk_advice').at(-1).resolve(report());
+  action(h, 'review'); h.of('get_risk_site_bans').at(-1).resolve(bans([active()]));
+  oldAnalysis.options.success(report()); oldAnalysis.options.complete({}, 'success'); delayed.yes(1);
+  assert.equal(h.waf._risk_review_pending, true);
+  assert.match(h.$('#risk-advice-manual-rows').html(), /risk-advice-remove[^>]* disabled/); noRiskWrites(h);
+});
+
+test('leaving or reinitializing aggregate review clears its gate without enabling stale confirmations', () => {
+  for (const kind of ['site', 'leave', 'close', 'reinit', 'risk-reinit', 'reload', 'reread']) {
+    const h = pendingReview(); assert.equal(h.waf._risk_review_pending, true);
+    transitionAll(h, kind); assert.equal(h.waf._risk_review_pending, false, kind);
+    noRiskWrites(h);
+  }
+});
+
+test('ordinary single-site unban recovery does not require analysis, even after analysis failure', () => {
+  for (const failed of [false, true]) {
+    const h = open(); select(h); h.of('get_risk_site_bans').at(-1).resolve(bans([active()]));
+    if (failed) {h.fire('#risk-advice-analyze');h.of('get_risk_advice').at(-1).reject();}
+    assert.doesNotMatch(h.$('#risk-advice-manual-rows').html(), /risk-advice-remove[^>]* disabled/);
+    action(h, 'remove'); confirm(h);
+    assert.equal(h.of('remove_risk_site_ban').length, 1);
+    assert.equal(h.of('remove_risk_site_ban')[0].options.data.siteName, site);
+    assert.equal(h.of('apply_risk_advice').length, 0);
+  }
+});

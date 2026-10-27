@@ -50,17 +50,60 @@ SOURCE_FILES = PLUGIN_FILES + (
     'tests/test_report_backend_regressions.py', 'tests/test_report_pagination_ui.js',
 )
 SECRET_PATTERNS = (
-    r'(?m)^-----BEGIN (?:OPENSSH |RSA |EC )?PRIVATE KEY-----',
+    r'(?m)^[ \t>]*-----BEGIN (?:OPENSSH |RSA |EC )?PRIVATE KEY-----',
     r'\bgh[pousr]_[A-Za-z0-9]{30,}\b',
     r'\bgithub_pat_[A-Za-z0-9_]{40,}\b',
     r'\bsk-(?:proj-)?[A-Za-z0-9_-]{40,}\b',
 )
+PUBLIC_PATH_PATTERNS = (
+    r'(?i)\b[a-z]:/+Users/+[^<>{}/\r\n\s\'"]+',
+    r'(?i)(?<![\w:/])/{2,}[^/<>{}\s\'"]+/+(?:Users|Profiles)/+[^/<>{}\s\'"]+',
+    r'(?<!\w)/+(?:home|Users)/+[^/<>{}\s\'"]+',
+    # Generic root backup/vendor paths are public; named private profiles are not.
+    r'(?i)(?<!\w)/+root/+(?:\.ssh|\.codex|Desktop|Documents)(?=/|$|[\s\'"`<>])',
+)
 
 
-def build(root, output):
+def load_private_terms(path):
+    try:
+        path = Path(path)
+        if path.is_symlink() or not path.is_file():
+            raise ValueError
+        with path.open('rb') as stream:
+            data = stream.read(65537)
+        if len(data) > 65536:
+            raise ValueError
+        terms = json.loads(data.decode('utf-8-sig'))
+        if (type(terms) is not list or not 1 <= len(terms) <= 256 or any(
+                type(term) is not str or not 1 <= len(term) <= 256
+                or term != term.strip() or any(ord(char) < 32 or ord(char) == 127 for char in term)
+                for term in terms)):
+            raise ValueError
+        return terms
+    except (OSError, ValueError, UnicodeError):
+        raise ValueError('私有敏感词清单不可读、格式不正确或超过上限。') from None
+
+
+def validate_public_text(text, label, private_terms=(), public_document=False):
+    if any(re.search(pattern, text) for pattern in SECRET_PATTERNS):
+        raise ValueError('检测到疑似凭据，已停止发布校验：' + label)
+    path_text = text.replace('\\', '/')
+    if any(re.search(pattern, path_text) for pattern in PUBLIC_PATH_PATTERNS):
+        raise ValueError('检测到本地用户目录，已停止发布校验：' + label)
+    for term in private_terms:
+        pattern = r'(?<![A-Za-z0-9])' + re.escape(term) + r'(?![A-Za-z0-9])'
+        if re.search(pattern, text, flags=re.IGNORECASE):
+            raise ValueError('检测到私有环境信息，已停止发布校验：' + label)
+
+
+def build(root, output, release_notes=None, private_terms=()):
     root, output = Path(root).resolve(), Path(output).resolve()
     if output.exists():
         raise ValueError('输出目录已存在，请选择新的目录，避免覆盖已有文件。')
+    if release_notes is not None:
+        if not private_terms:
+            raise ValueError('校验更新说明必须提供非空私有敏感词清单。')
+        validate_public_text(release_notes, '更新说明', private_terms, public_document=True)
     metadata = json.loads((root / 'info.json').read_text(encoding='utf-8'))
     if metadata.get('versions') != VERSION or metadata.get('name') != 'free_waf':
         raise ValueError('发布版本或插件内部标识不匹配。')
@@ -77,8 +120,7 @@ def build(root, output):
             continue
         # Normalize only text line endings so archives are reproducible across OSes.
         text = data.decode('utf-8').replace('\r\n', '\n')
-        if any(re.search(pattern, text) for pattern in SECRET_PATTERNS):
-            raise ValueError('文件包含疑似凭据，已停止打包：' + name)
+        validate_public_text(text, name, private_terms, public_document=name.endswith('.md'))
         payloads[name] = text.encode('utf-8')
     source = output / 'source'
     source.mkdir(parents=True)
@@ -99,9 +141,41 @@ def build(root, output):
     return dict(archive=str(archive), source=str(source), sha256=digest, version=VERSION)
 
 
-if __name__ == '__main__':
+def main():
     parser = argparse.ArgumentParser(description='构建纯中文离线兼容升级包，不读取线上配置。')
-    parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[1])
-    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--root', type=Path)
+    parser.add_argument('--output', type=Path)
+    parser.add_argument('--check-notes', type=Path, help='同时校验单独编写的公开更新说明；不传输出目录时只校验。')
+    parser.add_argument('--private-terms', type=Path, help='仓库外的本地私有敏感词 JSON 清单，不复制到发布内容。')
     args = parser.parse_args()
-    print(json.dumps(build(args.root, args.output), ensure_ascii=False))
+    if not args.output and not args.check_notes:
+        parser.error('请指定输出目录或要校验的更新说明。')
+    if args.check_notes and not args.private_terms:
+        parser.error('校验更新说明时必须提供仓库外的私有敏感词清单。')
+    try:
+        args.root = (args.root if args.root is not None else Path(__file__).resolve().parents[1]).resolve()
+        if args.private_terms and args.private_terms.resolve().is_relative_to(args.root):
+            raise ValueError('私有敏感词清单必须保存在仓库外，不加入源码或发布包。')
+        terms = load_private_terms(args.private_terms) if args.private_terms else []
+        notes = None
+        if args.check_notes:
+            if args.check_notes.is_symlink() or not args.check_notes.is_file():
+                raise ValueError('更新说明必须是普通文件。')
+            with args.check_notes.open('rb') as stream:
+                data = stream.read(1024 * 1024 + 1)
+            if len(data) > 1024 * 1024:
+                raise ValueError('更新说明超过校验上限。')
+            notes = data.decode('utf-8-sig')
+            validate_public_text(notes, '更新说明', terms, public_document=True)
+        result = build(args.root, args.output, notes, terms) if args.output else dict(notes_checked=True)
+        if notes is not None:
+            result['notes_checked'] = True
+        print(json.dumps(result, ensure_ascii=False))
+    except (OSError, UnicodeError, RuntimeError):
+        parser.error('无法读取发布输入；未公开原始路径或文件内容。')
+    except ValueError as error:
+        parser.error(str(error))
+
+
+if __name__ == '__main__':
+    main()

@@ -1,9 +1,14 @@
+import contextlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 
@@ -130,6 +135,217 @@ class ReleasePackageTest(unittest.TestCase):
             (root / 'info.json').write_text(json.dumps(metadata), encoding='utf-8')
             with self.assertRaises(ValueError):
                 self.builder.build(root, Path(directory) / 'output')
+
+    def test_release_notes_reject_local_user_paths_without_echoing_them(self):
+        validator = getattr(self.builder, 'validate_public_text', None)
+        self.assertTrue(callable(validator), 'release notes need an explicit privacy gate')
+        paths = ['C:' + '/Users/' + 'fixture-person/private.txt',
+                 'C:' + '\\Users\\' + 'fixture-person\\private.txt',
+                 '/' + 'home/' + 'fixture-person/private.txt',
+                 '/' + 'Users/' + 'fixture-person/private.txt']
+        for path in paths:
+            with self.subTest(path=path), self.assertRaises(ValueError) as failure:
+                validator('Update evidence: ' + path, 'release notes', public_document=True)
+            self.assertNotIn(path, str(failure.exception))
+            self.assertNotIn('fixture-person', str(failure.exception))
+
+    def test_external_private_terms_cover_notes_without_entering_public_source(self):
+        validator = getattr(self.builder, 'validate_public_text', None)
+        self.assertTrue(callable(validator), 'private terms must be checked outside the public source')
+        private = 'private-fixture-' + 'node'
+        with self.assertRaises(ValueError) as failure:
+            validator('Do not deploy ' + private.upper() + '.', 'release notes',
+                      private_terms=[private], public_document=True)
+        self.assertNotIn(private, str(failure.exception).lower())
+        with self.assertRaises(ValueError):
+            validator('ssh_' + private + ': private alias', 'release notes', private_terms=[private])
+        validator('private-fixture-nodes is a different word', 'release notes',
+                  private_terms=[private], public_document=True)
+        validator('Use the BaoTa Nginx path /www/server/nginx/sbin/nginx.',
+                  'release notes', public_document=True)
+
+    def test_private_term_file_is_strict_bounded_and_never_reported_in_errors(self):
+        loader = getattr(self.builder, 'load_private_terms', None)
+        self.assertTrue(callable(loader), 'private audit terms require a local-only loader')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'terms.json'
+            path.write_text(json.dumps(['private-fixture-node']), encoding='utf-8')
+            self.assertEqual(loader(path), ['private-fixture-node'])
+            for value in ({'hostname': 'private-fixture-node'}, [], [''], [1],
+                          ['x' * 257], ['x'] * 257, ['line\nbreak']):
+                path.write_text(json.dumps(value), encoding='utf-8')
+                with self.subTest(value=type(value).__name__), self.assertRaises(ValueError) as failure:
+                    loader(path)
+                self.assertNotIn(str(path), str(failure.exception))
+
+    def test_source_text_also_rejects_user_home_paths(self):
+        validator = getattr(self.builder, 'validate_public_text', None)
+        self.assertTrue(callable(validator))
+        with self.assertRaises(ValueError):
+            validator('input_path = "C:' + '/Users/' + 'fixture-person/config.json"', 'fixture.py')
+
+    def _private_home_path_cases(self):
+        slash = '\\'
+        return (
+            ('escaped_windows', 'C:' + slash * 2 + 'Users' + slash * 2
+             + 'fixture-person' + slash * 2 + 'private.txt'),
+            ('unc_users', slash * 2 + 'fixture-workstation' + slash + 'Users'
+             + slash + 'fixture-person' + slash + 'private.txt'),
+            ('escaped_unc_profiles', slash * 4 + 'fixture-workstation' + slash * 2
+             + 'Profiles' + slash * 2 + 'fixture-person' + slash * 2 + 'private.txt'),
+            ('root_ssh', '/' + 'root/' + '.ssh/id_rsa'),
+            ('root_codex', '/' + 'root/' + '.codex/config.toml'),
+            ('root_desktop', '/' + 'root/' + 'Desktop/fixture-person.txt'),
+            ('root_documents', '/' + 'root/' + 'Documents/fixture-person.txt'),
+        )
+
+    def test_private_home_notes_are_rejected_before_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for case, path in self._private_home_path_cases():
+                with self.subTest(case=case):
+                    output = Path(directory) / case
+                    with self.assertRaises(ValueError) as failure:
+                        self.builder.build(ROOT, output, release_notes='Evidence: ' + path,
+                                           private_terms=['excluded-' + 'fixture-host'])
+                    self.assertIn('本地用户目录', str(failure.exception))
+                    self.assertNotIn(path, str(failure.exception))
+                    self.assertNotIn('fixture-person', str(failure.exception))
+                    self.assertFalse(output.exists())
+
+    def test_private_home_source_is_rejected_before_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'source'
+            for name in self.builder.SOURCE_FILES:
+                target = root / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(ROOT / name, target)
+            target = root / 'tools/check.py'
+            original = target.read_text(encoding='utf-8')
+            for case, path in self._private_home_path_cases():
+                with self.subTest(case=case):
+                    target.write_text(original + '\n# Evidence: ' + path + '\n', encoding='utf-8')
+                    output = Path(directory) / case
+                    with self.assertRaises(ValueError) as failure:
+                        self.builder.build(root, output)
+                    self.assertIn('本地用户目录', str(failure.exception))
+                    self.assertNotIn(path, str(failure.exception))
+                    self.assertNotIn('fixture-person', str(failure.exception))
+                    self.assertFalse(output.exists())
+
+    def test_generic_backup_and_vendor_paths_remain_public(self):
+        # Generic root backup instructions are not personalized profile paths.
+        paths = ('/root/gpt-firewall-backups/20261027-120000',
+                 '/www/server/nginx/sbin/nginx',
+                 'C:' + '\\ProgramData\\Vendor\\config.json',
+                 'https://vendor.example/Users/guide')
+        for path in paths:
+            with self.subTest(path=path):
+                self.builder.validate_public_text(path, 'release notes', public_document=True)
+                self.builder.validate_public_text(path, 'fixture.py')
+
+    def test_cli_resolve_failures_do_not_disclose_values(self):
+        original_resolve = Path.resolve
+        with tempfile.TemporaryDirectory() as directory:
+            notes, terms = Path(directory) / 'notes.md', Path(directory) / 'terms.json'
+            notes.write_text('Manual site-only analysis.', encoding='utf-8')
+            terms.write_text('["private-fixture-node"]', encoding='utf-8')
+            targets = {'root': ROOT, 'private_terms': terms,
+                       'default_root': Path(self.builder.__file__)}
+            for case, target in targets.items():
+                for error_type in (OSError, RuntimeError):
+                    for with_output in (False, True):
+                        with self.subTest(case=case, error=error_type.__name__, output=with_output):
+                            output = Path(directory) / 'output'
+                            argv = ['build_release.py', '--check-notes', str(notes),
+                                    '--private-terms', str(terms)]
+                            if case != 'default_root':
+                                argv.extend(['--root', str(ROOT)])
+                            if with_output:
+                                argv.extend(['--output', str(output)])
+
+                            def resolve(path, *args, **kwargs):
+                                if path == target:
+                                    raise error_type('private-fixture-value: ' + str(path))
+                                return original_resolve(path, *args, **kwargs)
+
+                            stdout, stderr = io.StringIO(), io.StringIO()
+                            with mock.patch.object(sys, 'argv', argv), \
+                                    mock.patch.object(Path, 'resolve', new=resolve), \
+                                    contextlib.redirect_stdout(stdout), \
+                                    contextlib.redirect_stderr(stderr):
+                                try:
+                                    self.builder.main()
+                                    code = 0
+                                except SystemExit as error:
+                                    code = error.code
+                                except (OSError, RuntimeError):
+                                    code = None
+                            self.assertEqual(code, 2, 'resolution errors must become sanitized CLI exits')
+                            self.assertEqual(stdout.getvalue(), '')
+                            self.assertTrue(stderr.getvalue())
+                            for value in ('private-fixture-value', str(target), str(notes),
+                                          str(terms), str(output), 'Traceback'):
+                                self.assertNotIn(value, stderr.getvalue())
+                            self.assertFalse(output.exists())
+
+    def test_private_terms_validate_allowed_source_before_creating_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'source'
+            for name in self.builder.SOURCE_FILES:
+                target = root / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(ROOT / name, target)
+            private = 'private-fixture-' + 'node'
+            with (root / 'README.md').open('a', encoding='utf-8') as stream:
+                stream.write('\n' + private + '\n')
+            output = Path(directory) / 'output'
+            with self.assertRaises(ValueError):
+                self.builder.build(root, output, private_terms=[private])
+            self.assertFalse(output.exists())
+
+    def test_release_notes_are_checked_before_any_package_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'output'
+            private = 'private-fixture-' + 'node'
+            with self.assertRaises(ValueError):
+                self.builder.build(ROOT, output, release_notes='Keep ' + private + ' unchanged',
+                                   private_terms=[private])
+            self.assertFalse(output.exists())
+
+    def test_notes_supplied_to_builder_cannot_skip_the_private_list(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'output'
+            with self.assertRaises(ValueError):
+                self.builder.build(ROOT, output, release_notes='Manual site-only analysis.')
+            self.assertFalse(output.exists())
+
+    def test_release_notes_reject_credentials_even_without_a_private_term_list(self):
+        validator = getattr(self.builder, 'validate_public_text', None)
+        self.assertTrue(callable(validator), 'release notes must use the credential guard')
+        with self.assertRaises(ValueError):
+            validator('token: ' + 'ghp_' + 'x' * 40, 'release notes', public_document=True)
+        for prefix in ('', '   ', '> '):
+            with self.subTest(prefix=prefix), self.assertRaises(ValueError):
+                validator(prefix + '-----BEGIN ' + 'OPENSSH PRIVATE KEY-----', 'release notes')
+
+    def test_notes_only_cli_needs_private_terms_and_never_creates_a_package(self):
+        with tempfile.TemporaryDirectory() as directory:
+            notes, terms = Path(directory) / 'notes.md', Path(directory) / 'terms.json'
+            notes.write_text('Manual site-only analysis. No automatic bans.', encoding='utf-8')
+            terms.write_text('["private-fixture-node"]', encoding='utf-8')
+            command = [sys.executable, '-B', str(ROOT / 'tools/build_release.py'),
+                       '--check-notes', str(notes), '--private-terms', str(terms)]
+            result = subprocess.run(command, capture_output=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(json.loads(result.stdout)['notes_checked'])
+            self.assertEqual(set(Path(directory).iterdir()), {notes, terms})
+            result = subprocess.run(command[:-2], capture_output=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn(str(notes).encode(), result.stderr)
+            notes.write_text('Private ' + 'private-fixture-node', encoding='utf-8')
+            result = subprocess.run(command, capture_output=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn(b'private-fixture-node', result.stderr)
 
 
 if __name__ == '__main__':
