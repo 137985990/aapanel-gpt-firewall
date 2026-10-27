@@ -2227,7 +2227,7 @@ function min_route()
 	if ngx.var.server_name == 'gpt-firewall-health.invalid' then
 		local nonce = string.match(uri or '', '^/_gpt_firewall_health/([0-9a-f]+)$')
 		if nonce and #nonce == 32 then
-			return_message(200, {product='aapanel GPT Firewall', version='0.1.10',
+			return_message(200, {product='aapanel GPT Firewall', version='0.1.11',
 				nonce=nonce, worker_pid=ngx.worker.pid()})
 		else
 			ngx.exit(404)

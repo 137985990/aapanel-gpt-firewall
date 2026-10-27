@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest.mock import Mock, patch
 
 from update_service import IntegrationRepairService
 
@@ -476,11 +477,24 @@ class _IsolatedManualBanNginx:
             time.sleep(0.05)
         self.case.fail(self.diagnostics())
 
+    def worker_pids(self):
+        pid = str(self.process.pid)
+        return set((Path('/proc') / pid / 'task' / pid / 'children').read_text().split())
+
     def reload(self):
+        previous = self.worker_pids()
         checked = subprocess.run(self.args + ['-t'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
         self.case.assertEqual(checked.returncode, 0, checked.stderr.decode(errors='replace'))
         reloaded = subprocess.run(self.args + ['-s', 'reload'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
         self.case.assertEqual(reloaded.returncode, 0, reloaded.stderr.decode(errors='replace'))
+        # One new-worker proof does not exclude an old worker still serving requests.
+        deadline = time.monotonic() + 5
+        while self.process.poll() is None:
+            if not previous.intersection(self.worker_pids()):
+                return
+            self.case.assertLess(time.monotonic(), deadline, 'previous test workers did not drain')
+            time.sleep(0.05)
+        self.case.fail('test Nginx exited during reload')
 
     def stop(self):
         if self.process is not None and self.process.poll() is None:
@@ -490,6 +504,31 @@ class _IsolatedManualBanNginx:
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.wait(timeout=2)
+
+
+class ManualBanReloadFixtureTest(unittest.TestCase):
+    def test_reload_waits_until_both_previous_workers_have_drained(self):
+        lab = _IsolatedManualBanNginx.__new__(_IsolatedManualBanNginx)
+        lab.case, lab.args = self, ['nginx-fixture']
+        lab.process = Mock()
+        lab.process.poll.return_value = None
+        lab.worker_pids = Mock(side_effect=[{'41', '42'}, {'41'}, {'42'}, set()])
+        with patch('subprocess.run', return_value=Mock(returncode=0, stderr=b'')), \
+                patch('time.sleep') as sleep:
+            lab.reload()
+        self.assertEqual(lab.worker_pids.call_count, 4)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_reload_fails_instead_of_waiting_forever_for_old_workers(self):
+        lab = _IsolatedManualBanNginx.__new__(_IsolatedManualBanNginx)
+        lab.case, lab.args = self, ['nginx-fixture']
+        lab.process = Mock()
+        lab.process.poll.return_value = None
+        lab.worker_pids = Mock(return_value={'41'})
+        with patch('subprocess.run', return_value=Mock(returncode=0, stderr=b'')), \
+                patch('time.monotonic', side_effect=[0, 6]), patch('time.sleep'):
+            with self.assertRaisesRegex(self.failureException, 'did not drain'):
+                lab.reload()
 
 
 @unittest.skipUnless(os.environ.get('GPT_FIREWALL_TEST_NGINX'), 'requires explicitly selected Lua-enabled Nginx')

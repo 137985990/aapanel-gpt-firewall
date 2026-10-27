@@ -56,7 +56,7 @@ class BrandingTest(unittest.TestCase):
         self.assertEqual(info['shell'], 'free_waf.sh')
         self.assertEqual(info['author'], '明国三年一场雨')
         self.assertEqual(info['home'], '明国三年一场雨')
-        self.assertEqual(info['versions'], '0.1.10')
+        self.assertEqual(info['versions'], '0.1.11')
 
     def test_public_documents_use_correct_original_author_name(self):
         for name in ('README.md', 'NOTICE.md'):
@@ -71,6 +71,8 @@ class BrandingTest(unittest.TestCase):
         body = (ROOT / 'index.html').read_text(encoding='utf-8')
         self.assertTrue('<strong>aapanel GPT Firewall</strong>' in body, 'workspace header uses old branding')
         self.assertIn('<h3>安全总览</h3>', body)
+        version = json.loads((ROOT / 'info.json').read_text(encoding='utf-8'))['versions']
+        self.assertTrue('data-version="' + version + '"' in body, 'workspace version differs from metadata')
         self.assertTrue("'gpt_firewall_rule_bundle.json'" in body, 'rule export uses old branding')
         self.assertTrue("'gpt_firewall_blockade_records.json'" in body, 'ban export uses old branding')
         self.assertNotIn('当前 free_waf 基础版', body)

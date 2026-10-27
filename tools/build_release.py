@@ -7,7 +7,7 @@ import re
 import zipfile
 
 
-VERSION = '0.1.10'
+VERSION = '0.1.11'
 PLUGIN_FILES = (
     'info.json', 'install.sh', 'free_waf_main.py', 'index.html',
     'init.lua', 'ban_store.py', 'report_store.py', 'website_statistics.py', 'update_service.py',
