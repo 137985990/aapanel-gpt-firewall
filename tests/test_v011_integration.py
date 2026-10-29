@@ -76,7 +76,7 @@ class V011IntegrationTest(unittest.TestCase):
         with patch.dict(method.__func__.__globals__, website_reports=report):
             result = method(types.SimpleNamespace(days='7', siteName='fixture.invalid', force='false'))
         key = json.loads(report.request.call_args[0][0])
-        self.assertEqual(key[0], 'website-statistics-v3-geography')
+        self.assertEqual(key[0], 'website-statistics-v4-devices')
         self.assertEqual(result['site_options'], [{'site': 'fixture.invalid'}])
         self.assertFalse(report.request.call_args[1]['force'])
 
@@ -99,16 +99,16 @@ class V011IntegrationTest(unittest.TestCase):
         self.assertEqual(result['schema_version'], 2)
 
     def test_version_metadata_is_v011(self):
-        self.assertEqual(json.loads((ROOT / 'info.json').read_text(encoding='utf-8'))['versions'], '0.1.11')
+        self.assertEqual(json.loads((ROOT / 'info.json').read_text(encoding='utf-8'))['versions'], '0.1.12')
 
     def test_local_service_ignores_other_plugins_global_module_cache(self):
         foreign = types.ModuleType('update_service')
         foreign.__file__ = '/other-plugin/update_service.py'
-        foreign.PLUGIN_VERSION = '0.1.11'
+        foreign.PLUGIN_VERSION = '0.1.12'
         foreign.origin = 'foreign'
         with tempfile.TemporaryDirectory() as directory:
             (Path(directory) / 'update_service.py').write_text(
-                "PLUGIN_VERSION = '0.1.11'\norigin = 'local'\n", encoding='utf-8')
+                "PLUGIN_VERSION = '0.1.12'\norigin = 'local'\n", encoding='utf-8')
             self.backend._free_waf_main__PATH = directory
             with patch.dict(sys.modules, update_service=foreign):
                 service = self.backend._free_waf_main__local_service('update_service')
@@ -118,12 +118,12 @@ class V011IntegrationTest(unittest.TestCase):
     def test_local_service_reloads_changed_source_without_restarting_the_panel(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'website_statistics.py'
-            path.write_text("PLUGIN_VERSION = '0.1.11'\norigin = 'before'\n", encoding='utf-8')
+            path.write_text("PLUGIN_VERSION = '0.1.12'\norigin = 'before'\n", encoding='utf-8')
             self.backend._free_waf_main__PATH = directory
             first = self.backend._free_waf_main__local_service('website_statistics')
             self.assertIs(first, self.backend._free_waf_main__local_service('website_statistics'))
             stamp = path.stat().st_mtime_ns
-            path.write_text("PLUGIN_VERSION = '0.1.11'\norigin = 'after_'\n", encoding='utf-8')
+            path.write_text("PLUGIN_VERSION = '0.1.12'\norigin = 'after_'\n", encoding='utf-8')
             os.utime(path, ns=(stamp + 1000000000, stamp + 1000000000))
             second = self.backend._free_waf_main__local_service('website_statistics')
             self.assertEqual(second.origin, 'after_')

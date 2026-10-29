@@ -23,7 +23,10 @@ def load_backend(public):
     nodes = [node for node in source.body if isinstance(node, ast.ClassDef)]
     namespace = dict(os=os, json=json, time=time, re=re, public=public, html=html)
     exec(compile(ast.Module(body=nodes, type_ignores=[]), "free_waf_main.py", "exec"), namespace)
-    return namespace["free_waf_main"]()
+    backend = namespace["free_waf_main"]()
+    # Bounded readers are tested without a shared disk cache; cache contracts have dedicated tests.
+    backend._security_reports = types.SimpleNamespace(get=lambda key, build, force=False: build())
+    return backend
 
 
 class PanelPerformanceTest(unittest.TestCase):

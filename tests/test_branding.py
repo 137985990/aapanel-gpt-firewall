@@ -56,7 +56,7 @@ class BrandingTest(unittest.TestCase):
         self.assertEqual(info['shell'], 'free_waf.sh')
         self.assertEqual(info['author'], '明国三年一场雨')
         self.assertEqual(info['home'], '明国三年一场雨')
-        self.assertEqual(info['versions'], '0.1.11')
+        self.assertEqual(info['versions'], '0.1.12')
 
     def test_public_documents_use_correct_original_author_name(self):
         for name in ('README.md', 'NOTICE.md'):

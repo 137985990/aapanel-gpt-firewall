@@ -449,7 +449,7 @@ class BanRuntimeReviewTest(unittest.TestCase):
 
 class ReportRuntimeReviewTest(unittest.TestCase):
     def test_runtime_module_version_rejects_the_cached_v2_implementation(self):
-        self.assertEqual(REPORT_STORE_VERSION, 3)
+        self.assertEqual(REPORT_STORE_VERSION, 4)
 
     def test_same_revision_never_rebuilds_when_snapshot_reread_is_unavailable(self):
         with tempfile.TemporaryDirectory() as directory:

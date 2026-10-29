@@ -139,7 +139,7 @@ class BackendPolicyTest(unittest.TestCase):
         recent_window_body = self._function_body("__iter_recent_window_rows")
         self.assertIn("os.SEEK_END", recent_window_body)
         self.assertNotIn("__read_recent_lines", recent_window_body)
-        self.assertIn('website-statistics-v3-geography', endpoint)
+        self.assertIn('website-statistics-v4-devices', endpoint)
         self.assertNotIn("for line in self.__read_recent_lines(path, line_limit):", body)
         self.assertNotIn("for line in self.__iter_log_lines(path):", body)
         self.assertNotIn("for line in self.__read_recent_lines(path, recent_access_limit):", body)

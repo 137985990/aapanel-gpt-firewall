@@ -134,7 +134,7 @@ if (require.main === module) {
     assert.doesNotMatch(h.$('#website_stats_trend').html(), /<12:00>/);
     assert.match(h.$('#website_stats_browser_table').html(), /Chrome&lt;&amp;&gt;/);
     assert.match(h.$('#website_stats_os_table').html(), /Windows/);
-    assert.match(h.$('#website_stats_device_table').html(), /Mobile/);
+    assert.match(h.$('#website_stats_device_table').html(), /手机/);
     assert.match(h.$('#website_stats_coverage').text(), /部分[\s\S]*scan_limit[\s\S]*2[\s\S]*1/);
     assert.match(h.$('#website_stats_window').text(), /2026-10-22 00:00:00[\s\S]*Asia\/Shanghai/);
     assert.equal(h.$('#website_stats_errors4xx').text(), '1');

@@ -326,24 +326,24 @@ exec(source)
             payload = package.archive({
                 'install.sh': (t.plugin / 'install.sh').read_bytes(),
                 'init.lua': offline.NEW_LUA.encode(),
-                'info.json': b'{"name":"free_waf","versions":"0.1.11"}',
+                'info.json': b'{"name":"free_waf","versions":"0.1.12"}',
             })
             package.payload = payload
             package.configure_release()
-            release = json.loads(json.dumps(package.release).replace('0.1.1', '0.1.11'))
-            asset = online.ASSET.replace('0.1.1', '0.1.11')
+            release = json.loads(json.dumps(package.release).replace('0.1.1', '0.1.12'))
+            asset = online.ASSET.replace('0.1.1', '0.1.12')
             checksums = (hashlib.sha256(payload).hexdigest() + '  ' + asset + '\n').encode()
             release['assets'][1]['size'] = len(checksums)
-            download = updater.DOWNLOAD_URL + 'v0.1.11/'
+            download = updater.DOWNLOAD_URL + 'v0.1.12/'
             responses = {
                 updater.API_URL + '?per_page=100': json.dumps([release]).encode(),
-                updater.API_URL + '/tags/v0.1.11': json.dumps(release).encode(),
+                updater.API_URL + '/tags/v0.1.12': json.dumps(release).encode(),
                 download + asset: payload, download + 'SHA256SUMS': checksums,
             }
         t.write_json(t.plugin / 'info.json', {'name': 'free_waf', 'versions': '0.1.7'})
         service = updater.UpdateService(t.plugin, test_mode=True,
             transport=lambda url, **kwargs: responses[url], spawn=lambda *a, **k: mock.Mock(pid=123456))
-        started = service.start('v0.1.11')
+        started = service.start('v0.1.12')
         self.assertTrue(started['status'], started)
         return service, started['job_id']
 

@@ -8,6 +8,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import signal
+from socket import timeout as SocketTimeout
 import ssl
 import stat
 import subprocess
@@ -26,7 +27,7 @@ except ImportError:
     fcntl = None
 
 
-PLUGIN_VERSION = '0.1.11'
+PLUGIN_VERSION = '0.1.12'
 REPOSITORY = '137985990/aapanel-gpt-firewall'
 API_URL = 'https://api.github.com/repos/' + REPOSITORY + '/releases'
 DOWNLOAD_URL = 'https://github.com/' + REPOSITORY + '/releases/download/'
@@ -264,7 +265,10 @@ def _transport(url, *, timeout, max_bytes):
             socket = getattr(getattr(getattr(response, 'fp', None), 'raw', None), '_sock', None)
             if socket is not None:
                 socket.settimeout(remaining)
-            block = response.read1(min(65536, max_bytes + 1 - size))
+            try:
+                block = response.read1(min(65536, max_bytes + 1 - size))
+            except SocketTimeout:
+                raise UpdateError('timeout', '下载超时，请稍后重试。') from None
             if not block:
                 break
             size += len(block)
@@ -566,11 +570,11 @@ class UpdateService:
         latest = releases[0] if releases else None
         error = cache.get('error', '')
         return dict(status=not bool(error), current_version=current,
-                    latest_version=latest['version'] if latest else current,
+                    latest_version=latest['version'] if latest else '',
                     tag=latest['tag'] if latest else '',
                     available=bool(not error and latest and latest['available'] and
                                    parse_version(latest['version']) > parse_version(current)),
-                    prerelease=bool(latest and latest['prerelease']), notes=latest['notes'] if latest else '',
+                    prerelease=latest['prerelease'] if latest else None, notes=latest['notes'] if latest else '',
                     releases=[self._public_release(item) for item in releases],
                     checked_at=cache.get('checked_at'),
                     next_check_at=cache.get('attempted_at', 0) + (FORCE_SECONDS if error else CACHE_SECONDS),
@@ -612,8 +616,8 @@ class UpdateService:
                 return self._check_result(cache, current, False)
         except Exception as error:
             message = str(error) if isinstance(error, UpdateError) else '无法读取本地版本或更新缓存，请人工检查。'
-            return dict(status=False, current_version=current, latest_version=current, tag='', available=False,
-                        prerelease=False, notes='', releases=[], checked_at=None, next_check_at=None,
+            return dict(status=False, current_version=current, latest_version='', tag='', available=False,
+                        prerelease=None, notes='', releases=[], checked_at=None, next_check_at=None,
                         cached=False, stale=False, error=message, message=message, warning=WARNING)
 
     def _job(self):

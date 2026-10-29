@@ -59,6 +59,8 @@ class PublishedSourceFingerprintTest(unittest.TestCase):
         self.assertIn('b35499a6338bd4ee277152e087f987f4784370dd50d91a28e19da3266a251c0a', fingerprints)
         # Exact init.lua digest from the retained, checksum-verified v0.1.10 published ZIP.
         self.assertIn('fa409a492eb91ae7a214dca95e39fe8ee06e9e30a290bf057fce95d7b44df806', fingerprints)
+        # Exact init.lua digest verified against the v0.1.11 published ZIP and source.
+        self.assertIn('acecd6c0bca489dd98fb70efd4b8eeedb8752880cd522fb120f0a96c73460909', fingerprints)
 
 
 MOCK_NGINX = r'''#!/bin/bash
@@ -117,7 +119,7 @@ class OfflineInstallerTest(unittest.TestCase):
         for name in ("free_waf_main.py", "ban_store.py", "report_store.py", "website_statistics.py", "update_service.py"):
             self.write(self.plugin / name, "# imported backend; prior version unavailable\n")
         self.write(self.plugin / "index.html", "<html>already imported UI</html>\n")
-        self.write_json(self.plugin / "info.json", {"name": "free_waf", "versions": "0.1.11"})
+        self.write_json(self.plugin / "info.json", {"name": "free_waf", "versions": "0.1.12"})
         self.write_json(self.plugin / "rule.json", ["scanner_signature"])
         self.write(self.runtime / "init.lua", OLD_LUA)
         self.write(self.runtime / "waf.lua", "run_btwaf()\n")
@@ -164,7 +166,8 @@ class OfflineInstallerTest(unittest.TestCase):
     @staticmethod
     def write(path, content):
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8", newline="\n")
+        with path.open('w', encoding='utf-8', newline='\n') as stream:
+            stream.write(content)
 
     def write_json(self, path, data):
         self.write(path, json.dumps(data))
@@ -220,7 +223,7 @@ class OfflineInstallerTest(unittest.TestCase):
         self.assertEqual((self.plugin / "free_waf_main.py").read_bytes(), backend)
         status = self.status()
         self.assertEqual(status["status"], "success")
-        self.assertEqual(status["version"], "0.1.11")
+        self.assertEqual(status["version"], "0.1.12")
         self.assertEqual(status["plugin_name"], "free_waf")
         self.assertTrue(status["waf_active"])
         self.assertTrue(status["runtime_changed"])
@@ -310,7 +313,7 @@ class OfflineInstallerTest(unittest.TestCase):
                 self.assertFalse(self.calls())
 
     def test_wrong_package_identity_is_rejected(self):
-        self.write_json(self.plugin / "info.json", {"name": "gpt_firewall", "versions": "0.1.11"})
+        self.write_json(self.plugin / "info.json", {"name": "gpt_firewall", "versions": "0.1.12"})
         self.assert_failed_without_runtime_change(self.run_installer(), self.state_snapshot())
 
     def test_wrong_package_version_is_rejected(self):

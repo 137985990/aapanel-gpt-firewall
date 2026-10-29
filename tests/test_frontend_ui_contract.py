@@ -345,15 +345,20 @@ class FrontendUiContractTest(unittest.TestCase):
 
     def test_core_ui_is_chinese_and_has_no_business_hardcode(self):
         required_tokens = [
+            ">总览<",
+            ">网站防护<",
+            ">安全事件<",
+            ">访问统计<",
+            ">系统与维护<",
             ">防护概览<",
             ">站点<",
             ">全局配置<",
-            ">封禁<",
+            ">风险 IP 与当前封禁<",
             ">黑名单<",
             ">白名单<",
             ">报表<",
             ">防御通知<",
-            ">操作日志<",
+            ">操作审计<",
             ">工具<",
             "空 User-Agent",
             "以当前配置和巡检结果为准",
@@ -773,15 +778,15 @@ class FrontendUiContractTest(unittest.TestCase):
 
     def test_home_official_feature_audit_exists_and_is_read_only(self):
         required_tokens = [
-            "官方功能对齐巡检",
+            "配置结构检查",
             "official_feature_status",
             "official_feature_refresh",
             "official_feature_table",
             "render_official_feature_audit",
             "get_official_feature_audit",
-            "站点级规则应用",
+            "仅核对本地配置结构",
             "URI加密保护",
-            "CDN模式",
+            "不代表防护已启用、Lua 已执行或与商业产品功能等价",
         ]
         for token in required_tokens:
             with self.subTest(token=token):
@@ -790,6 +795,10 @@ class FrontendUiContractTest(unittest.TestCase):
         body = self._object_function_body("render_official_feature_audit")
         self.assertIn("get_official_feature_audit", body)
         self.assertIn("escapeHTML", body)
+        self.assertIn("configuration_structure_only", body)
+        self.assertIn("res.notice", body)
+        self.assertNotIn("已对齐", body)
+        self.assertNotIn("已覆盖", body)
         for field in ["item.title", "item.detail", "item.action"]:
             with self.subTest(field=field):
                 self.assertRegex(body, r"escapeHTML\s*\(\s*" + re.escape(field) + r"\s*\)")
@@ -950,9 +959,10 @@ class FrontendUiContractTest(unittest.TestCase):
                 self.assertRegex(self.frontend, r"\bid=['\"]" + re.escape(dom_id) + r"['\"]")
 
         for token in [
-            "网站统计", "网站日志报告", "独立 IP", "响应体流量", "疑似蜘蛛（UA）",
+            "访问统计", "访问日志报告", "独立 IP", "响应体流量", "疑似蜘蛛（UA）",
             "HTTP 错误请求", "Nginx 诊断日志", "统计说明（只读）", "自然日",
-            "不等同于真实人数或 UV", "UA 为客户端自报", "waf-website-summary-grid",
+            "独立 IP 不是 UV 或真实人数", "UA 为客户端自报", "waf-website-summary-grid",
+            "不是人数、独立设备或具体型号", "不采集设备指纹",
             ".waf-summary-grid.waf-website-summary-grid{grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}",
         ]:
             with self.subTest(token=token):
@@ -997,7 +1007,8 @@ class FrontendUiContractTest(unittest.TestCase):
             "this.statistics_table('settings',res.settings,['key','value'])",
             "this.statistics_table('browser',res.browsers,['name','count'])",
             "this.statistics_table('os',res.operating_systems,['name','count'])",
-            "this.statistics_table('device',res.devices,['name','count'])",
+            "this.statistics_table('device',",
+            "name:_this.client_device_label(row.name),count:row.count",
             "_this.render_statistics_samples(kind)",
             "this.render_statistics_trend(res.trend,res.window)",
         ]:
@@ -1084,13 +1095,15 @@ class FrontendUiContractTest(unittest.TestCase):
             "render_defense_notifications",
             "notification_table",
             "notification_refresh",
-            "模拟攻击",
+            "规则样本检查",
             "simulate_attack",
             "run_attack_simulation",
             "render_attack_simulation_result",
             "simulation_templates",
             "simulation_result",
-            "本地规则演练",
+            "不是运行时 Lua 验证",
+            "不发送真实请求",
+            "不触发 CC 计数",
         ]
         for token in required_tokens:
             with self.subTest(token=token):
@@ -1099,7 +1112,8 @@ class FrontendUiContractTest(unittest.TestCase):
         notification_body = self._object_function_body("render_defense_notifications")
         self.assertIn("get_defense_notifications", notification_body)
         self.assertIn("escapeHTML", notification_body)
-        for field in ["item.time", "item.level_text", "item.site", "item.ip", "item.uri", "item.message"]:
+        self.assertIn("escapeHTML(String(item.time || '').substring(0,16))", notification_body)
+        for field in ["item.level_text", "item.site", "item.ip", "item.uri", "item.message"]:
             with self.subTest(field=field):
                 self.assertRegex(notification_body, r"escapeHTML\s*\(\s*" + re.escape(field) + r"\s*\)")
         for unsafe in ["add_ip_black", "add_permanent_ban", "clean_waf_drop_ip", "add_url_white"]:

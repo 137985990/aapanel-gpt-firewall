@@ -9,7 +9,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-REPORT_STORE_VERSION = 3
+REPORT_STORE_VERSION = 4
 
 try:
     import fcntl
@@ -235,4 +235,43 @@ class BackgroundReports:
         self._executor.shutdown(wait=True)
 
 
+class SecurityReports(BackgroundReports):
+    """Short-lived bounded reports; serialize cold log scans across panel workers."""
+
+    def get(self, key, build, force=False):
+        import copy
+        key = str(key)
+        busy = dict(status=False, code='report_busy', msg='报表正在生成，请稍后重试。')
+        # Never block the panel's cooperative request loop behind a log scan.
+        if not self._lock.acquire(False):
+            return busy
+        try:
+            self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with (self.directory / 'security.lock').open('a+') as lock_file:
+                if fcntl is not None:
+                    try:
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        return busy
+                now = time.time()
+                path = self._path(key)
+                snapshot = self._load(path)
+                sampled_at = snapshot.get('started_at', snapshot['generated_at']) if snapshot else 0
+                cached = not force and snapshot is not None and 0 <= now - sampled_at < self.ttl
+                if not cached:
+                    report = build()
+                    if not isinstance(report, dict) or report.get('status') is False:
+                        return report
+                    snapshot = dict(version=1, started_at=now, generated_at=time.time(), report=report)
+                    self._save(path, snapshot)
+                    self._prune(path)
+                    sampled_at = now
+                result = copy.deepcopy(snapshot['report'])
+                result.update(cached=cached, cache_age_seconds=max(0, int(now - sampled_at)))
+                return result
+        finally:
+            self._lock.release()
+
+
 website_reports = BackgroundReports("/www/server/panel/plugin/free_waf/data/statistics")
+security_reports = SecurityReports("/www/server/panel/plugin/free_waf/data/security-reports", ttl=30)

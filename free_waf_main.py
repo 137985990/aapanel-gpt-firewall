@@ -13,7 +13,7 @@ PLUGIN_PATH = '/www/server/panel/plugin/free_waf/'
 if PLUGIN_PATH not in sys.path:
     sys.path.insert(0, PLUGIN_PATH)
 import report_store
-if getattr(report_store, 'REPORT_STORE_VERSION', 0) != 3:
+if getattr(report_store, 'REPORT_STORE_VERSION', 0) != 4:
     # The panel reloads the plugin entry point but may retain imported modules.
     import importlib
     report_store = importlib.reload(report_store)
@@ -123,13 +123,13 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         module = sys.modules.get(key)
         if (module is None or getattr(module, '__file__', None) != path
                 or getattr(module, '_source_signature', None) != signature
-                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.11'):
+                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.12'):
             spec = importlib.util.spec_from_file_location(key, path)
             module = importlib.util.module_from_spec(spec)
             # Read source explicitly: same-second upgrades must not reuse stale bytecode.
             source = spec.loader.get_source(key)
             exec(compile(source, path, 'exec', dont_inherit=True), module.__dict__)
-            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.11':
+            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.12':
                 raise ValueError('服务版本不匹配，请重新打开插件')
             module._source_signature = signature
             sys.modules[key] = module
@@ -1785,6 +1785,8 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
     
     @__site_config_locked
     def set_site_obj_open(self,get):
+        if getattr(get, 'obj', '') == 'cdn':
+            return self.set_site_cdn_state(get)
         site_config = self.get_site_config(None)
         if type(site_config[get.siteName][get.obj]) != bool:
             if site_config[get.siteName][get.obj]['open']:
@@ -2214,14 +2216,17 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
 
         try:
             runtime_bans = self.get_waf_drop_ip(None)
+            if isinstance(runtime_bans, dict) and runtime_bans.get('status') is False:
+                raise ValueError('runtime_unavailable')
+            runtime_count = len(runtime_bans) if runtime_bans else 0
         except:
-            runtime_bans = []
-        runtime_count = len(runtime_bans) if runtime_bans else 0
+            runtime_count = None
         items.append(self.__safety_item(
             'runtime_bans_empty',
             '运行时封禁为空',
             runtime_count == 0,
-            '当前运行时封禁有 ' + str(runtime_count) + ' 条。',
+            ('当前运行时封禁有 ' + str(runtime_count) + ' 条。' if runtime_count is not None
+             else '运行时封禁读取失败，无法核实是否为空。'),
             '封禁页仅用于人工复核和清理。'
         ))
 
@@ -2297,6 +2302,8 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             config = json.loads(public.readFile(self.__path + 'config.json') or '{}')
         except:
             config = {}
+        if not isinstance(config, dict):
+            config = {}
         try:
             site_config = json.loads(public.readFile(self.__path + 'site.json') or '{}')
         except:
@@ -2320,6 +2327,11 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         for name in routine_rule_names:
             if not self.__official_rule_ready(name):
                 routine_rule_ok = False
+        cc_settings = [config.get('cc')] + [site.get('cc') for site in site_values] if isinstance(config, dict) else []
+        cc_bounded = bool(cc_settings) and all(
+            isinstance(cc, dict) and type(cc.get('endtime')) is int and 1 <= cc['endtime'] <= 60
+            for cc in cc_settings)
+        legacy_cdn = sum(1 for site in site_values if site.get('cdn') and site.get('cdn_trust_mode') != 'strict')
 
         items = [
             self.__official_item(
@@ -2361,15 +2373,15 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                 'cdn_mode',
                 'CDN模式',
                 self.__official_sites_have(site_values, 'cdn') and self.__official_sites_have(site_values, 'cdn_header') and self.__official_sites_have(site_values, 'cdn_trusted_proxy'),
-                'CDN 开关、客户端 IP 请求头和可信代理来源结构已检查。',
-                '启用 CDN 模式时建议配置可信代理来源，避免伪造转发头误判客户端 IP。'
+                'CDN 配置结构检查；当前有 ' + str(legacy_cdn) + ' 个已开启站点仍使用旧版信任模式。',
+                '核实代理来源后手动切换严格模式；本检查不证明转发头可信或真实访客识别正确。'
             ),
             self.__official_item(
                 'false_positive_safety',
-                '低误封安全策略',
-                True,
-                '空 User-Agent 不封禁，通用规则命中不升级 IP 黑名单，CC 封禁保持 60 秒。',
-                '继续保持手动确认后再加黑白名单，不做自动长期封禁。'
+                '基础 CC 封禁配置边界',
+                cc_bounded,
+                '仅检查全局和站点基础 CC 时长是否在 1 至 60 秒；重复封禁升级、手动封禁另行配置。',
+                '配置检查不证明运行代码已加载；请按需使用安全基线和接入状态检查，不保证零误封。'
             )
         ]
 
@@ -2379,6 +2391,9 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                 ok_count += 1
         return {
             'status': ok_count == len(items),
+            'scope': 'configuration_structure_only',
+            'runtime_verified': False,
+            'notice': '仅核对本地配置结构，不代表防护已启用、Lua 已执行或与商业产品功能等价。',
             'checked_at': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
             'summary': {
                 'ok': ok_count,
@@ -2583,13 +2598,68 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
     @__site_config_locked
     def set_site_cdn_state(self,get):
         site_config = self.get_site_config(None)
-        if site_config[get.siteName]['cdn']:
-            site_config[get.siteName]['cdn'] = False
-        else:
-            site_config[get.siteName]['cdn'] = True
-        self.__write_site_config(site_config)
+        if not isinstance(site_config, dict) or not isinstance(site_config.get(get.siteName), dict):
+            return public.returnMsg(False, '站点不存在，未修改 CDN 设置。')
+        conf = site_config[get.siteName]
+        conf['cdn'] = not conf.get('cdn', False)
+        if conf['cdn']:
+            if not self.__valid_cdn_proxy_ranges(conf.get('cdn_trusted_proxy', [])):
+                return public.returnMsg(False, '可信代理来源格式不正确，未开启 CDN。')
+            conf['cdn_trust_mode'] = 'strict'
+        try:
+            if self.__write_site_config(site_config) is False:
+                raise OSError('unverified save')
+        except Exception:
+            return public.returnMsg(False, 'CDN 设置保存或生效未确认，请检查配置和 Nginx 状态。')
         self.__write_log(self.__state[site_config[get.siteName]['cdn']] + '站点 [ '+get.siteName+' ] CDN 模式');
         return public.returnMsg(True,'设置成功!');
+
+    def __valid_cdn_proxy_ranges(self, proxies):
+        if not isinstance(proxies, list) or len(proxies) > 4096:
+            return False
+        for pair in proxies:
+            if (not isinstance(pair, list) or len(pair) != 2
+                    or any(not isinstance(ip, list) or len(ip) != 4
+                           or any(type(n) is not int or not 0 <= n <= 255 for n in ip) for ip in pair)
+                    or pair[0] > pair[1]):
+                return False
+        return True
+
+    @__site_config_locked
+    def get_site_cdn_trust_mode(self, get):
+        sites = self.get_site_config(None)
+        conf = sites.get(str(getattr(get, 'siteName', ''))) if isinstance(sites, dict) else None
+        if not isinstance(conf, dict):
+            return public.returnMsg(False, '站点不存在。')
+        mode = 'strict' if conf.get('cdn_trust_mode') == 'strict' else 'legacy'
+        proxies = conf.get('cdn_trusted_proxy', [])
+        notice = ('严格模式：仅信任已配置的 IPv4 代理来源；列表为空时忽略转发头，使用连接来源 IP。'
+                  if mode == 'strict' else
+                  '旧版兼容模式：未配置可信代理时仍可能信任转发头。请核实代理地址后手动切换严格模式。')
+        return dict(status=True, mode=mode, trusted_proxy_count=len(proxies) if isinstance(proxies, list) else 0,
+                    notice=notice)
+
+    @__site_config_locked
+    def set_site_cdn_trust_mode(self, get):
+        if (not self.__update_request_is_post() or getattr(get, 'mode', '') != 'strict'
+                or getattr(get, 'confirmation', '') != 'CONFIRM_STRICT_CDN'):
+            return public.returnMsg(False, '请确认严格模式影响后再提交，未修改配置。')
+        sites = self.get_site_config(None)
+        name = str(getattr(get, 'siteName', ''))
+        conf = sites.get(name) if isinstance(sites, dict) else None
+        if not isinstance(conf, dict):
+            return public.returnMsg(False, '站点不存在，未修改配置。')
+        proxies = conf.get('cdn_trusted_proxy', [])
+        if not self.__valid_cdn_proxy_ranges(proxies):
+            return public.returnMsg(False, '可信代理来源格式不正确，未修改配置。')
+        conf['cdn_trust_mode'] = 'strict'
+        try:
+            if self.__write_site_config(sites) is False:
+                raise OSError('unverified save')
+        except Exception:
+            return public.returnMsg(False, 'CDN 信任模式保存或生效未确认，请检查配置和 Nginx 状态。')
+        self.__write_log('已将站点 [' + name + '] CDN 来源切换为严格信任模式')
+        return public.returnMsg(True, '已切换严格模式；未开启 CDN 或其他防护开关。')
     
     @__site_config_locked
     def get_site_cdn_header(self,get):
@@ -2906,9 +2976,12 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
     
     def get_waf_drop_ip(self,get):
         try:
-            return json.loads(public.httpGet('http://127.0.0.1/get_btwaf_drop_ip'))
+            result = json.loads(public.httpGet('http://127.0.0.1/get_btwaf_drop_ip'))
+            if not isinstance(result, (dict, list)) or (isinstance(result, dict) and result.get('status') is False):
+                raise ValueError('runtime_unavailable')
+            return result
         except:
-            return [];
+            return dict(status=False, code='runtime_unavailable', msg='运行时封禁读取失败，不能判断当前封禁状态。')
     def remove_waf_drop_ip(self,get):
         return self.__unban_exact_ip(getattr(get, 'ip', ''))
     
@@ -3328,6 +3401,8 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
     def __runtime_ip_snapshot(self):
         """Return valid display strings and canonical identities from one runtime query."""
         data = self.get_waf_drop_ip(None)
+        if isinstance(data, dict) and data.get('status') is False:
+            raise ValueError('runtime_unavailable')
         values = data.keys() if isinstance(data, dict) else data if isinstance(data, (list, tuple, set)) else ()
         originals, identities = set(), set()
         for value in values:
@@ -3374,7 +3449,10 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             page_size = 10
         if page_size > 500:
             page_size = 500
-        active_ips, active_identities = self.__runtime_ip_snapshot()
+        try:
+            active_ips, active_identities = self.__runtime_ip_snapshot()
+        except ValueError:
+            return dict(status=False, msg='运行时封禁读取失败，请稍后重试。')
         records = []
         budget = self.__legacy_log_budget()
         if os.path.exists(path):
@@ -3415,6 +3493,8 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         """Export blockade records as JSON data for operator download."""
         path = '/www/server/free_waf/drop_ip.log'
         data = self.get_blockade_records(get)
+        if data.get('status') is False:
+            return data
         return {
             'exported_at': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
             'active_ips': data['active_ips'],
@@ -3430,6 +3510,71 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             'source': path
         }
 
+    def __security_cached(operation):
+        from functools import wraps
+
+        def invoke(self, get):
+            from types import SimpleNamespace
+            from report_store import security_reports
+            try:
+                days = max(1, min(30, int(getattr(get, 'days', 7))))
+                limit = max(10, min(200, int(getattr(get, 'limit', 80))))
+            except (TypeError, ValueError):
+                return public.returnMsg(False, '报表参数不正确。')
+            key = json.dumps(['security-v012-history', self.__path, operation.__name__,
+                              time.strftime('%Y-%m-%d'), days, limit])
+            force = str(getattr(get, 'force', '')).lower() in ('1', 'true')
+            params = SimpleNamespace(days=days, limit=limit)
+            store = getattr(self, '_security_reports', security_reports)
+            try:
+                result = store.get(key, lambda: operation(self, params), force=force)
+            except OSError:
+                return public.returnMsg(False, '报表缓存暂不可用，请检查磁盘和目录权限后重试。')
+            if not isinstance(result, dict) or result.get('status') is False:
+                return result
+            history = result.pop('_blocked_history', result.get('blocked_ips', []))
+            if result.get('cached') and operation.__name__ == 'get_overview_report':
+                active_ips, identities = self.__runtime_ip_snapshot()
+                rows = history
+                known = set()
+                for row in rows:
+                    row.pop('_last_ts', None)
+                    identity = self.__runtime_ip_identity(row['ip'])
+                    known.add(identity)
+                    row['active'] = identity in identities
+                for ip in sorted(active_ips):
+                    identity = self.__runtime_ip_identity(ip)
+                    if identity not in known:
+                        rows.append(dict(ip=ip, active=True, count_24h=0, total_count=0,
+                                         last_time='', reason='运行中'))
+                        known.add(identity)
+                result['blocked_ips'] = sorted(rows, key=lambda row: (not row.get('active'),
+                                                                      -row.get('count_24h', 0), row['ip']))[:10]
+                missing = [row for row in result['blocked_ips'] if 'location' not in row]
+                if missing:
+                    try:
+                        with self.__local_service('website_statistics').LocalGeography(max_lookups=10) as locator:
+                            for row in missing:
+                                detail = locator.lookup(row['ip'])
+                                row.update(location=detail['location'], location_status=detail['status'])
+                    except Exception:
+                        for row in missing:
+                            row.update(location='未知', location_status='unavailable')
+                result['active_bans'] = result['summary']['active_bans'] = len(identities)
+            if result.get('cached') and operation.__name__ == 'get_report_dashboard_summary':
+                _, identities = self.__runtime_ip_snapshot()
+                result['summary']['active_bans'] = len(identities)
+            return result
+        @wraps(operation)
+        def call(self, get):
+            try:
+                return invoke(self, get)
+            except ValueError:
+                return dict(status=False, code='runtime_unavailable',
+                            msg='运行状态或报表读取失败，未将当前封禁视为空；请稍后重试。')
+        return call
+
+    @__security_cached
     def get_overview_report(self, get):
         """Aggregate dashboard trend, top sites, dynamics, rules and country geography."""
         import collections, heapq
@@ -3632,6 +3777,9 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                 fp.close()
             except:
                 pass
+        # Retain bounded historical aggregates before adding current runtime-only
+        # rows or selecting the visible top ten. Cache hits join live state again.
+        blocked_history = list(blocked_map.values())
         for ip in sorted(active_ips):
             identity = self.__runtime_ip_identity(ip)
             if identity not in blocked_map:
@@ -3687,6 +3835,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             'dynamics': dynamics,
             'top_rules': top_rules,
             'blocked_ips': blocked_ips,
+            '_blocked_history': blocked_history,
             'attack_regions': attack_regions,
             'attack_geography': attack_geography,
             'active_bans': active_count,
@@ -3701,6 +3850,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             return 'medium', '中'
         return 'low', '低'
 
+    @__security_cached
     def get_defense_notifications(self, get):
         """Read-only notification center data from WAF logs and blockade logs."""
         log_dir = '/www/wwwlogs/free_waf_log/'
@@ -3749,6 +3899,8 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                                       message=self.__safe_text('封禁记录：' + str(row[5]))))
                 except (ValueError, TypeError, OverflowError):
                     continue
+        if len(items) > limit:
+            budget['partial'] = True
         items = sorted(items, key=lambda x: x.get('time', ''), reverse=True)[:limit]
         for item in items:
             summary[item['level']] += 1
@@ -3806,29 +3958,34 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         cookie = str(getattr(get, 'cookie', '') or '')
         header = str(getattr(get, 'header', '') or '')
         matched = []
-        notes = ['本次为 dry_run 本地规则演练，不发送真实请求，不写入黑名单。']
+        notes = ['本次为 dry_run 规则样本检查，不发送真实请求，不写入黑名单。',
+                 '使用 Python 正则和独立基础特征，不执行 Nginx/Lua，也未还原站点开关、请求阶段或运行时封禁；不能作为实际拦截结论。']
 
         if self.__simulate_rule_match('url_white', uri, 'URL白名单', matched, 'allow'):
             return {
                 'status': True,
                 'dry_run': True,
+                'engine': 'python-re-sample',
+                'runtime_evaluated': False,
                 'decision': 'allow',
-                'decision_text': '放行',
+                'decision_text': '样本命中白名单',
                 'method': self.__safe_text(method),
                 'uri': self.__safe_text(uri),
                 'matched': matched,
-                'notes': notes + ['命中 URL 白名单，攻击规则不会继续作为拦截依据。']
+                'notes': notes + ['样本命中 URL 白名单；实际放行范围应以运行时验证为准。']
             }
         if self.__simulate_rule_match('user_agent_white', user_agent, 'UA白名单', matched, 'allow'):
             return {
                 'status': True,
                 'dry_run': True,
+                'engine': 'python-re-sample',
+                'runtime_evaluated': False,
                 'decision': 'allow',
-                'decision_text': '放行',
+                'decision_text': '样本命中白名单',
                 'method': self.__safe_text(method),
                 'uri': self.__safe_text(uri),
                 'matched': matched,
-                'notes': notes + ['命中 UA 白名单，UA 黑名单不会继续作为拦截依据。']
+                'notes': notes + ['样本命中 UA 白名单；这不表示实际请求跳过其他防护。']
             }
 
         block_checks = [
@@ -3866,8 +4023,10 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         return {
             'status': True,
             'dry_run': True,
+            'engine': 'python-re-sample',
+            'runtime_evaluated': False,
             'decision': decision,
-            'decision_text': '拦截' if decision == 'block' else '未命中拦截规则',
+            'decision_text': '样本命中特征' if decision == 'block' else '样本未命中特征',
             'method': self.__safe_text(method),
             'uri': self.__safe_text(uri),
             'matched': matched,
@@ -3875,6 +4034,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         }
 
 
+    @__security_cached
     def get_report_dashboard_summary(self, get):
         """Read-only report dashboard summary from free_waf_log request records."""
         import collections
@@ -3925,8 +4085,8 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                     fp.close()
                 except:
                     pass
-        active_data = self.get_waf_drop_ip(None)
-        active_bans = len(active_data.keys()) if type(active_data) == dict else len(active_data or [])
+        _, active_identities = self.__runtime_ip_snapshot()
+        active_bans = len(active_identities)
         return {
             'status': True,
             'checked_at': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
@@ -3956,7 +4116,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                           or not re.fullmatch(r'[\w.\[\]:-]+', site_name)):
             return public.returnMsg(False, '站点筛选参数不正确')
         params = SimpleNamespace(days=days, line_limit=line_limit, siteName=site_name)
-        key = json.dumps(['website-statistics-v3-geography', time.strftime('%Y-%m-%d'), site_name, days, line_limit], ensure_ascii=False)
+        key = json.dumps(['website-statistics-v4-devices', time.strftime('%Y-%m-%d'), site_name, days, line_limit], ensure_ascii=False)
         force = str(getattr(get, 'force', '')).lower() in ('1', 'true')
         result = website_reports.request(key, lambda: self.__build_website_statistics_summary(params), force=force)
         if 'site_options' not in result:
@@ -4904,6 +5064,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             'cdn': False,
             'cdn_header': ['x-forwarded-for', 'x-real-ip'],
             'cdn_trusted_proxy': [],
+            'cdn_trust_mode': 'strict',
             'registration_guard': self.__get_registration_guard_conf(),
             'retry': self.__config['retry'],
             'retry_cycle': self.__config['retry_cycle'],

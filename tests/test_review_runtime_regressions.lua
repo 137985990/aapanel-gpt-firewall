@@ -183,7 +183,7 @@ local function fixture(kernel)
     end}
     local helpers = {'read_file','read_file_body','write_file','runtime_file_stat','runtime_lock_metadata','repeat_ban_lock','repeat_ban_unlock',
         'runtime_atomic_write','with_ip_black_lock','total_log_path','total_log_warning','total_log_schedule',
-        'total_log_flush','total_log_worker_init','inc_log','write_log','get_boundary','is_form_request','post','url_rule_ex','add_ip_black_exact',
+        'total_log_flush','total_log_worker_init','inc_log','write_log','get_boundary','is_form_request','read_request_body','post','url_rule_ex','add_ip_black_exact',
         'is_runtime_ban_ipv4','is_runtime_ban_ip','endpoint_normalize_ip','cc_state_identity','clear_cc_state',
         'remove_permanent_ban_ip','clean_btwaf_drop_ip'}
     for _,name in ipairs(helpers) do

@@ -20,7 +20,7 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 
 
-PLUGIN_VERSION = "0.1.11"
+PLUGIN_VERSION = "0.1.12"
 
 _DEFAULT_BUDGETS = {
     "max_bytes": 32 * 1024 * 1024, "max_seconds": 10.0,
@@ -114,6 +114,29 @@ _SPIDERS = (
     ("360spider", "QH360"), ("sosospider", "Soso"), ("facebot", "Facebot"),
     ("facebookexternalhit", "Facebot"), ("exabot", "Exabot"), ("dnspod", "dnspod"),
 )
+_IN_APP_BROWSERS = tuple((re.compile(r'(?<![a-z0-9_-])(?:' + pattern + r')'), name)
+                         for pattern, name in (
+    (r'micromessenger(?:/|\s|$)', 'WeChat'),
+    (r'dingtalk(?:/|\s|$)', 'DingTalk'),
+    (r'alipayclient(?:/|\s|$)', 'Alipay'),
+    (r'qq/', 'QQ'),
+    (r'fbav/|fban/', 'Facebook'),
+    (r'instagram(?:/|\s|$)', 'Instagram'),
+    (r'(?<=;)\s*wv[);]', 'Android WebView'),
+))
+_API_CLIENTS = tuple((re.compile(r'(?<![a-z0-9_-])(?:' + pattern + r')'), name)
+                     for pattern, name in (
+    (r'openai(?:/(?:python|js|node|go|java|dotnet)\b|[-_](?:python|node)/)', 'OpenAI SDK'),
+    (r'anthropic(?:/(?:python|js|node|go|java)\b|[-_](?:python|node)/)', 'Anthropic SDK'),
+    (r'(?:boto3|botocore|aws-sdk(?:-[a-z0-9]+)*)/', 'AWS SDK'),
+    (r'curl/', 'curl'), (r'wget/', 'Wget'),
+    (r'python-requests/', 'Python Requests'), (r'python-httpx/', 'Python HTTPX'),
+    (r'python-urllib/', 'Python urllib'), (r'aiohttp/', 'aiohttp'),
+    (r'go-http-client/', 'Go HTTP Client'), (r'okhttp/', 'OkHttp'),
+    (r'postmanruntime/', 'Postman'), (r'axios/', 'Axios'),
+    (r'node-fetch/', 'node-fetch'), (r'undici(?:/|\s|$)', 'Undici'),
+    (r'java/', 'Java'), (r'apache-httpclient/', 'Apache HttpClient'),
+))
 
 
 def _unescape(value):
@@ -152,17 +175,27 @@ def _parse_access(line):
         return None
 
 
+def _in_app_browser(ua):
+    for pattern, name in _IN_APP_BROWSERS:
+        if pattern.search(ua):
+            return name
+    return ''
+
+
 def _client_dimensions(agent):
     ua = agent.lower()
-    browser = "Unknown"
+    browser = _in_app_browser(ua) or "Unknown"
     for tokens, name in (
         (("edg/", "edge/", "edga/", "edgios/"), "Edge"),
-        (("opr/", "opera"), "Opera"), (("micromessenger",), "WeChat"),
+        (("opr/", "opera", "opios/"), "Opera"), (("micromessenger",), "WeChat"),
         (("qqbrowser",), "QQ"), (("360se", "360ee"), "360"),
-        (("samsungbrowser",), "Samsung Internet"), (("chrome/", "crios/"), "Chrome"),
+        (("samsungbrowser",), "Samsung Internet"), (("ucbrowser/", "ucweb/"), "UC Browser"),
+        (("chrome/", "crios/"), "Chrome"),
         (("firefox/", "fxios/"), "Firefox"), (("msie", "trident/"), "IE"),
         (("safari/",), "Safari"),
     ):
+        if browser != "Unknown":
+            break
         if any(token in ua for token in tokens):
             browser = name
             break
@@ -195,6 +228,94 @@ def _spider(agent):
         if token in ua:
             return name
     return "Other" if any(token in ua for token in ("bot", "spider", "crawler")) else ""
+
+
+def _client_profile_dimensions(agent, dimensions, spider):
+    """Fixed product labels only, without changing legacy browser counters."""
+    browser, operating_system, device = dimensions
+    ua = agent.lower()
+    # SDK names such as Botocore must precede the legacy generic "bot" match.
+    for pattern, name in _API_CLIENTS:
+        if pattern.search(ua):
+            return name, operating_system, 'Unknown', 'api_tool'
+    if spider:
+        return spider, operating_system, 'Unknown', 'crawler'
+    if _in_app_browser(ua):
+        return browser, operating_system, device, 'in_app'
+    return browser, operating_system, device, 'browser' if browser != 'Unknown' else 'unknown'
+
+
+class _ClientProfiles:
+    """Keep exact counts for the first 200 observed groups, not estimated top-N."""
+
+    FIELDS = ('country_code', 'country_name', 'browser', 'os', 'device', 'client_type')
+    MAX_GROUPS = 200
+
+    def __init__(self, budget):
+        self.budget = budget
+        self.groups = Counter()
+        self.observations = []
+        self.position = 0
+        self.groups_limited = False
+        self.time_limited = False
+
+    def observe(self, dimensions, sequence, observations):
+        item = observations.get(dimensions)
+        if item is None:
+            item = dict(first=sequence, count=0, dimensions=dimensions, country=None)
+            observations[dimensions] = item
+            # One shared entry per budgeted IP/profile, ordered by first request,
+            # not one entry per request or by the later per-IP lookup order.
+            self.observations.append(item)
+        item['count'] += 1
+
+    def add(self, location, observations):
+        if self.time_limited:
+            return
+        country = ((location['country_code'], location['country_name'])
+                   if location['status'] == 'located' else ('', '未知'))
+        try:
+            for item in observations.values():
+                self.budget.check()
+                item['country'] = country
+            # A late profile of an early IP must wait for all earlier requests'
+            # profiles to receive their geography from the same lookup pass.
+            while self.position < len(self.observations):
+                item = self.observations[self.position]
+                if item['country'] is None:
+                    break
+                self.budget.check()
+                key = item['country'] + item['dimensions']
+                if key in self.groups or len(self.groups) < self.MAX_GROUPS:
+                    self.groups[key] += item['count']
+                else:
+                    self.groups_limited = True
+                self.position += 1
+        except _StopScan:
+            self.time_limited = True
+
+    def result(self, report):
+        rows = [dict(zip(self.FIELDS, key), count=count)
+                for key, count in sorted(self.groups.items(), key=lambda item: (-item[1], item[0]))]
+        request_count = report['summary']['total_requests']
+        represented = sum(row['count'] for row in rows)
+        omitted = request_count - represented
+        notice = ('按已处理请求的实际地域、浏览器或客户端、系统和设备类型联合统计；'
+                  '未知项仍计入请求总数，不代表独立设备或人数。'
+                  'UA 为客户端自报信息，可伪造；API/SDK 或爬虫类型不表示恶意。'
+                  '地域仅用本地 IP 库近似网络出口，不推断具体机型或系统版本。')
+        if self.groups_limited:
+            notice += '最多保留先遇到的 200 个联合分组，非全量热门排行；超出分组的请求计入省略数。'
+        if self.time_limited:
+            notice += '联合分类达到本次统计时间预算；未分类请求仍计入请求总数和省略数。'
+        if report['coverage']['partial']:
+            notice += '日志覆盖不完整；请求总数仅指本次已处理记录，未读取的请求无法计数。'
+        if report['geography']['partial']:
+            notice += '本地地域查询不完整；无法定位的请求保留为未知地域。'
+        return dict(schema_version=1, rows=rows, request_count=request_count,
+                    represented_requests=represented, omitted_requests=omitted,
+                    partial=bool(omitted or report['coverage']['partial'] or report['geography']['partial']),
+                    notice=notice)
 
 
 def _sample(heap, timestamp, sequence, row, limit):
@@ -332,7 +453,7 @@ def _geo_counts():
     return dict(clients=0, requests=0, bytes=0, errors=0)
 
 
-def _visitor_geography(report, activity):
+def _visitor_geography(report, activity, profiles=None):
     """Classify every counted IP, retaining unlocated traffic in the denominator."""
     geo = dict(schema_version=1, site=report['siteName'], database_available=False,
                lookup_complete=True, partial=False, reasons=[], countries=[], regions=[], cities=[],
@@ -357,6 +478,8 @@ def _visitor_geography(report, activity):
             geo['reasons'].append('database_unavailable')
         for ip, item in activity.items():
             location = locator.lookup(ip)
+            if profiles is not None:
+                profiles.add(location, item['profiles'])
             add_counts(geo['totals'], item)
             if location['status'] != 'located':
                 add_counts(geo['unlocated'], item)
@@ -727,6 +850,7 @@ class StatisticsService:
         summary = report["summary"]
         sites, client_sites = {}, {}
         geography_activity = {}
+        profiles = _ClientProfiles(budget)
         counters = {key: Counter() for key in ("clients", "spiders", "status_codes", "top_uris",
                                                "referers", "browsers", "operating_systems", "devices")}
         access_heap, error_heap, diagnostic_heap = [], [], []
@@ -758,6 +882,7 @@ class StatisticsService:
             errors = int(400 <= status <= 599)
             spider = _spider(row["user_agent"])
             dimensions = _client_dimensions(row["user_agent"])
+            profile = _client_profile_dimensions(row["user_agent"], dimensions, spider)
             changes = [("clients", ip), ("status_codes", str(status)), ("top_uris", row["uri"])]
             changes.extend(zip(("browsers", "operating_systems", "devices"), dimensions))
             if row["referer"] not in ("", "-"):
@@ -768,6 +893,7 @@ class StatisticsService:
             new_keys += int(site not in sites) + int(ip not in client_sites)
             new_keys += int(ip not in sites.get(site, {}).get("clients", ()))
             new_keys += int(ip not in bucket_clients[index]) + int(site not in client_sites.get(ip, ()))
+            new_keys += int(profile not in geography_activity.get(ip, {}).get('profiles', {}))
             if budget.keys + new_keys > budget.limits["max_keys"]:
                 budget.reason("cardinality_budget")
                 break
@@ -784,7 +910,9 @@ class StatisticsService:
                 item_to_update["errors"] += errors
             item["clients"].add(ip)
             bucket_clients[index].add(ip)
-            activity = geography_activity.setdefault(ip, dict(requests=0, bytes=0, errors=0, days=0, buckets={}))
+            activity = geography_activity.setdefault(ip, dict(requests=0, bytes=0, errors=0, days=0,
+                                                              buckets={}, profiles={}))
+            profiles.observe(profile, sequence, activity['profiles'])
             moment = dt.datetime.fromtimestamp(row['time_ts']).astimezone() if system_timezone else \
                 dt.datetime.fromtimestamp(row['time_ts'], now.tzinfo)
             activity['days'] |= 1 << max(0, (moment.date() - start.date()).days)
@@ -823,7 +951,7 @@ class StatisticsService:
         common = [row for row in report["clients"] if len(client_sites[row["ip"]]) > 1 or report["siteName"]]
         report["common_clients"] = [dict(row, sites=", ".join(sorted(client_sites[row["ip"]])))
                                     for row in (common or report["clients"])[:30]]
-        report['geography'] = _visitor_geography(report, geography_activity)
+        report['geography'] = _visitor_geography(report, geography_activity, profiles)
         for key, heap in (("recent_access", access_heap), ("recent_errors", error_heap),
                           ("server_errors", diagnostic_heap)):
             report[key] = [item[2] for item in sorted(heap, reverse=True)]
@@ -839,6 +967,7 @@ class StatisticsService:
             coverage["notice"] += "大普通日志按候选配额读取尾部，丢弃首个不确定边界行；统计仅覆盖样本，非所选时段全量。"
         if "byte_budget" in coverage["reasons"]:
             coverage["notice"] += "读取配额已限制覆盖；gzip 仅从开头有界读取，可能未读到近期记录；0 请求或空样本不代表没有访问。"
+        report['client_profiles'] = profiles.result(report)
         report["settings"] = [
             {"key": "统计模式", "value": "只读分析已发现日志；不修改 Nginx 或 WAF"},
             {"key": "日志目录", "value": self.log_directory},

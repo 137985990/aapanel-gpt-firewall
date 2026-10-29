@@ -237,13 +237,14 @@ function manual_site_ban_load(policy_signature)
 	return true
 end
 
-function manual_site_ban_guard()
+function manual_site_ban_guard(check_only)
 	if not manual_site_ban_state.valid then return false end
 	local by_ip=manual_site_ban_state.by_site[server_name]
 	local address=by_ip and manual_site_ban_normalize_ip(ip)
 	local row=address and by_ip[address]
 	local now=ngx.time()
 	if not row or row.started_at > now or row.expires_at <= now then return false end
+	if check_only then return true end
 	ngx.header['Retry-After']=tostring(row.expires_at-now)
 	ngx.header['Cache-Control']='no-store'
 	ngx.header.content_type='text/plain; charset=utf-8'
@@ -634,7 +635,7 @@ function repeat_ban_rows(site)
 	return rows
 end
 
-function repeat_ban_guard()
+function repeat_ban_guard(check_only)
 	if not repeat_ban_policy(server_name) then return false end
 	local client_ip = endpoint_normalize_ip(ip)
 	if not client_ip then return false end
@@ -643,6 +644,7 @@ function repeat_ban_guard()
 	local entries = repeat_ban_cache.by_site[server_name]
 	local row = entries and entries[client_ip]
 	if row and row.expires_at > ngx.time() then
+		if check_only then return true end
 		ngx.header['Retry-After'] = tostring(row.expires_at-ngx.time())
 		return_html(config['cc']['status'],other_html)
 		return true
@@ -752,9 +754,15 @@ function first_client_ip_from_header(header_value, order)
 end
 
 function is_ip_in_range(client_ip, ip_range)
-	if not client_ip or not ip_range then return false end
-	if not is_ipaddr(client_ip) then return false end
-	if arrlen(ip_range) < 2 then return false end
+	if not is_runtime_ban_ipv4(client_ip) or type(ip_range) ~= 'table' or #ip_range ~= 2 then return false end
+	for index=1,2 do
+		local bound = ip_range[index]
+		if type(bound) ~= 'table' or #bound ~= 4 then return false end
+		for octet=1,4 do
+			local value = bound[octet]
+			if type(value) ~= 'number' or value ~= math.floor(value) or value < 0 or value > 255 then return false end
+		end
+	end
 	local client_ipn = arrip(client_ip)
 	if not is_max(client_ipn, ip_range[2]) then return false end
 	if not is_min(client_ipn, ip_range[1]) then return false end
@@ -762,9 +770,12 @@ function is_ip_in_range(client_ip, ip_range)
 end
 
 function is_trusted_cdn_proxy(site_conf)
-	if not site_conf then return false end
+	if type(site_conf) ~= 'table' then return false end
 	local trusted_proxy = site_conf['cdn_trusted_proxy']
-	if not trusted_proxy or arrlen(trusted_proxy) == 0 then return true end
+	-- Missing mode keeps the legacy opt-in CDN behavior; strict trusts no empty list.
+	if not trusted_proxy then return site_conf['cdn_trust_mode'] ~= 'strict' end
+	if type(trusted_proxy) ~= 'table' then return false end
+	if next(trusted_proxy) == nil then return site_conf['cdn_trust_mode'] ~= 'strict' end
 	local remote_addr = ngx.var.remote_addr
 	if not remote_addr or remote_addr == "" then return false end
 	for _,ip_range in ipairs(trusted_proxy)
@@ -1266,9 +1277,10 @@ function drop_abroad()
 	return true
 end
 
-function drop()
+function drop(check_only)
 	local key = cc_state_key('ban',server_name,ip)
 	if key and ngx.shared.free_waf_drop_ip:get(key) then
+		if check_only then return true end
 		ngx.exit(config['cc']['status'])
 		return true
 	end
@@ -1276,6 +1288,7 @@ function drop()
 	local count,_ = ngx.shared.free_waf_drop_ip:get(ip)
 	if not count then return false end
 	if count > retry then
+		if check_only then return true end
 		ngx.exit(config['cc']['status'])
 		return true
 	end
@@ -1364,14 +1377,14 @@ end
 
 function cc_state_key(kind, site, client_ip)
 	client_ip=endpoint_normalize_ip(client_ip)
-	if (kind ~= 'ban' and kind ~= 'history') or type(site) ~= 'string' or #site < 1 or #site > 253 or string.find(site,'%c') or not client_ip then return nil end
+	if (kind ~= 'ban' and kind ~= 'history' and kind ~= 'scan404') or type(site) ~= 'string' or #site < 1 or #site > 253 or string.find(site,'%c') or not client_ip then return nil end
 	return 'cc:v3:' .. kind .. ':' .. #site .. ':' .. site .. ':' .. client_ip
 end
 
 function cc_state_identity(key, expected_kind)
 	if type(key) ~= 'string' then return nil end
 	local kind,length,rest=string.match(key,'^cc:v3:([^:]+):(%d+):(.*)$')
-	if not length or (kind ~= 'ban' and kind ~= 'history') or (expected_kind and kind ~= expected_kind) then return nil end
+	if not length or (kind ~= 'ban' and kind ~= 'history' and kind ~= 'scan404') or (expected_kind and kind ~= expected_kind) then return nil end
 	local size=tonumber(length)
 	if size < 1 or size > 253 or tostring(size) ~= length or string.sub(rest,size+1,size+1) ~= ':' then return nil end
 	local site,client_ip=string.sub(rest,1,size),endpoint_normalize_ip(string.sub(rest,size+2))
@@ -1379,20 +1392,28 @@ function cc_state_identity(key, expected_kind)
 	return site,client_ip
 end
 
-function clear_cc_state(target_ips)
+function clear_cc_state(target_ips, site)
+	if site ~= nil then
+		if type(site) ~= 'string' or #site < 1 or #site > 253 or string.find(site,'%c') then return false end
+		if config['compatibility_profile'] == 'bt-free-waf-8.4' and type(config['site_aliases']) == 'table' then
+			local canonical = config['site_aliases'][site]
+			if type(canonical) == 'string' and canonical ~= '' and type(site_config[canonical]) == 'table' then site = canonical end
+		end
+	end
 	local targets={}
 	for value in pairs(target_ips or {}) do
 		local address=endpoint_normalize_ip(value)
 		if address then targets[address]=true end
 	end
-	for _,entry in ipairs({{ngx.shared.free_waf_drop_ip,'ban'},{ngx.shared.free_waf_drop_sum,'history'}}) do
+	for _,entry in ipairs({{ngx.shared.free_waf_drop_ip,'ban'},{ngx.shared.free_waf_drop_sum,'history'},{ngx.shared.free_waf,'scan404'}}) do
 		local shared,kind=entry[1],entry[2]
 		for _,key in ipairs(shared:get_keys(0)) do
-			local _,address=cc_state_identity(key,kind)
-			if not address and kind == 'ban' then address=endpoint_normalize_ip(key) end
-			if address and (not target_ips or targets[address]) then shared:delete(key) end
+			local state_site,address=cc_state_identity(key,kind)
+			if not site and not address and kind == 'ban' then address=endpoint_normalize_ip(key) end
+			if address and (not site or state_site == site) and (not target_ips or targets[address]) then shared:delete(key) end
 		end
 	end
+	return true
 end
 
 function cc()
@@ -1489,7 +1510,7 @@ function scan_black()
 	return false
 end
 
-function ip_black()
+function ip_black(check_only)
 	local now = os.time()
 	for _,rule in ipairs(ip_black_rules)
 	do
@@ -1498,6 +1519,7 @@ function ip_black()
 		elseif not rule[3] and rule[1] and rule[2] and rule[1][1] == rule[2][1] and rule[1][2] == rule[2][2] and rule[1][3] == rule[2][3] and rule[1][4] == rule[2][4] then
 			-- skip legacy exact-IP entries without expiry; automatic bans must be temporary
 		elseif compare_ip(rule) then 
+			if check_only then return true end
 			ngx.exit(config['cc']['status'])
 			return true 
 		end
@@ -1647,6 +1669,26 @@ function header_rule()
 	return false
 end
 
+function read_request_body()
+	-- Reading a body can yield to another request in the same worker. Restore
+	-- this invocation's inputs before the legacy rule functions resume.
+	local saved_site,saved_headers,saved_ip,saved_ipn = server_name,request_header,ip,ipn
+	local saved_request_uri,saved_uri,saved_args,saved_method = request_uri,uri,uri_request_args,method
+	local saved_cycle,saved_endtime,saved_limit,saved_site_cc = cycle,endtime,limit,site_cc
+	local saved_retry,saved_retry_time,saved_retry_cycle = retry,retry_time,retry_cycle
+	local saved_cookie,saved_error,saved_url_data = request_cookie,error_rule,url_data
+	local saved_iparr,saved_n,saved_count = iparr,n,count
+	local ok,result = pcall(ngx.req.read_body)
+	server_name,request_header,ip,ipn = saved_site,saved_headers,saved_ip,saved_ipn
+	request_uri,uri,uri_request_args,method = saved_request_uri,saved_uri,saved_args,saved_method
+	cycle,endtime,limit,site_cc = saved_cycle,saved_endtime,saved_limit,saved_site_cc
+	retry,retry_time,retry_cycle = saved_retry,saved_retry_time,saved_retry_cycle
+	request_cookie,error_rule,url_data = saved_cookie,saved_error,saved_url_data
+	iparr,n,count = saved_iparr,saved_n,saved_count
+	if not ok then error(result,0) end
+	return result
+end
+
 function post()
 	if not config['post']['open'] or not is_site_config('post') then return false end	
 	if method ~= "POST" then return false end
@@ -1654,7 +1696,7 @@ function post()
 	local content_length=tonumber(request_header['content-length'])
 	local max_len = 64 * 1024
 	if content_length and content_length > max_len then return false end
-	ngx.req.read_body()
+	read_request_body()
 	if ngx.req.get_body_file() then return false end
 	local body = ngx.req.get_body_data()
 	if type(body) == 'string' and #body > max_len then return false end
@@ -1683,13 +1725,13 @@ end
 
 function post_data()
 	if method ~= "POST" then return false end
-	content_length=tonumber(request_header['content-length'])
+	local content_length=tonumber(request_header['content-length'])
 	if not content_length then return false end
-	max_len = 256 * 1024
+	local max_len = 256 * 1024
 	if content_length > max_len then return false end
 	local boundary = get_boundary()
 	if boundary then
-		ngx.req.read_body()
+		read_request_body()
 		local data = ngx.req.get_body_data()
 		if not data then return false end
 		local tmp = ngx.re.match(data,[[filename=\"(.+)\.(.*)\"]])
@@ -1800,10 +1842,10 @@ function url_rule_ex()
 					local content_length = tonumber(length_header)
 					local max_len = 64 * 1024
 					if content_length and content_length >= 0 and content_length <= max_len then
-						ngx.req.read_body()
+						read_request_body()
 						if not ngx.req.get_body_file() then request_args = ngx.req.get_post_args() end
 					elseif length_header == nil then
-						ngx.req.read_body()
+						read_request_body()
 						local body = ngx.req.get_body_data()
 						if type(body) == 'string' and #body <= max_len and not ngx.req.get_body_file() then
 							request_args = ngx.req.get_post_args()
@@ -2227,7 +2269,7 @@ function min_route()
 	if ngx.var.server_name == 'gpt-firewall-health.invalid' then
 		local nonce = string.match(uri or '', '^/_gpt_firewall_health/([0-9a-f]+)$')
 		if nonce and #nonce == 32 then
-			return_message(200, {product='aapanel GPT Firewall', version='0.1.11',
+			return_message(200, {product='aapanel GPT Firewall', version='0.1.12',
 				nonce=nonce, worker_pid=ngx.worker.pid()})
 		else
 			ngx.exit(404)
@@ -2280,33 +2322,80 @@ function is_scan_like_404_path(current_uri)
 end
 
 function ban_404_accumulate()
-	local status = ngx.var.status
-	if tostring(status) ~= "404" then return false end
-	local site_name = ngx.var.server_name or server_name or ''
-	if config['open'] ~= true then return false end
-	if site_config[site_name] and site_config[site_name]['open'] ~= true then return false end
-	local current_uri = ngx.var.uri or uri or ''
-	if ngx_match(current_uri,"\\.(jpg|jpeg|png|gif|css|js|ico|woff|woff2|svg)$","isjo") then return false end
-	if not is_scan_like_404_path(current_uri) then return false end
-	local client_ip = ngx.var.remote_addr or ip
-	if not client_ip or not is_ipaddr(client_ip) then return false end
-	local key_404 = client_ip .. "_404"
-	local cnt,_ = ngx.shared.free_waf:get(key_404)
-	if cnt then
-		if cnt >= 80 then
-			add_ip_black_exact(client_ip, AUTO_BAN_SECONDS)
-			if ngx.shared.free_waf_drop_ip:safe_add(client_ip, (config['retry'] or 6)+1, AUTO_BAN_SECONDS) then
-				write_drop_ip_entry(client_ip, site_name, ngx.var.request_uri or current_uri, AUTO_BAN_SECONDS, "404_flood")
-				repeat_ban_event(site_name,client_ip,AUTO_BAN_SECONDS,'404_flood',current_uri)
+	-- This log-only path is synchronous. Legacy helpers also write scratch globals;
+	-- restore them even on early returns/errors while another access coroutine waits.
+	local saved_site,saved_header,saved_ip,saved_ipn = server_name,request_header,ip,ipn
+	local saved_request_uri,saved_uri,saved_retry = request_uri,uri,retry
+	local saved_error_rule,saved_url_data = error_rule,url_data
+	local saved_iparr,saved_n,saved_count = iparr,n,count
+	local ok,result = pcall(function()
+		local status = ngx.var.status
+		if tostring(status) ~= "404" then return false end
+		local site_name = ngx.var.server_name or ''
+		if config['compatibility_profile'] == 'bt-free-waf-8.4' and type(config['site_aliases']) == 'table' then
+			local canonical = config['site_aliases'][site_name]
+			if type(canonical) == 'string' and canonical ~= '' and type(site_config[canonical]) == 'table' then
+				site_name = canonical
 			end
-			ngx.shared.free_waf:delete(key_404)
-			return true
 		end
+		if config['open'] ~= true then return false end
+		local site = site_config[site_name]
+		if site and site['open'] ~= true then return false end
+		local current_uri = ngx.var.uri or ''
+		if ngx_match(current_uri,"\\.(jpg|jpeg|png|gif|css|js|ico|woff|woff2|svg)$","isjo") then return false end
+		if not is_scan_like_404_path(current_uri) then return false end
+		if site and site['cdn'] then
+			-- Legacy header acceptance is not sufficient proof for an automatic ban.
+			local proxies = site['cdn_trusted_proxy']
+			if type(proxies) ~= 'table' or #proxies == 0 or not is_trusted_cdn_proxy(site) then return false end
+		end
+		-- The preserved log hook can run without access Lua. Rebuild request identity
+		-- and allowlist inputs, never reuse globals left by another phase/request.
+		server_name = site_name
+		request_header = ngx.req.get_headers()
+		local request_ip = get_client_ip()
+		local client_ip = endpoint_normalize_ip(request_ip)
+		if not client_ip then return false end
+		if site and site['cdn'] then
+			if client_ip == endpoint_normalize_ip(ngx.var.remote_addr) then return false end
+			for _,proxy_range in ipairs(site['cdn_trusted_proxy']) do
+				if is_ip_in_range(client_ip,proxy_range) then return false end
+			end
+		end
+		local key_404 = cc_state_key('scan404',site_name,client_ip)
+		local ban_key = cc_state_key('ban',site_name,client_ip)
+		if not key_404 or not ban_key then return false end
+		-- Preserve legacy raw-IP guard/allowlist matching; only new keys normalize it.
+		ip = request_ip
+		ipn = arrip(ip)
+		request_uri = ngx.var.request_uri or current_uri
+		uri = ngx.unescape_uri(current_uri)
+		retry = (site and site['retry']) or config['retry'] or 6
+		if ip_white() or user_agent_white() or url_white() then return false end
+		-- Log phase cannot send a response; existing bans must not become new events.
+		if manual_site_ban_guard(true) or repeat_ban_guard(true) or drop(true) or ip_black(true) then return false end
+		local cnt,_ = ngx.shared.free_waf:get(key_404)
+		if cnt and cnt >= 80 then
+			-- Share the site's short-ban record, not CC's separate 60-second duration.
+			if ngx.shared.free_waf_drop_ip:safe_add(ban_key, retry+1, AUTO_BAN_SECONDS) then
+				ngx.shared.free_waf:delete(key_404)
+				write_drop_ip_entry(client_ip, site_name, request_uri, AUTO_BAN_SECONDS, "404_flood")
+				repeat_ban_event(site_name,client_ip,AUTO_BAN_SECONDS,'404_flood',current_uri)
+				return true
+			end
+			return false
+		end
+		local added,err = ngx.shared.free_waf:safe_add(key_404, 0, 3600)
+		if not added and err ~= 'exists' then return false end
 		ngx.shared.free_waf:incr(key_404, 1)
-	else
-		ngx.shared.free_waf:set(key_404, 1, 3600)
-	end
-	return false
+		return false
+	end)
+	server_name,request_header,ip,ipn = saved_site,saved_header,saved_ip,saved_ipn
+	request_uri,uri,retry = saved_request_uri,saved_uri,saved_retry
+	error_rule,url_data = saved_error_rule,saved_url_data
+	iparr,n,count = saved_iparr,saved_n,saved_count
+	if not ok then error(result,0) end
+	return result
 end
 
 function run_btwaf()

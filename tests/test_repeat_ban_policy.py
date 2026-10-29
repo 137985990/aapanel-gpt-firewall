@@ -581,7 +581,7 @@ class SiteConfigTransactionTest(unittest.TestCase):
     WRITERS = {'set_site_obj_open', 'set_site_cc_conf', 'set_site_retry', 'set_site_cdn_state',
                'add_site_cdn_header', 'remove_site_cdn_header', 'add_site_cdn_trusted_proxy',
                'remove_site_cdn_trusted_proxy', 'add_site_rule', 'remove_site_rule',
-               'set_site_disable_rule'}
+               'set_site_disable_rule', 'set_site_cdn_trust_mode'}
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -637,7 +637,7 @@ class SiteConfigTransactionTest(unittest.TestCase):
         data = dict(siteName='fixture.example', obj='open', cycle='60', limit='20', endtime='60',
                     increase='0', retry='11', retry_cycle='60', retry_time='60', cdn_header='x-remove',
                     start_ip='192.0.2.1', end_ip='192.0.2.9', ruleName='url_white',
-                    ruleValue='/new', index='0')
+                    ruleValue='/new', index='0', mode='strict', confirmation='CONFIRM_STRICT_CDN')
         data.update(changes)
         return types.SimpleNamespace(**data)
 
@@ -678,6 +678,7 @@ class SiteConfigTransactionTest(unittest.TestCase):
             'set_site_cc_conf': {'cc': dict(open=True, cycle=60, limit=20, endtime=60, increase=False)},
             'set_site_retry': dict(retry=11, retry_cycle=60, retry_time=60),
             'set_site_cdn_state': {'cdn': True},
+            'set_site_cdn_trust_mode': {'cdn_trust_mode': 'strict'},
             'add_site_cdn_header': {'cdn_header': ['x-remove', 'x-added']},
             'remove_site_cdn_header': {'cdn_header': []},
             'add_site_cdn_trusted_proxy': {'cdn_trusted_proxy': [

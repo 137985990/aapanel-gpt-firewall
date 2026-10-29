@@ -205,6 +205,11 @@
 	.waf_conter .iconxialadown:before{content:'\25BE'}
 	.waf_conter .iconguanbi:before{content:'\00D7'}
 	.waf_conter .waf-card,.waf_conter .waf-dashboard-card{min-width:0;overflow-x:auto}
+	.waf_conter .waf-config-scroll{min-width:0;max-width:100%;overflow-x:auto;box-sizing:border-box}
+	.waf_conter .waf-config-scroll>table{width:100%;min-width:620px}
+	.waf_conter .waf-config-scroll th,.waf_conter .waf-config-scroll td:last-child{white-space:nowrap}
+	.waf_conter #site_table>table{min-width:860px}
+	.waf_conter #site_table td{white-space:nowrap;max-width:none;word-break:normal}
 	.waf_conter .waf-dashboard-head{flex-wrap:wrap}
 	@media (max-width:720px){.waf_conter .waf-form-input{display:flex;flex-wrap:wrap;gap:8px}.waf_conter input,.waf_conter select,.waf_conter textarea{max-width:100%;box-sizing:border-box}.waf_conter .waf_totall_data{padding:0}.waf_conter .waf_totall_data .item_center{min-width:0}.waf_conter .waf_totall_data .icon{display:none}.waf_conter .waf_totall_data .tips{margin-left:0}.waf_conter .waf_nav_group{height:auto;overflow-x:auto;white-space:nowrap}.waf-summary-grid,.waf-summary-grid.waf-website-summary-grid{grid-template-columns:1fr}}
 	.waf-overview-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:2px 0 18px}
@@ -398,36 +403,48 @@
 	@media (max-width:1100px){.waf-policy-layout{grid-template-columns:1fr}.waf-feature-guide{grid-template-columns:1fr}}
 	@media (max-width:720px){.waf-shell-header{padding:14px 16px;align-items:flex-start;flex-direction:column;gap:12px}.waf-brand strong{font-size:21px}.waf-brand-mark{width:35px;height:39px}.waf-shell-state{justify-content:flex-start;font-size:11px}.waf-navigation{padding:0 14px}.waf-section-tabs{gap:4px}.waf-section-tabs button{min-width:0;font-size:12px;white-space:normal;padding:11px 0}.waf_left_menu{gap:4px;padding:8px 0}.waf_left_menu li button{padding:5px 9px}.waf_rigth_body{padding:16px 12px}.waf-policy-form{grid-template-columns:1fr}.waf-policy-form .wide{grid-column:auto}.waf-policy-layout{gap:0}.waf_conter .waf-card{padding:12px}.waf_conter .waf-page-title{padding:12px}.waf_conter .waf-toolbar{gap:8px}}
 	@media (prefers-reduced-motion:no-preference){.waf_rigth_body>.item_con.active{animation:waf-page-enter .16s ease-out}@keyframes waf-page-enter{from{opacity:.5;transform:translateY(3px)}to{opacity:1;transform:none}}}
+	.waf_conter .waf-page-title{padding:0 0 10px;margin-bottom:12px;border:0;border-bottom:1px solid #e1e9e4;border-radius:0;background:transparent}
+	.waf_conter .waf-page-title h3{font-size:16px;margin-bottom:4px}
+	.waf-scope-badge,.waf-client-badge{display:inline-block;border:1px solid #cee2d5;background:#f0f8f3;color:#37664b;border-radius:4px;padding:3px 8px;font-size:12px;line-height:1.5;overflow-wrap:anywhere}
+	#waf_scope_badge{margin:0 0 8px}
+	.waf-client-badge[data-kind="unknown"]{background:#f4f5f4;border-color:#dce1dd;color:#637369}
+	.website_profile_controls{display:flex;flex-wrap:wrap;align-items:end;gap:12px;margin:12px 0}
+	.website_profile_controls label{display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:400;max-width:100%}
+	.website_profile_controls select{min-width:150px;max-width:260px;height:32px;border:1px solid #cedbd2;border-radius:4px;background:#fff;padding:4px 8px}
+	.website_profile_table{width:100%;min-width:650px;table-layout:fixed}
+	.website_profile_table td{overflow-wrap:anywhere}
+	@media (max-width:720px){.website_profile_controls label{flex:1 1 140px}.website_profile_controls select{width:100%;min-width:0}.waf-dashboard-head{flex-wrap:wrap;gap:10px}.waf-dashboard-head>div{max-width:100%}}
 </style>
-<div class="waf_conter" data-version="0.1.11">
+<div class="waf_conter" data-version="0.1.12">
 	<header class="waf-shell-header">
 		<div class="waf-brand"><div class="waf-brand-mark" aria-hidden="true"><svg viewBox="0 0 32 36" fill="none"><path d="M16 2 29 7v10c0 8-6 13-13 17C9 30 3 25 3 17V7L16 2Z" stroke="currentColor" stroke-width="2"/><path d="m10 17 4 4 8-9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div><strong>aapanel GPT Firewall</strong><small>网站安全控制台 · 社区维护版</small></div></div>
 		<div class="waf-shell-state"><span id="waf_config_status">读取配置中</span><span class="waf-runtime-pill" id="waf_shell_status" data-state="unverified" role="status">接入待核验</span><button type="button" class="btn btn-default btn-sm" id="runtime_status_refresh">核验接入</button></div>
 	</header>
 	<nav class="waf-navigation" aria-label="防火墙导航">
 		<div class="waf-section-tabs" aria-label="功能分组">
-			<button type="button" data-section="overview" aria-pressed="true">安全总览</button>
-			<button type="button" data-section="protection" aria-pressed="false">防护配置</button>
-			<button type="button" data-section="access" aria-pressed="false">访问控制</button>
-			<button type="button" data-section="observation" aria-pressed="false">观测分析</button>
-			<button type="button" data-section="maintenance" aria-pressed="false">维护工具</button>
+			<button type="button" data-section="overview" aria-pressed="true">总览</button>
+			<button type="button" data-section="protection" aria-pressed="false">网站防护</button>
+			<button type="button" data-section="events" aria-pressed="false">安全事件</button>
+			<button type="button" data-section="statistics" aria-pressed="false">访问统计</button>
+			<button type="button" data-section="maintenance" aria-pressed="false">系统与维护</button>
 		</div>
 		<ul class="waf_left_menu" aria-label="分组内页面">
 			<li class="active" data-target="home" data-section="overview"><button type="button" aria-current="page">防护概览</button></li>
 			<li data-target="site" data-section="protection" hidden><button type="button">站点防护</button></li>
 			<li data-target="repeat_ban" data-section="protection" hidden><button type="button">重复封禁升级</button></li>
 			<li data-target="overall" data-section="protection" hidden><button type="button">全局配置</button></li>
-			<li data-target="history" data-section="access" hidden><button type="button">当前封禁</button></li>
-			<li data-target="blacklist" data-section="access" hidden><button type="button">黑名单</button></li>
-			<li data-target="whitelist" data-section="access" hidden><button type="button">白名单</button></li>
-			<li data-target="ipstats" data-section="observation" hidden><button type="button">安全报表</button></li>
-			<li data-target="statistics" data-section="observation" hidden><button type="button">网站统计</button></li>
-			<li data-target="notification" data-section="observation" hidden><button type="button">防御通知</button></li>
-			<li data-target="logs" data-section="observation" hidden><button type="button">操作日志</button></li>
+			<li data-target="blacklist" data-section="protection" hidden><button type="button">黑名单</button></li>
+			<li data-target="whitelist" data-section="protection" hidden><button type="button">白名单</button></li>
+			<li data-target="history" data-section="events" hidden><button type="button">风险 IP 与当前封禁</button></li>
+			<li data-target="ipstats" data-section="events" hidden><button type="button">安全报表</button></li>
+			<li data-target="notification" data-section="events" hidden><button type="button">防御通知</button></li>
+			<li data-target="statistics" data-section="statistics" hidden><button type="button">访问日志报告</button></li>
+			<li data-target="logs" data-section="maintenance" hidden><button type="button">操作审计</button></li>
 			<li data-target="updates" data-section="maintenance" hidden><button type="button">插件更新</button></li>
 			<li data-target="task_manager" data-section="maintenance" hidden><button type="button">任务管理</button></li>
 			<li data-target="webshell" data-section="maintenance" hidden><button type="button">诊断工具</button></li>
 		</ul>
+		<span class="waf-scope-badge" id="waf_scope_badge" role="status">全部站点 · 配置与日志快照</span>
 	</nav>
 	<div class="waf_rigth_body">
 		<div class="item_con active" data-type="home">
@@ -513,7 +530,7 @@
 			<div class="waf-card">
 				<h4>配置与接入状态 <small id="waf_state_status" style="color:#667085;"></small></h4>
 				<p id="runtime_status_detail" role="status">请点击顶部“核验接入”。只读检查当前磁盘配置，不自动启用防护，也不代表运行中的工作进程已经执行 Lua。</p>
-				<p>缺少接入时，请前往“维护工具 → 诊断工具 → 一键修复”，预览影响范围并确认后再修复。</p>
+				<p>缺少接入时，请前往“系统与维护 → 诊断工具 → 一键修复”，预览影响范围并确认后再修复。</p>
 				<div class="waf_switch mtb20">
 					<span>防火墙配置开关</span>
 					<div class="switch-wrapper" id="waf_master_switch">
@@ -555,17 +572,17 @@
 			<div class="waf-card">
 				<div class="waf-toolbar" style="justify-content:space-between;">
 					<div>
-						<h4 style="margin-bottom:4px;">官方功能对齐巡检</h4>
-						<p>按官方基础版主功能逐项检查：站点级规则应用、单站点开关、常规过滤、URI加密保护、URI特殊规则和CDN模式。</p>
+						<h4 style="margin-bottom:4px;">配置结构检查</h4>
+						<p id="official_feature_notice" role="status">仅核对本地配置结构，不代表防护已启用、Lua 已执行或与商业产品功能等价。</p>
 					</div>
 					<div>
 						<span id="official_feature_status" style="margin-right:8px;color:#667085;">未检查</span>
-						<button class="btn btn-default btn-sm" id="official_feature_refresh">刷新对齐度</button>
+						<button class="btn btn-default btn-sm" id="official_feature_refresh">检查配置结构</button>
 					</div>
 				</div>
 				<table class="waf_table" style="width:100%;margin-top:10px;">
-					<thead><tr><th style="width:180px;">官方功能</th><th style="width:90px;">状态</th><th>当前覆盖情况</th><th style="width:280px;">下一步建议</th></tr></thead>
-					<tbody id="official_feature_table"><tr><td colspan="4" style="text-align:center;color:#999;padding:18px;">点击刷新对齐度后开始检查。</td></tr></tbody>
+					<thead><tr><th style="width:180px;">配置项</th><th style="width:90px;">结构状态</th><th>当前配置情况</th><th style="width:280px;">下一步建议</th></tr></thead>
+					<tbody id="official_feature_table"><tr><td colspan="4" style="text-align:center;color:#999;padding:18px;">尚未检查，请手动检查配置结构。</td></tr></tbody>
 				</table>
 			</div>
 			<div class="waf-card">
@@ -696,7 +713,7 @@
 				<span>在一个基础视图中检查规则状态、响应码和可编辑规则集。</span>
 				<span>旧云端规则同步已停用，保留本地规则；不会联网更新或显示同步成功。</span>
 			</div>
-			<div class="waf-card"><div id="overall_table"></div></div>
+			<div class="waf-card"><div id="overall_table" class="waf-config-scroll" tabindex="0" role="region" aria-label="全局配置表，可横向滚动"></div></div>
 			<ul class="waf_tips_list mtl0 c7" style="font-size: 13px;position: absolute;bottom: 20px;padding-right: 40px;">
 				<li>全局与站点开关需同时开启；CC 周期、频率和短封禁时长是新站点的初始值，已存在站点不会自动继承修改。</li>
 				<li>实际请求链：总开关及站点开关检查后，IP白名单 > 重复封禁升级 > 注册滥用防护 > 活动封禁 > IP黑名单 > UA白名单 > URL白名单 > 空 UA 拦截 > URL黑名单 > 地区限制 > CC及增强CC > UA过滤 > Header > URI > GET参数 > Cookie > 扫描器 > POST > 站点自定义防御。</li>
@@ -710,8 +727,8 @@
 					<p>全局与站点开关需同时开启；站点可单独关闭检测，不能绕过已关闭的全局开关。</p>
 				</div>
 				<div class="waf-notice-safe">防护行为以当前配置和巡检结果为准。请先核对本站点的规则覆盖和 CC 防御配置，再决定是否修改。</div>
-				<div class="waf-toolbar"><span>在站点列表中查看日志，或进入单站点页面调整防护。</span></div>
-				<div class="waf-card"><div id="site_table"></div></div>
+				<div class="waf-toolbar"><span>在站点列表中查看日志，或进入单站点页面调整防护。窄屏可横向滚动表格，查看完整名称和操作。</span></div>
+				<div class="waf-card"><div id="site_table" class="waf-config-scroll" tabindex="0" role="region" aria-label="站点防护表，可横向滚动"></div></div>
 			</div>
 			<div id="site_detail_view" style="display:none;">
 				<div class="waf-page-title">
@@ -743,7 +760,7 @@
 							</div>
 						</div>
 					</div>
-					<div id="site_config_table"></div>
+					<div id="site_config_table" class="waf-config-scroll" tabindex="0" role="region" aria-label="站点配置表，可横向滚动"></div>
 					<ul class="waf_tips_list mtl0 c7 ptb10">
 						<li>此处配置仅对当前站点有效；全局规则请在全局、黑名单、白名单中维护。</li>
 						<li>规则覆盖用于站点级误报处理，不会新建全局拦截规则。</li>
@@ -757,7 +774,7 @@
 						</div>
 						<button class="btn btn-default btn-sm" id="site_detail_rule_override_refresh">刷新</button>
 					</div>
-					<div id="site_detail_rule_override_table"></div>
+					<div id="site_detail_rule_override_table" class="waf-config-scroll" tabindex="0" role="region" aria-label="站点规则覆盖表，可横向滚动"></div>
 					<ul class="waf_tips_list mtl0 c7 ptb10">
 						<li>开关只影响当前站点；不会删除或修改全局规则。</li>
 						<li>全局已停用的规则在站点侧不会生效，建议先在全局页面确认规则状态。</li>
@@ -771,7 +788,7 @@
 						<button class="btn btn-success btn-sm va0" id="site_detail_add_url_white">添加</button>
 						<button class="btn btn-default btn-sm va0 ml5" id="site_detail_refresh_url_white">刷新</button>
 					</div>
-					<div id="site_detail_url_white_table"></div>
+					<div id="site_detail_url_white_table" class="waf-config-scroll" tabindex="0" role="region" aria-label="站点 URL 白名单表，可横向滚动"></div>
 					<ul class="waf_tips_list mtl0 c7 ptb10">
 						<li>站点URL白名单优先用于误报处理，不影响其他站点。</li>
 						<li>建议使用精确前缀，不要写覆盖整站的宽泛规则。</li>
@@ -786,7 +803,7 @@
 						<button class="btn btn-success btn-sm va0" id="site_detail_add_url_rule">添加</button>
 						<button class="btn btn-default btn-sm va0 ml5" id="site_detail_refresh_url_rule">刷新</button>
 					</div>
-					<div id="site_detail_url_rule_table"></div>
+					<div id="site_detail_url_rule_table" class="waf-config-scroll" tabindex="0" role="region" aria-label="站点 URI 规则表，可横向滚动"></div>
 					<ul class="waf_tips_list mtl0 c7 ptb10">
 						<li>手动处理：本页不会从日志自动创建规则。</li>
 						<li>确认误报优先使用 URL 白名单；自定义拦截只用于确认的攻击路径。</li>
@@ -802,7 +819,7 @@
 						<button class="btn btn-success btn-sm va0" id="site_detail_add_url_tell">添加</button>
 						<button class="btn btn-default btn-sm va0 ml5" id="site_detail_refresh_url_tell">刷新</button>
 					</div>
-					<div id="site_detail_url_tell_table"></div>
+					<div id="site_detail_url_tell_table" class="waf-config-scroll" tabindex="0" role="region" aria-label="站点 URI 加密保护表，可横向滚动"></div>
 					<ul class="waf_tips_list mtl0 c7 ptb10">
 						<li>这是站点级 URI 加密保护规则，配置过宽会拦截正常流量。</li>
 						<li>除非客户端一定会携带参数口令，否则不要用于 API 或自动化客户端入口。</li>
@@ -811,22 +828,25 @@
 				<div class="waf-card" id="site_detail_cdn_card">
 					<h4>CDN请求头管理</h4>
 					<p>管理本站点可信的客户端 IP 请求头。只有站点确实在可信代理或 CDN 后面时才启用。</p>
+					<p class="waf-policy-meta" id="site_detail_cdn_mode_status" role="status" aria-live="polite">等待本站配置；未读取 CDN 信任模式。</p>
+					<div class="waf-toolbar"><button type="button" class="btn btn-default btn-sm" id="site_detail_cdn_mode_refresh">读取信任模式</button><button type="button" class="btn btn-default btn-sm" id="site_detail_cdn_strict" disabled>切换严格模式</button><span class="waf-scope-badge">仅当前站点 · 手动确认</span></div>
+					<p class="waf-policy-meta">严格模式仅信任已配置代理来源；可信代理 IP 段为空时，忽略所有客户端 IP 转发请求头，使用连接来源 IP。切换前请核对代理出口，否则日志和 IP 规则可能针对 CDN 出口。不会自动切换模式或开启 CDN、防护。</p>
 					<div class="waf-form-input" style="margin-top:12px;">
 						<input type="text" class="waf-input" id="site_detail_cdn_header_rule" placeholder="请求头名称，例如：cf-connecting-ip" style="width:360px" />
 						<button class="btn btn-success btn-sm va0" id="site_detail_add_cdn_header">添加</button>
 						<button class="btn btn-default btn-sm va0 ml5" id="site_detail_refresh_cdn_header">刷新</button>
 					</div>
-					<div id="site_detail_cdn_header_table"></div>
+					<div id="site_detail_cdn_header_table" class="waf-config-scroll" tabindex="0" role="region" aria-label="CDN 请求头表，可横向滚动"></div>
 					<div style="margin-top:18px;border-top:1px solid #e6eaf0;padding-top:14px;">
 						<h4>可信代理来源</h4>
-						<p>配置后只信任这些代理或 CDN 来源 IP 段传入的客户端 IP 请求头；留空时保持旧版兼容行为。</p>
+						<p>配置后只信任这些代理或 CDN 来源 IP 段。留空时：严格模式忽略转发请求头；兼容模式保留旧版行为，存在来源伪造风险。模式状态以手动读取结果为准。</p>
 						<div class="waf-form-input" style="margin-top:12px;">
 							<input type="text" class="waf-input" id="site_detail_cdn_proxy_start_ip" placeholder="起始IP，例如：173.245.48.0" style="width:210px" />
 							<input type="text" class="waf-input" id="site_detail_cdn_proxy_end_ip" placeholder="结束IP，例如：173.245.63.255" style="width:210px" />
 							<button class="btn btn-success btn-sm va0" id="site_detail_add_cdn_proxy">添加</button>
 							<button class="btn btn-default btn-sm va0 ml5" id="site_detail_refresh_cdn_proxy">刷新</button>
 						</div>
-						<div id="site_detail_cdn_proxy_table"></div>
+					<div id="site_detail_cdn_proxy_table" class="waf-config-scroll" tabindex="0" role="region" aria-label="CDN 可信代理表，可横向滚动"></div>
 					</div>
 					<ul class="waf_tips_list mtl0 c7 ptb10">
 						<li>CDN请求头只影响真实客户端 IP 的读取方式，不会添加黑名单。</li>
@@ -845,7 +865,7 @@
 					<span class="active">检测</span>
 					<span>规则列表</span>
 					<span>日志</span>
-					<span>模拟攻击</span>
+					<span>规则样本检查</span>
 					<span>配置诊断</span>
 					<span>误报处理</span>
 					<span>规则备份</span>
@@ -886,8 +906,8 @@
 				</div>
 				<div class="waf_nav_item" data-type="simulation">
 					<div class="waf-card">
-						<h4>模拟攻击</h4>
-						<p>本地规则演练：只用当前规则判断是否会命中，不发送真实请求，不触发 CC 计数，不写入黑名单。</p>
+						<h4>规则样本检查</h4>
+						<p>本地规则样本匹配，不是运行时 Lua 验证；不发送真实请求，不触发 CC 计数，不写入黑名单，不能证明线上请求会被拦截。</p>
 						<div class="waf-toolbar" id="simulation_templates">
 							<button class="btn btn-default btn-sm simulation_template" data-uri="/.env" data-ua="Mozilla/5.0" data-args="" data-post="" data-cookie="" data-header="">环境文件探测</button>
 							<button class="btn btn-default btn-sm simulation_template" data-uri="/search" data-ua="Mozilla/5.0" data-args="q=select * from users" data-post="" data-cookie="" data-header="">GET参数测试</button>
@@ -904,12 +924,12 @@
 						<div class="waf-form-input">
 							<input type="text" class="waf-input" id="simulation_cookie" placeholder="Cookie内容" style="width:320px" />
 							<input type="text" class="waf-input" id="simulation_header" placeholder="Header内容" style="width:320px" />
-							<button class="btn btn-success btn-sm va0" id="simulation_run">开始模拟</button>
+							<button class="btn btn-success btn-sm va0" id="simulation_run">检查样本</button>
 						</div>
-						<div id="simulation_result" style="margin-top:12px;"><div style="padding:18px;color:#999;text-align:center;border:1px solid #e6eaf0;border-radius:6px;">选择模板或输入请求内容后开始模拟。</div></div>
+						<div id="simulation_result" style="margin-top:12px;"><div style="padding:18px;color:#999;text-align:center;border:1px solid #e6eaf0;border-radius:6px;">尚未检查。点击模板或输入样本后手动检查。</div></div>
 						<ul class="waf_tips_list mtl0 c7 ptb10">
-							<li>模拟攻击不会访问站点，不会产生真实 WAF 日志。</li>
-							<li>结果只代表当前规则文件的匹配情况，最终线上行为仍受站点开关、白名单优先级和 Nginx 运行时影响。</li>
+							<li>规则样本检查不会访问站点，不会产生真实 WAF 日志。</li>
+							<li>结果来自 Python 规则文件匹配及独立基础特征检查；最终线上行为仍受站点开关、白名单优先级和 Nginx 运行时影响。</li>
 						</ul>
 					</div>
 				</div>
@@ -993,8 +1013,8 @@
 		</div>
 		<div class="item_con" data-type="history">
 			<div class="waf-page-title">
-				<h3>封禁</h3>
-				<p>运行时封禁列表展示当前和历史 WAF IP 封禁记录。</p>
+				<h3>风险 IP 与当前封禁</h3>
+				<p>建议须手动分析和确认；下方运行时封禁、历史记录和本站人工封禁分别展示，不能相互替代。</p>
 			</div>
 			<section class="waf-card risk-advice-card" id="risk-advice-card" aria-labelledby="risk-advice-title">
 				<div class="risk-advice-heading"><div><h4 id="risk-advice-title">风险 IP 封禁建议</h4><p>本地日志分析，仅供人工确认；本模块不会自动封禁</p></div><small>手动逐站点有界读取 · 归属地不参与风险判定</small></div>
@@ -1353,6 +1373,7 @@
 					</div>
 				</div>
 				<div class="waf_nav_item" data-type="report_search">
+					<p class="waf-policy-meta" id="report_scope_note" role="status">上方安全报表为全部站点近 7 日；日志搜索使用下方独立筛选，须手动搜索。</p>
 					<div class="waf-notice-safe">日志搜索用于复核请求级拦截和请求摘要（非完整 HTTP 原文）；这里不会自动添加黑名单或白名单。翻页仅主动读取，范围受后端预算限制，日志变化可能导致跨页重复或遗漏。</div>
 					<div style="padding:15px 15px 5px 15px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
 						<select id="report_search_days" style="height:32px;border:1px solid #ddd;border-radius:3px;padding:0 8px;font-size:13px;">
@@ -1388,15 +1409,10 @@
 			</div>
 		</div>
 		<div class="item_con" data-type="statistics">
-			<div class="waf-page-title">
-				<h3>网站统计</h3>
-				<p>只读分析请求、独立 IP、响应体流量及 HTTP 错误请求；不等同于真实人数或 UV。</p>
-			</div>
-			<div class="waf-notice-safe">统计模块只读取访问日志和错误日志，不安装运行组件，不修改 Nginx，不参与封禁和加白。</div>
 			<div class="waf-card">
 				<div class="waf-dashboard-head">
 					<div>
-						<h4>网站日志报告</h4>
+						<h4>访问统计 <span class="waf-scope-badge" id="website_stats_scope">全部站点 · 近 7 个自然日</span></h4>
 						<p>今日按服务器本地自然日；近 N 天包含今日。默认近 7 个自然日，切换子页不会重新扫描。</p>
 					</div>
 					<div>
@@ -1417,14 +1433,28 @@
 					<button type="button" class="website_stats_tab active" data-stats-page="overview" role="tab" aria-selected="true">总览</button>
 					<button type="button" class="website_stats_tab" data-stats-page="sites" role="tab" aria-selected="false">站点</button>
 					<button type="button" class="website_stats_tab" data-stats-page="spiders" role="tab" aria-selected="false">蜘蛛</button>
-					<button type="button" class="website_stats_tab" data-stats-page="clients" role="tab" aria-selected="false">客户端</button>
+					<button type="button" class="website_stats_tab" data-stats-page="clients" role="tab" aria-selected="false">访客与设备</button>
 					<button type="button" class="website_stats_tab" data-stats-page="access" role="tab" aria-selected="false">访问日志</button>
 					<button type="button" class="website_stats_tab" data-stats-page="errors" role="tab" aria-selected="false">错误日志</button>
 					<button type="button" class="website_stats_tab" data-stats-page="settings" role="tab" aria-selected="false">统计说明</button>
 					<button type="button" class="website_stats_tab" data-stats-page="geography" role="tab" aria-selected="false">访客地域</button>
 				</div>
+				<div class="waf-toolbar"><button type="button" class="btn btn-default btn-sm" id="website_stats_open_events">安全事件 · 预填日志搜索</button><button type="button" class="btn btn-default btn-sm" id="website_stats_open_site" disabled>当前站点防护设置</button><span class="website_stats_meta">只读日志，不修改 Nginx，不参与封禁和加白；安全事件使用独立时间口径，站点设置须先选择单站点。</span></div>
 				<p id="website_stats_window" class="website_stats_meta">等待统计时间窗口。</p>
 				<p id="website_stats_coverage" class="website_stats_meta" role="status">等待日志覆盖说明。</p>
+				<div class="website_stats_panel" data-stats-panel="clients">
+					<h4>访客与设备 <span class="waf-scope-badge">UA 请求分类 · 非设备识别</span></h4>
+					<p class="website_stats_meta">沿用上方站点和时间。计数是已处理日志中的请求，不是人数、独立设备或具体型号；不采集设备指纹。UA 可伪造，浏览器、应用、已知 API 工具与未知分类仅供查看，不据此放行或封禁。地域是网络出口的大致归属地。</p>
+					<div class="website_profile_controls">
+						<label for="website_stats_profile_country">国家 / 地区<select id="website_stats_profile_country" class="website_stats_profile_filter" disabled><option value="">全部国家 / 地区</option></select></label>
+						<label for="website_stats_profile_device">设备类别<select id="website_stats_profile_device" class="website_stats_profile_filter" disabled><option value="">全部设备类别</option></select></label>
+						<label for="website_stats_profile_browser">浏览器 / 客户端<select id="website_stats_profile_browser" class="website_stats_profile_filter" disabled><option value="">全部浏览器 / 客户端</option></select></label>
+					</div>
+					<p class="website_stats_meta" id="website_stats_profile_status" role="status" aria-live="polite">等待当前范围的请求分类报告。</p>
+					<div class="website_stats_scroll"><table class="waf_table website_profile_table"><thead><tr><th>国家 / 地区</th><th>设备类别</th><th>浏览器 / 客户端</th><th>操作系统</th><th>UA 分类</th><th>请求数</th></tr></thead><tbody id="website_stats_profile_table"><tr><td colspan="6">等待当前范围的请求分类报告。</td></tr></tbody></table></div>
+					<div class="waf-toolbar"><button type="button" class="btn btn-default btn-sm" id="website_stats_profile_prev" disabled>上一页</button><span class="website_stats_meta" id="website_stats_profile_page_info" role="status"></span><button type="button" class="btn btn-default btn-sm" id="website_stats_profile_next" disabled>下一页</button></div>
+					<p class="website_stats_meta">筛选与翻页只查看当前报告已保留的组合，不重新扫描。下方 IP 排名与三组 UA 分布仍为整个报告范围，不受本地组合筛选影响，不能混合相加。</p>
+				</div>
 				<div class="website_stats_panel" data-stats-panel="geography">
 					<div class="website_geo_card">
 						<h4>访客地域 <small>访问最多的国家 / 地区</small></h4>
@@ -1849,11 +1879,11 @@
 			$root.css({'height': panelHeight + 'px'});
 		},
 		panel_section:function(page){
-			var sections={home:'overview',site:'protection',repeat_ban:'protection',overall:'protection',history:'access',blacklist:'access',whitelist:'access',ipstats:'observation',statistics:'observation',notification:'observation',logs:'observation',updates:'maintenance',task_manager:'maintenance',webshell:'maintenance'};
+			var sections={home:'overview',site:'protection',repeat_ban:'protection',overall:'protection',history:'events',blacklist:'protection',whitelist:'protection',ipstats:'events',statistics:'statistics',notification:'events',logs:'maintenance',updates:'maintenance',task_manager:'maintenance',webshell:'maintenance'};
 			return Object.prototype.hasOwnProperty.call(sections,page) ? sections[page] : null;
 		},
 		section_page:function(section){
-			var defaults={overview:'home',protection:'site',access:'history',observation:'ipstats',maintenance:'updates'};
+			var defaults={overview:'home',protection:'site',events:'history',statistics:'statistics',maintenance:'updates'};
 			if(!Object.prototype.hasOwnProperty.call(defaults,section)) return null;
 			return (this._section_last || {})[section] || defaults[section];
 		},
@@ -1871,6 +1901,8 @@
 			this.$root.find('.waf_left_menu li[data-target="'+page+'"] button').attr('aria-current','page');
 			this.$root.find('.waf_rigth_body>.item_con').removeClass('active');
 			this.$root.find('.waf_rigth_body>.item_con[data-type="'+page+'"]').addClass('active');
+			var scopes={home:'全部站点 · 配置与日志快照',site:'站点级 · 先选择站点',repeat_ban:'站点级 · 独立计数与封禁',overall:'全局配置 · 影响多个站点',blacklist:'全局黑名单 · 站点例外请进入站点防护',whitelist:'全局白名单 · 注意放行范围',history:'封禁快照与手动风险分析 · 各模块范围独立',ipstats:'安全报表 · 全部站点近 7 日；搜索独立筛选',statistics:'只读访问日志 · 共享站点与时间',notification:'防御通知 · 全部站点近 7 日有界记录',logs:'面板操作审计 · 非访问日志',updates:'插件维护 · 检查不等于安装',task_manager:'本机进程与网络 · 只读快照',webshell:'本机诊断 · 扫描与修复需手动操作'};
+			$('#waf_scope_badge').text(scopes[page]);
 			return true;
 		},
 		invalidate_runtime_status:function(){
@@ -1989,6 +2021,8 @@
 			$('#website_stats_geo_metric').val('clients');
 			$('#website_stats_geo_country').val('');
 			this._update_check = null;
+			this._update_release_snapshot = null;
+			this.render_plugin_update_metadata();
 			this._update_checking = false;
 			this._update_confirming = false;
 			this._update_starting = false;
@@ -2038,7 +2072,7 @@
 				_this.show_site_list_view(true);
 			});
 			_this.bind_panel_event('click', '#overview_report_refresh', function(){
-				_this.refresh_data_total('home');
+				_this.refresh_data_total('home',{force:true});
 			});
 			_this.bind_panel_event('click', '#overview_map_retry', function(){_this.render_dashboard_charts();});
 			_this.bind_panel_event('click', '#overview_map_expand', function(){_this.expand_attack_map(!_this._map_expanded);});
@@ -2089,6 +2123,8 @@
 				var card = $('#site_detail_cdn_card');
 				if(card.length) card[0].scrollIntoView({behavior:'smooth',block:'start'});
 			});
+			_this.bind_panel_event('click','#site_detail_cdn_mode_refresh',function(){_this.read_site_cdn_trust_mode();});
+			_this.bind_panel_event('click','#site_detail_cdn_strict',function(){_this.confirm_site_cdn_strict();});
 			_this.bind_panel_event('click', '#site_detail_url_white', function(){
 				var card = $('#site_detail_url_white_card');
 				if(card.length) card[0].scrollIntoView({behavior:'smooth',block:'start'});
@@ -2111,7 +2147,7 @@
 				_this.render_rule_risk_audit();
 			});
 			_this.bind_panel_event('click', '#notification_refresh', function(){
-				_this.render_defense_notifications();
+				_this.render_defense_notifications(true);
 			});
 			_this.bind_panel_event('click', '.simulation_template', function(){
 				$('#simulation_uri').val($(this).attr('data-uri') || '');
@@ -2129,7 +2165,7 @@
 				_this.render_config_health_report();
 			});
 			_this.bind_panel_event('click', '#report_summary_refresh', function(){
-				_this.render_report_dashboard_summary();
+				_this.render_report_dashboard_summary(true);
 			});
 			_this.bind_panel_event('click', '#website_stats_refresh', function(){
 				_this.render_website_statistics({force:true});
@@ -2139,6 +2175,34 @@
 			});
 			_this.bind_panel_event('click', '.website_stats_tab', function(){
 				_this.select_statistics_page($(this).attr('data-stats-page'));
+			});
+			_this.bind_panel_event('change','.website_stats_profile_filter',function(){
+				if(_this.statistics_is_active()) _this.render_statistics_profiles(0);
+			});
+			_this.bind_panel_event('click','#website_stats_profile_prev',function(){
+				if(_this.statistics_is_active()) _this.render_statistics_profiles((_this._statistics_profile_page || 0)-1);
+			});
+			_this.bind_panel_event('click','#website_stats_profile_next',function(){
+				if(_this.statistics_is_active()) _this.render_statistics_profiles((_this._statistics_profile_page || 0)+1);
+			});
+			_this.bind_panel_event('click','#website_stats_open_site',function(){
+				if(!_this.statistics_is_active()) return;
+				var site=String($('#website_stats_site_filter').val() || '');
+				if(!site) return;
+				_this.refresh_data_total('site',{siteName:site});
+			});
+			_this.bind_panel_event('click','#website_stats_open_events',function(){
+				if(!_this.statistics_is_active()) return;
+				var site=String($('#website_stats_site_filter').val() || ''), days=String($('#website_stats_days').val() || '7');
+				_this.refresh_data_total('ipstats');
+				$('#report_search_site').val(site); $('#report_search_days').val(days);
+				['type','ip','uri','keyword'].forEach(function(key){$('#report_search_'+key).val('');});
+				_this.reset_report_search();
+				$('#report_scope_note').text('上方安全报表为全部站点近 7 日，不沿用访问统计筛选。下方已预填'+(site ? '站点「'+site+'」' : '全部站点')+'及所选天数；安全日志与访问日志时间口径独立，请核对后点击搜索。');
+				$('.report_nav_group span').removeClass('active').eq(2).addClass('active');
+				$('.report_nav_content .waf_nav_item').removeClass('active');
+				$('.report_nav_content .waf_nav_item[data-type="report_search"]').addClass('active');
+				var target=$('#report_scope_note'); if(target.length) target[0].scrollIntoView({block:'start'});
 			});
 			_this.bind_panel_event('change', '#website_stats_geo_metric', function(){
 				var metric=$(this).val();
@@ -2757,6 +2821,15 @@
 		stop_site_detail_requests:function(){
 			this._site_detail_epoch=(this._site_detail_epoch || 0)+1;
 			this._site_detail_sequences={};
+			this.stop_site_cdn_toggle();
+			this._cdn_mode_sequence=(this._cdn_mode_sequence || 0)+1;
+			this._cdn_mode_state=null;
+			this._cdn_mode_busy=false;
+			if(this._cdn_mode_confirmation) layer.close(this._cdn_mode_confirmation.layer);
+			this._cdn_mode_confirmation=null;
+			$('#site_detail_cdn_mode_status').text('等待本站配置；未读取 CDN 信任模式。');
+			$('#site_detail_cdn_mode_refresh').prop('disabled',false);
+			$('#site_detail_cdn_strict').prop('disabled',true);
 			this.current_site_name='';
 			this.current_site_rule_override=null;
 			this.site_config=null;
@@ -2819,8 +2892,9 @@
 			}
 		},
 		// 刷新页面数据
-		refresh_data_total:function(type){
+		refresh_data_total:function(type,options){
 			var _this = this;
+			options=options || {};
 			if(!this.sync_panel_navigation(type)) return;
 			if(this._active_page === 'site') this.stop_site_detail_requests();
 			if(this._active_page === 'ipstats' && type !== 'ipstats'){
@@ -2871,8 +2945,8 @@
 							</div>'
 						}
 						$('.waf_other_data').html(_html);
-					},function(){if(homeSequence === _this._home_sequence && runtimeSequence === _this._runtime_sequence) _this.render_runtime_status({status:false});});
-					this.render_overview_report();
+					},function(){if(homeSequence === _this._home_sequence && runtimeSequence === _this._runtime_sequence) _this.render_runtime_status({status:false});},options.force === true);
+					this.render_overview_report(options.force === true);
 				break;
 				case 'overall': //全局
 					this.get_overall_config(function(res){
@@ -3014,9 +3088,12 @@
 					});
 				break;
 				case 'site': //站点
+					if(options.siteName){this.set_site_config_view({siteName:options.siteName});break;}
 					$('#site_detail_view').hide();
 					$('#site_list_view').show();
 					_this.current_site_name = '';
+					var siteListEpoch=this._site_detail_epoch, siteListOwner=this.site_detail_guard(null);
+					var siteListCurrent=function(){return siteListOwner() && _this._active_page==='site' && !_this.current_site_name && siteListEpoch===_this._site_detail_epoch;};
 					this.get_site_config_list(function(res){
 						_this.refresh_table_view({
 							el:'#site_table',
@@ -3051,7 +3128,10 @@
 								// 	});
 								// }},
 								{fid:'cdn',title:'CDN',type:'unselect',event:function(row,index,event){
-									_this.set_site_obj_open({siteName:row.siteName,obj:'cdn'},function(res){
+									if(event){event.preventDefault();event.stopPropagation();}
+									if(!siteListCurrent()) return;
+									_this.set_site_obj_open({siteName:row.siteName,obj:'cdn',enabled:row.cdn,current:siteListCurrent},function(res){
+										_this.refresh_data_total('site');
 										layer.msg(res.msg,{icon:res.status?1:2});
 									});
 								}},
@@ -3131,6 +3211,7 @@
 			$('#site_list_view').hide();
 			$('#site_detail_view').show();
 			$('#site_detail_title').text('站点配置 [ '+ siteName +' ]');
+			$('#waf_scope_badge').text('仅本站：'+siteName+' · 配置快照不等于运行验证');
 			$('#site_detail_summary').text('当前站点：'+ siteName +'。请优先用站点级覆盖处理误报。');
 			$('.site_config_switch').off('click.free_waf_site_switch').on('click.free_waf_site_switch',function(){
 				if(!current() || !_this.site_config) return;
@@ -3356,9 +3437,11 @@
 		// 渲染站点配置
 		render_site_config:function(obj,callback){
 			var _this = this;
+			this.stop_site_cdn_toggle();
 			var read=this.begin_site_detail_read(obj.siteName,'site_config_table',function(){_this.render_site_config(obj,callback);});
 			if(!read) return;
 			var current=read.current;
+			var cdnSequence=this._cdn_mode_sequence;
 			this.site_config=null;
 			this.site_show_config=[];
 			$('.site_config_switch').prop('disabled',true);
@@ -3377,6 +3460,11 @@
 				var site_arry = site_config.concat(arry);
 				_this.site_show_config = site_arry;
 				_this.site_config = res;
+				if(cdnSequence===_this._cdn_mode_sequence && !_this._cdn_mode_busy && !_this._cdn_mode_confirmation){
+					_this.render_site_cdn_trust_mode({mode:res.cdn_trust_mode===undefined ? 'legacy' : res.cdn_trust_mode,
+						trusted_proxy_count:Array.isArray(res.cdn_trusted_proxy) ? res.cdn_trusted_proxy.length : null,
+						missing:res.cdn_trust_mode===undefined});
+				}
 				$('.site_config_switch').prop('disabled',false);
 				_this.set_swicth_view('.site_config_switch',!res.open);
 				_this.refresh_table_view({
@@ -3385,9 +3473,10 @@
 					config:[
 						{fid:'name',title:'名称'},
 						{fid:'ps',title:'说明'},
-						{fid:'open',type:'btswitch',title:'状态',style:'text-align: center;',event:function(row,index){
+						{fid:'open',type:'btswitch',title:'状态',style:'text-align: center;',event:function(row,index,event){
 							if(!current()) return;
-							_this.set_site_obj_open({siteName:obj.siteName,obj:row.type},function(res){
+							if(row.type==='cdn' && event){event.preventDefault();event.stopPropagation();}
+							_this.set_site_obj_open({siteName:obj.siteName,obj:row.type,enabled:row.open,current:current},function(res){
 								if(!current()) return;
 								_this.render_site_config(obj);
 								layer.msg(res.msg,{icon:res.status?1:2});
@@ -3972,6 +4061,72 @@
 						if(callback) callback(res);
 					}
 				});
+			});
+		},
+		render_site_cdn_trust_mode:function(state){
+			this._cdn_mode_state=state && ['legacy','strict'].indexOf(state.mode)!==-1 ? state : null;
+			state=this._cdn_mode_state;
+			var text=state ? (state.mode==='strict' ? '严格模式' : '兼容模式'+(state.missing ? '（未保存模式字段，沿用旧版行为）' : ''))+
+				'；可信代理来源 '+(Number.isSafeInteger(state.trusted_proxy_count) ? state.trusted_proxy_count+' 段' : '尚未读取')+
+				'。'+(state.mode==='legacy' ? '未配置可信代理时仍可能信任转发头，请核对来源伪造风险。' : '可信代理来源为空时忽略客户端 IP 转发请求头。')+
+				(state.notice || '')+' 仅配置快照，运行端未核验。' : 'CDN 信任模式未确认，请手动读取；不会自动修改。';
+			$('#site_detail_cdn_mode_status').text(text);
+			this.cdn_mode_controls();
+		},
+		cdn_mode_controls:function(){
+			var busy=this._cdn_mode_busy || !!this._cdn_mode_confirmation || !!this._cdn_toggle_action;
+			$('#site_detail_cdn_mode_refresh').prop('disabled',!!busy);
+			$('#site_detail_cdn_strict').prop('disabled',!!busy || !this._cdn_mode_state || this._cdn_mode_state.mode!=='legacy');
+		},
+		read_site_cdn_trust_mode:function(callback){
+			var site=this.current_site_name;
+			if(!site || this._active_page!=='site' || this._cdn_mode_busy || this._cdn_mode_confirmation || this._cdn_toggle_action) return;
+			var _this=this, current=this.site_detail_guard(site,'site_detail_cdn_mode_status');
+			if(!current()) return;
+			this._cdn_mode_sequence=(this._cdn_mode_sequence || 0)+1;
+			this._cdn_mode_busy=true; this.cdn_mode_controls();
+			$('#site_detail_cdn_mode_status').text('正在手动读取本站 CDN 信任模式，不会修改配置。');
+			function failed(message){
+				_this._cdn_mode_busy=false; _this.render_site_cdn_trust_mode(null);
+				$('#site_detail_cdn_mode_status').text('读取失败，模式未确认：'+message+'。请手动读取后再操作。');
+			}
+			this.http({method:'get_site_cdn_trust_mode',data:{siteName:site},load:2,msg:false,check:true,current:current,
+				success:function(res){
+					if(!res || res.status!==true || ['legacy','strict'].indexOf(res.mode)===-1 || !Number.isSafeInteger(res.trusted_proxy_count) || res.trusted_proxy_count<0){failed(res && res.msg || '响应格式不可用');return;}
+					_this._cdn_mode_busy=false; _this.render_site_cdn_trust_mode(res);
+					if(callback) callback(res,current);
+				},error:function(xhr,message){failed(message);}
+			});
+		},
+		confirm_site_cdn_strict:function(){
+			if(!this._cdn_mode_state || this._cdn_mode_state.mode!=='legacy') return;
+			var _this=this, site=this.current_site_name;
+			this.read_site_cdn_trust_mode(function(state,current){
+				if(state.mode!=='legacy') return;
+				var token={}; _this._cdn_mode_confirmation=token; _this.cdn_mode_controls();
+				function active(){return current() && _this._cdn_mode_confirmation===token;}
+				function cancel(){if(!active()) return;_this._cdn_mode_confirmation=null;layer.close(token.layer);_this.cdn_mode_controls();}
+				var message='仅切换本站「'+_this.escapeHTML(site)+'」到严格模式。当前可信代理来源 '+state.trusted_proxy_count+' 段。<br>严格模式下，可信代理 IP 段为空时忽略所有客户端 IP 转发请求头，使用连接来源 IP；非可信来源的转发头也会被忽略。<br>请先核对 CDN / 代理出口，否则日志和 IP 规则可能针对代理出口。不会自动开启 CDN 或防护，也不会添加代理来源。保存不等于运行时 Lua 或实际业务已验证。';
+				token.layer=layer.confirm(message,{title:'确认本站 CDN 严格模式',btn:['确认切换','取消'],closeBtn:1,cancel:cancel,end:cancel},function(index){
+					if(!active()) return;
+					_this._cdn_mode_confirmation=null; layer.close(index);
+					_this._cdn_mode_sequence++;
+					_this._cdn_mode_busy=true; _this._cdn_mode_state=null; _this.cdn_mode_controls();
+					$('#site_detail_cdn_mode_status').text('正在提交本站严格模式；切换页面不会撤销服务器已开始的操作。');
+					function failed(message){
+						_this._cdn_mode_sequence++; _this._cdn_mode_state=null;
+						_this._cdn_mode_busy=false; _this.cdn_mode_controls();
+						$('#site_detail_cdn_mode_status').text('保存结果未确认：'+message+'。服务器可能已处理，请先手动读取状态，勿直接重复提交；运行端未核验。');
+					}
+					_this.http({method:'set_site_cdn_trust_mode',type:'POST',data:{siteName:site,mode:'strict',confirmation:'CONFIRM_STRICT_CDN'},load:2,msg:false,check:true,current:current,
+						success:function(res){
+							if(!res || res.status!==true){failed(res && res.msg || '响应不可用');return;}
+							_this._cdn_mode_sequence++; _this._cdn_mode_state=null;
+							_this._cdn_mode_busy=false; _this.cdn_mode_controls();
+							$('#site_detail_cdn_mode_status').text('服务器报告严格模式已保存；运行端未核验。请手动读取状态核对当前配置。');
+						},error:function(xhr,message){failed(message);}
+					});
+				},cancel);
 			});
 		},
 		render_site_cdn_headers:function(obj,callback){
@@ -5333,7 +5488,61 @@
 			});
 		},
 		// 设置站点状态
+		stop_site_cdn_toggle:function(){
+			var action=this._cdn_toggle_action;
+			this._cdn_toggle_action=null;
+			if(action && action.layer!=null) layer.close(action.layer);
+			this.cdn_mode_controls();
+		},
 		set_site_obj_open:function(obj,callback){
+			if(obj.obj==='cdn'){
+				var _this=this, site=obj.siteName, detail=this.current_site_name || '', epoch=this._site_detail_epoch;
+				var sequence=(this._site_detail_sequences || {}).site_config_table, owner=this.site_detail_guard(detail || null,null,obj.current);
+				if(typeof site!=='string' || !site || (detail && detail!==site)) return;
+				function scopeCurrent(){
+					return owner() && _this._active_page==='site' && epoch===_this._site_detail_epoch && detail===(_this.current_site_name || '') &&
+						(!detail || sequence===(_this._site_detail_sequences || {}).site_config_table);
+				}
+				if(!scopeCurrent() || this._cdn_mode_busy || this._cdn_mode_confirmation) return;
+				if(this._cdn_toggle_action && this._cdn_toggle_action.current()) return;
+				this.stop_site_cdn_toggle();
+				var token={submitted:false}; this._cdn_toggle_action=token;
+				function current(){return scopeCurrent() && _this._cdn_toggle_action===token;}
+				token.current=current;
+				function cancel(){
+					if(_this._cdn_toggle_action!==token || token.submitted) return;
+					_this.stop_site_cdn_toggle();
+				}
+				this.cdn_mode_controls();
+				var action=obj.enabled===true ? '关闭' : obj.enabled===false ? '启用' : '切换';
+				var message='仅'+action+'站点「'+this.escapeHTML(site)+'」的 CDN 客户端 IP 识别开关，其他站点不受影响。<br>启用时将使用严格模式：仅信任已配置的 IPv4 代理来源；可信来源列表为空时忽略所有客户端 IP 转发请求头，使用连接来源 IP。非可信来源的转发头也会被忽略。<br>关闭时同样使用连接来源 IP，不删除已有可信代理配置。请先核对代理出口，否则日志和 IP 规则可能针对 CDN 出口。不会开启防火墙或其他防护，也不会添加可信来源。<br>当前页面仅为配置快照；本次按服务器当前开关状态切换，保存不等于运行时 Lua 或业务已验证。';
+				token.layer=layer.confirm(message,{title:'确认本站 CDN 开关',btn:['确认'+action,'取消'],closeBtn:1,cancel:cancel,end:cancel},function(index){
+					if(!current() || token.submitted) return;
+					token.submitted=true; token.layer=null; layer.close(index);
+					_this._cdn_mode_sequence=(_this._cdn_mode_sequence || 0)+1;
+					_this.render_site_cdn_trust_mode(null);
+					function finish(){
+						_this._cdn_mode_sequence++;
+						_this._cdn_mode_state=null;
+						_this.stop_site_cdn_toggle();
+					}
+					function failed(message){
+						if(!current()) return;
+						finish();
+						layer.msg('站点「'+_this.escapeHTML(site)+'」CDN 保存结果未确认：'+_this.escapeHTML(message || '请求未完成')+'。请先刷新本站配置，勿直接重复切换；运行端未核验。',{icon:2});
+					}
+					_this.http({method:'set_site_obj_open',type:'POST',data:{siteName:site,obj:'cdn'},check:true,msg:false,current:current,
+						tips:'正在设置本站 CDN 开关，请稍候...',
+						success:function(res){
+							if(!current()) return;
+							if(!res || res.status!==true){failed(res && res.msg);return;}
+							finish();
+							if(callback) callback(res);
+						},error:function(xhr,message){failed(message);}
+					});
+				},cancel);
+				return;
+			}
 			this.http({
 				tips:'正在设置站点状态，请稍候...',
 				method:'set_site_obj_open',
@@ -5755,36 +5964,39 @@
 			});
 		},
 		// 获取防火墙统计数据
-		get_total_all:function(callback,error){
+		get_total_all:function(callback,error,force){
 			return this.http({
 				statusTarget:'#waf_state_status',
 				error:error,
 				tips:'正在获取防火墙状态，请稍候...',
 				method:'get_total_all',
+				data:force === true ? {force:1} : {},
 				success:function(res){
 					if(callback) callback(res);
 				}
 			});
 		},
-		get_overview_report:function(callback,error){
+		get_overview_report:function(callback,error,force){
 			return this.http({
 				statusTarget:'#overview_report_status',
 				error:error,
 				tips:'正在获取概览报表，请稍候...',
 				method:'get_overview_report',
+				data:force === true ? {force:1} : {},
 				success:function(res){
 					if(callback) callback(res);
 				}
 			});
 		},
 		get_report_dashboard_summary:function(obj,callback,error,complete,current){
+			var data={days:(obj && obj.days) || 7}; if(obj && obj.force===true) data.force=1;
 			return this.http({
 				error:error,
 				complete:complete,
 				current:current,
 				tips:'正在获取报表总览，请稍候...',
 				method:'get_report_dashboard_summary',
-				data:{days:(obj && obj.days) || 7},
+				data:data,
 				success:function(res){
 					if(callback) callback(res);
 				}
@@ -5861,11 +6073,12 @@
 				}
 			});
 		},
-		get_defense_notifications:function(callback){
-			this.http({
+		get_defense_notifications:function(callback,error,force,current){
+			var data={days:7,limit:80}; if(force === true) data.force=1;
+			return this.http({
 				tips:'正在获取防护通知，请稍候...',
 				method:'get_defense_notifications',
-				data:{days:7,limit:80},
+				data:data,error:error,current:current,
 				success:function(res){
 					if(callback) callback(res);
 				}
@@ -5873,7 +6086,7 @@
 		},
 		simulate_attack:function(obj,callback){
 			this.http({
-				tips:'正在执行本地规则演练，请稍候...',
+				tips:'正在执行规则样本检查，请稍候...',
 				method:'simulate_attack',
 				data:{
 					uri:obj.uri,
@@ -5889,15 +6102,24 @@
 				}
 			});
 		},
-		render_defense_notifications:function(){
-			var _this = this;
-			$('#notification_summary').text('正在加载通知...');
-			$('#notification_table').html('<tr><td colspan="7" style="text-align:center;color:#999;padding:18px;">正在加载防护通知...</td></tr>');
-			_this.get_defense_notifications(function(res){
+		render_defense_notifications:function(force){
+			var _this = this, sequence=(this._notification_sequence || 0)+1;
+			this._notification_sequence=sequence;
+			function current(){return sequence===_this._notification_sequence;}
+			if(this._notification_request) this._notification_request.abort();
+			$('#notification_summary').text('正在加载通知'+(this._notification_snapshot ? '（保留上次快照）' : '...'));
+			if(!this._notification_snapshot) $('#notification_table').html('<tr><td colspan="7" style="text-align:center;color:#999;padding:18px;">正在加载防护通知...</td></tr>');
+			function failed(xhr,message){
+				$('#notification_summary').text((message || '通知不可用')+'，请手动刷新重试'+(_this._notification_snapshot ? '（保留上次快照）' : '；尚无有效快照，不代表没有通知。'));
+				if(!_this._notification_snapshot) $('#notification_table').html('<tr><td colspan="7">通知读取失败，请手动刷新。</td></tr>');
+			}
+			_this._notification_request=_this.get_defense_notifications(function(res){
+				if(!res || !Array.isArray(res.items) || res.status===false){failed(null,'通知响应不可用');return;}
+				_this._notification_snapshot=true;
 				var items = (res && res.items) ? res.items : [];
 				var summary = (res && res.summary) ? res.summary : {high:0,medium:0,low:0,total:0};
 				var scope=res && res.summary_scope==='returned_items' ? '仅汇总返回记录：' : '汇总范围未确认：';
-				$('#notification_summary').text(scope+'共 '+(summary.total || 0)+' 条，高 '+(summary.high || 0)+'，中 '+(summary.medium || 0)+'，低 '+(summary.low || 0)+'。更新时间：'+((res && res.checked_at) || '')+'；'+_this.report_coverage_notice(res && res.coverage)+(res && res.partial ? ' 通知结果不代表全量。' : ''));
+				$('#notification_summary').text(scope+'共 '+(summary.total || 0)+' 条，高 '+(summary.high || 0)+'，中 '+(summary.medium || 0)+'，低 '+(summary.low || 0)+'。'+_this.security_snapshot_notice(res)+'；'+_this.report_coverage_notice(res && res.coverage)+(res && res.partial ? ' 通知结果不代表全量。' : ''));
 				if(!items.length){
 					$('#notification_table').html('<tr><td colspan="7" style="text-align:center;color:#999;padding:18px;">暂无防护通知。</td></tr>');
 					return;
@@ -5905,18 +6127,10 @@
 				var html = '';
 				for(var i=0;i<items.length;i++){
 					var item = items[i] || {};
-					item.time = item.time || '';
-					item.time = item.time.substring(0,16);
-					item.level_text = item.level_text || '';
-					item.site = item.site || '';
-					item.ip = item.ip || '';
-					item.uri = item.uri || '';
-					item.rule_type = item.rule_type || '';
-					item.message = item.message || '';
 					var levelColor = item.level === 'high' ? '#d92d20' : (item.level === 'medium' ? '#b54708' : '#027a48');
 					var levelBg = item.level === 'high' ? '#fef3f2' : (item.level === 'medium' ? '#fffaeb' : '#ecfdf3');
 					html += '<tr>'
-						+'<td>'+_this.escapeHTML(item.time)+'</td>'
+						+'<td>'+_this.escapeHTML(String(item.time || '').substring(0,16))+'</td>'
 						+'<td><span style="display:inline-block;padding:2px 8px;border-radius:999px;background:'+levelBg+';color:'+levelColor+';">'+_this.escapeHTML(item.level_text)+'</span></td>'
 						+'<td>'+_this.escapeHTML(item.site)+'</td>'
 						+'<td>'+_this.escapeHTML(item.ip)+'</td>'
@@ -5926,7 +6140,7 @@
 					+'</tr>';
 				}
 				$('#notification_table').html(html);
-			});
+			},failed,force,current);
 		},
 		run_attack_simulation:function(){
 			var _this = this;
@@ -5939,7 +6153,7 @@
 				cookie:$.trim($('#simulation_cookie').val()),
 				header:$.trim($('#simulation_header').val())
 			};
-			$('#simulation_result').html('<div style="padding:18px;color:#999;text-align:center;border:1px solid #e6eaf0;border-radius:6px;">正在进行本地规则演练...</div>');
+			$('#simulation_result').html('<div style="padding:18px;color:#999;text-align:center;border:1px solid #e6eaf0;border-radius:6px;">正在检查本地规则样本，非运行时 Lua...</div>');
 			_this.simulate_attack(obj,function(res){
 				_this.render_attack_simulation_result(res || {});
 			});
@@ -5949,7 +6163,8 @@
 			var matched = res.matched || [];
 			var decision = res.decision_text || '未命中拦截规则';
 			var decisionColor = res.decision === 'block' ? '#d92d20' : (res.decision === 'allow' ? '#027a48' : '#667085');
-			var html = '<div class="waf-notice-safe" style="border-left-color:'+decisionColor+';color:'+decisionColor+';">模拟结果：'+_this.escapeHTML(decision)+'。本次为本地规则演练，不发送真实请求。</div>';
+			var engine=res.engine==='python-re-sample' ? 'Python 正则样本检查' : '本地规则样本检查（引擎未确认）';
+			var html = '<div class="waf-notice-safe" style="border-left-color:'+decisionColor+';color:'+decisionColor+';">'+engine+'：'+_this.escapeHTML(decision)+'。未验证运行时 Lua，不发送真实请求，不能证明线上拦截或放行结果。</div>';
 			if(matched.length){
 				html += '<table class="waf_table" style="width:100%;table-layout:fixed;"><thead><tr><th style="width:140px;">规则集</th><th>命中规则</th><th style="width:180px;">说明</th><th style="width:90px;">动作</th></tr></thead><tbody>';
 				for(var i=0;i<matched.length;i++){
@@ -6136,26 +6351,30 @@
 				$('#overview_attack_map').attr('aria-label','近7日世界攻击来源地图，'+note);
 			}catch(error){failed();}
 		},
-		render_overview_report:function(){
+		security_snapshot_notice:function(res){
+			res=res || {};
+			var age=typeof res.cache_age_seconds==='number' && isFinite(res.cache_age_seconds) && res.cache_age_seconds>=0 ? Math.floor(res.cache_age_seconds)+' 秒' : '年龄未提供';
+			return (res.cached===true ? '缓存快照（'+age+'）' : '读取快照')+' · 生成于 '+(res.checked_at || '时间未提供');
+		},
+		render_overview_report:function(force){
 			var _this = this, sequence=(this._overview_sequence || 0)+1;
 			this._overview_sequence=sequence;
 			if(this._overview_request) this._overview_request.abort();
-			$('#overview_report_status').text('加载中...').css('color','#667085');
+			$('#overview_report_status').text('加载中'+(this._dashboard_data ? '（保留上次快照）' : '...')).css('color','#667085');
 			this._overview_request=_this.get_overview_report(function(res){
 				if(_this._overview_sequence!==sequence) return;
-				if(!res){
-					$('#overview_report_status').text('加载失败').css('color','#d92d20');
+				if(!res || res.status===false || !res.summary){
+					$('#overview_report_status').text('加载失败，请重试'+(_this._dashboard_data ? '（保留上次快照）' : '；尚无有效数据')).css('color','#d92d20');
 					if(!_this._dashboard_data) $('#overview_blocked_ip_table').html('<tr><td colspan="5" class="waf-blocked-empty">封禁记录不可用，请刷新概览重试。</td></tr>');
 					return;
 				}
-				if(!res.summary) res.summary = {};
 				$('#overview_total_protection').text(_this.addThousands(res.summary.total_protection || 0));
 				$('#overview_24h_protection').text(_this.addThousands(res.summary.protection_24h || 0));
 				$('#overview_cc_protection').text(_this.addThousands(res.summary.cc_protection || 0));
 				$('#overview_protection_days').text(_this.addThousands(res.summary.protection_days || 0));
 				$('#overview_active_bans').text(_this.addThousands(res.summary.active_bans || res.active_bans || 0));
 				$('#overview_dashboard_shield').attr('title','当前封禁 '+(res.summary.active_bans || res.active_bans || 0)+' 个 IP');
-				$('#overview_report_status').text('更新于 '+(res.checked_at || '')+'，当前封禁 '+(res.summary.active_bans || res.active_bans || 0)+' 个；'+_this.report_coverage_notice(res.coverage)).css('color',res.coverage && res.coverage.partial?'#b54708':'#027a48');
+				$('#overview_report_status').text(_this.security_snapshot_notice(res)+'，当前封禁 '+(res.summary.active_bans || res.active_bans || 0)+' 个；'+_this.report_coverage_notice(res.coverage)).css('color',res.coverage && res.coverage.partial?'#b54708':'#027a48');
 				var trend = res.trend || [], maxCount = 1, html = '';
 				for(var i=0;i<trend.length;i++) if((trend[i].count || 0) > maxCount) maxCount = trend[i].count || 0;
 				for(var j=0;j<trend.length;j++){
@@ -6205,12 +6424,12 @@
 				$('#overview_dynamics_compact_table').html(compactHtml || '<tr><td colspan="2" style="text-align:center;color:#999;padding:18px;">暂无防御动态。</td></tr>');
 			},function(detail,message){
 				if(_this._overview_sequence!==sequence) return;
-				$('#overview_report_status').text(message || '概览加载失败，请重试').css('color','#d92d20');
+				$('#overview_report_status').text((message || '概览加载失败，请重试')+(_this._dashboard_data ? '（保留上次快照）' : '')).css('color','#d92d20');
 				if(_this._dashboard_data) return;
 				$('#overview_blocked_ip_table').html('<tr><td colspan="5" class="waf-blocked-empty">封禁记录加载失败，请刷新概览重试。</td></tr>');
 				$('#overview_map_placeholder').text('来源数据加载失败，请点击刷新概览');
 				$('#overview_map_status').text('暂无有效数据，不代表没有拦截。');
-			});
+			},force);
 		},
 		_report_search_rows:[],
 		report_page_state:function(view){
@@ -6460,7 +6679,7 @@
 			this.http({
 				check:true,
 				statusTarget:'#official_feature_status',
-				tips:'正在获取官方功能对齐度，请稍候...',
+				tips:'正在读取本地配置结构，请稍候...',
 				method:'get_official_feature_audit',
 				success:function(res){
 					if(callback) callback(res);
@@ -6470,15 +6689,17 @@
 		render_official_feature_audit:function(){
 			var _this = this;
 			$('#official_feature_status').text('检查中...').css('color','#667085');
-			$('#official_feature_table').html('<tr><td colspan="4" style="text-align:center;color:#999;padding:18px;">正在检查官方功能对齐度...</td></tr>');
+			$('#official_feature_table').html('<tr><td colspan="4" style="text-align:center;color:#999;padding:18px;">正在检查本地配置结构...</td></tr>');
+			$('#official_feature_notice').text('仅核对本地配置结构，不代表防护已启用、Lua 已执行或与商业产品功能等价。');
 			_this.get_official_feature_audit(function(res){
 				if(!res || !res.items){
 					$('#official_feature_status').text('检查失败').css('color','#d92d20');
-					$('#official_feature_table').html('<tr><td colspan="4" style="text-align:center;color:#d92d20;padding:18px;">无法读取官方功能对齐度。</td></tr>');
+					$('#official_feature_table').html('<tr><td colspan="4" style="text-align:center;color:#d92d20;padding:18px;">无法读取配置结构检查。</td></tr>');
 					return;
 				}
 				var summary = res.summary || {ok:0,warn:0,total:0};
-				var statusText = res.status ? '功能结构已覆盖' : (summary.warn + ' 项需补齐');
+				var statusText = res.status ? '配置结构检查通过（非运行验证）' : (summary.warn + ' 项配置结构需复核');
+				$('#official_feature_notice').text((res.notice || '仅核对本地配置结构，不代表防护已启用、Lua 已执行或与商业产品功能等价。')+(res.scope!=='configuration_structure_only' ? ' 旧报告未声明检查范围，运行状态未确认。' : ''));
 				$('#official_feature_status').text(statusText + ' · ' + res.checked_at).css('color', res.status ? '#027a48' : '#b54708');
 				var html = '';
 				for(var i=0;i<res.items.length;i++){
@@ -6487,7 +6708,7 @@
 					item.detail = item.detail || '';
 					item.action = item.action || '';
 					var ok = item.status === true;
-					var label = ok ? '已覆盖' : '待补齐';
+					var label = ok ? '结构符合' : '需复核';
 					var color = ok ? '#027a48' : '#b54708';
 					var bg = ok ? '#ecfdf3' : '#fffaeb';
 					html += '<tr>'
@@ -6497,7 +6718,7 @@
 						+'<td>'+_this.escapeHTML(item.action)+'</td>'
 					+'</tr>';
 				}
-				$('#official_feature_table').html(html || '<tr><td colspan="4" style="text-align:center;color:#999;padding:18px;">未返回官方功能对齐项。</td></tr>');
+				$('#official_feature_table').html(html || '<tr><td colspan="4" style="text-align:center;color:#999;padding:18px;">未返回配置结构检查项。</td></tr>');
 			});
 		},
 		render_safety_baseline:function(){
@@ -6566,24 +6787,25 @@
 				$('#rule_risk_table').html(html || '<tr><td colspan="6" style="text-align:center;color:#027a48;padding:18px;">暂无需要复核的规则风险。</td></tr>');
 			});
 		},
-		render_report_dashboard_summary:function(){
+		render_report_dashboard_summary:function(force){
 			var _this = this;
 			var sequence=(this._report_summary_sequence || 0)+1;
 			this._report_summary_sequence=sequence;
 			function current(){return sequence===_this._report_summary_sequence;}
 			if(this._report_summary_request) this._report_summary_request.abort();
 			$('#report_summary_refresh').prop('disabled', true);
-			$('#report_summary_status').text('加载中...').css('color','#667085');
-			_this._report_summary_request=_this.get_report_dashboard_summary({days:7},function(res){
+			$('#report_summary_status').text('加载中'+(this._report_summary_snapshot ? '（保留上次快照）' : '...')).css('color','#667085');
+			_this._report_summary_request=_this.get_report_dashboard_summary({days:7,force:force===true},function(res){
 				if(!res || !res.summary){
-					$('#report_summary_status').text('加载失败').css('color','#d92d20');
+					$('#report_summary_status').text('加载失败，请手动重试'+(_this._report_summary_snapshot ? '（保留上次快照）' : '；尚无有效快照')).css('color','#d92d20');
 					return;
 				}
+				_this._report_summary_snapshot=true;
 				$('#report_summary_hits').text(_this.addThousands(res.summary.total_hits || 0));
 				$('#report_summary_ips').text(_this.addThousands(res.summary.unique_ips || 0));
 				$('#report_summary_uris').text(_this.addThousands(res.summary.unique_uris || 0));
 				$('#report_summary_bans').text(_this.addThousands(res.summary.active_bans || 0));
-				$('#report_summary_status').text('更新于 '+(res.checked_at || '')+'；'+_this.report_coverage_notice(res.coverage)).css('color',res.coverage && res.coverage.partial?'#b54708':'#027a48');
+				$('#report_summary_status').text(_this.security_snapshot_notice(res)+'；'+_this.report_coverage_notice(res.coverage)).css('color',res.coverage && res.coverage.partial?'#b54708':'#027a48');
 				var html = '';
 				var rows = res.top_rules || [];
 				for(var i=0;i<rows.length;i++){
@@ -6617,7 +6839,7 @@
 				}
 				$('#report_top_uri_table').html(html || '<tr><td colspan="2" style="text-align:center;color:#999;padding:18px;">暂无TOP URI数据。</td></tr>');
 			},function(xhr,message){
-				$('#report_summary_status').text((message || '加载失败')+'，可点击刷新总览重试').css('color','#d92d20');
+				$('#report_summary_status').text((message || '加载失败')+'，可点击刷新总览重试'+(_this._report_summary_snapshot ? '（保留上次快照）' : '')).css('color','#d92d20');
 			},function(){
 				_this._report_summary_request=null;
 				$('#report_summary_refresh').prop('disabled',false);
@@ -6632,6 +6854,29 @@
 		},
 		update_panel_alive:function(){
 			return !this._destroyed && this.$root && this.$root[0].isConnected;
+		},
+		render_plugin_update_metadata:function(res){
+			res=res || {};
+			var valid=typeof res.latest_version==='string' && $.trim(res.latest_version)!=='' && typeof res.tag==='string' && $.trim(res.tag)!=='';
+			var fresh=res.status===true && !res.error && res.stale!==true && valid;
+			var checked=typeof res.checked_at==='number' && isFinite(res.checked_at) && res.checked_at>0 || typeof res.checked_at==='string' && $.trim(res.checked_at)!=='';
+			var prior=valid && checked && res.stale===true && Array.isArray(res.releases) && res.releases.some(function(row){
+				return row && row.version===res.latest_version && row.tag===res.tag && typeof row.prerelease==='boolean' && row.prerelease===res.prerelease && typeof row.published_at==='string' && $.trim(row.published_at)!=='';
+			});
+			if(fresh || prior && !this._update_release_snapshot){
+				this._update_release_snapshot={latest_version:res.latest_version,prerelease:typeof res.prerelease==='boolean' ? res.prerelease : null,
+					checked_at:checked ? res.checked_at : null,cached:res.cached===true,notes:typeof res.notes==='string' ? res.notes : ''};
+			}
+			var snapshot=this._update_release_snapshot, suffix=snapshot && !fresh ? '（上次有效快照，非本次核验）' : '';
+			if(typeof res.current_version==='string' && $.trim(res.current_version)!=='') $('#plugin_update_current').text(res.current_version);
+			else if(!$('#plugin_update_current').text()) $('#plugin_update_current').text('--');
+			$('#plugin_update_latest').text(snapshot ? snapshot.latest_version+suffix : '未获取');
+			$('#plugin_update_prerelease').text(snapshot && typeof snapshot.prerelease==='boolean' ? (snapshot.prerelease ? '预发布版本，请谨慎安装' : '正式版本')+suffix : '未知');
+			var stamp=snapshot && snapshot.checked_at;
+			if(typeof stamp==='number') stamp=new Date(stamp*1000).toLocaleString('zh-CN',{hour12:false})+'（浏览器本地时间）';
+			$('#plugin_update_checked').text(stamp ? stamp+suffix+(snapshot.cached ? '（后端缓存，最长 6 小时）' : '') : '未获取');
+			$('#plugin_update_notes').text(typeof res.notes==='string' && res.notes ? res.notes : snapshot && snapshot.notes || '未提供发布说明。');
+			return fresh;
 		},
 		update_start_button:function(){
 			var check = this._update_check;
@@ -6649,27 +6894,24 @@
 			var _this = this;
 			this._update_checking = true;
 			this._update_check = null;
+			this.render_plugin_update_metadata();
 			this.update_start_button();
 			$('#plugin_update_check').prop('disabled',true);
 			$('#plugin_update_status').text('正在后台检查版本，不会自动安装。').css('color','#667085');
 			this._update_check_request = this.http({method:'check_plugin_update',type:'POST',data:{force:force ? 'true' : 'false'},load:2,msg:false,check:true,
 				success:function(res){
 					res = res || {};
-					$('#plugin_update_current').text(res.current_version || '--');
-					$('#plugin_update_latest').text(res.latest_version || '--');
-					$('#plugin_update_prerelease').text(res.prerelease === true ? '预发布版本，请谨慎安装' : res.prerelease === false ? '正式版本' : '未提供');
-					var checked = res.checked_at;
-					if(typeof checked === 'number' && isFinite(checked)) checked = new Date(checked*1000).toLocaleString('zh-CN',{hour12:false})+'（浏览器本地时间）';
-					$('#plugin_update_checked').text((checked || '未提供')+(res.cached ? '（后端缓存，最长 6 小时）' : ''));
-					$('#plugin_update_notes').text(res.notes == null ? '未提供发布说明。' : res.notes);
-					if(res.status !== true || res.error){
-						$('#plugin_update_status').text('版本检查失败：'+(res.error || res.msg || '返回结果不可用')+'；请重试。').css('color','#d92d20');
+					if(!_this.render_plugin_update_metadata(res)){
+						$('#plugin_update_status').text('版本检查'+(res.status!==true || res.error ? '失败：' : '未完成：')+(res.error || res.msg || '未获取有效发布信息')+'；请重试。'+(_this._update_release_snapshot ? '保留上次有效发布快照，信息可能已过期，非本次核验。' : '')).css('color','#d92d20');
 						return;
 					}
 					_this._update_check = res;
 					$('#plugin_update_status').text(_this._update_recovery_required ? '服务器任务需要人工恢复，已禁止再次安装；请检查最近任务与备份。' : res.available ? '发现可用更新；请阅读说明并备份后确认安装。' : '当前没有可用更新。').css('color',_this._update_recovery_required ? '#d92d20' : '#667085');
 				},
-				error:function(xhr,message){$('#plugin_update_status').text('版本检查失败：'+message).css('color','#d92d20');},
+				error:function(xhr,message){
+					_this.render_plugin_update_metadata();
+					$('#plugin_update_status').text('版本检查失败：'+message+(_this._update_release_snapshot ? '；保留上次有效发布快照，信息可能已过期，非本次核验。' : '')).css('color','#d92d20');
+				},
 				complete:function(){
 					_this._update_check_request = null;
 					_this._update_checking = false;
@@ -6812,6 +7054,73 @@
 					});
 				},cancel);
 		},
+		client_device_label:function(value){
+			var labels={desktop:'桌面电脑',pc:'桌面电脑',mobile:'手机',phone:'手机',smartphone:'手机',tablet:'平板',bot:'自动化客户端',other:'其他设备',unknown:'未知设备'};
+			var key=String(value || '').toLowerCase();
+			return Object.prototype.hasOwnProperty.call(labels,key) ? labels[key] : '未知设备';
+		},
+		render_statistics_scope:function(){
+			var site=String($('#website_stats_site_filter').val() || ''), days=String($('#website_stats_days').val() || '7');
+			$('#website_stats_scope').text((site ? '本站：'+site : '全部站点')+' · '+(days==='1' ? '今日（服务器自然日）' : '近 '+days+' 个自然日'));
+			$('#website_stats_open_site').prop('disabled',!site);
+		},
+		render_statistics_profiles:function(page){
+			var _this=this, report=this._statistics_report, payload=report && report.client_profiles, esc=waf_dashboard.text;
+			var valid=!!payload && payload.schema_version===1 && Array.isArray(payload.rows) && payload.rows.length<=1000 &&
+				['request_count','represented_requests','omitted_requests'].every(function(key){return Number.isSafeInteger(payload[key]) && payload[key]>=0;}) &&
+				typeof payload.partial==='boolean' && typeof payload.notice==='string' &&
+				payload.represented_requests+payload.omitted_requests===payload.request_count;
+			var total=0;
+			if(valid) valid=payload.rows.every(function(row){
+				if(!row || !['country_code','country_name','browser','os','device','client_type'].every(function(key){return typeof row[key]==='string' && row[key].length<=512;}) || !Number.isSafeInteger(row.count) || row.count<0) return false;
+				total+=row.count; return Number.isSafeInteger(total);
+			}) && total===payload.represented_requests;
+			var filters=['country','device','browser'], defaults=['全部国家 / 地区','全部设备类别','全部浏览器 / 客户端'];
+			filters.forEach(function(key){$('#website_stats_profile_'+key).prop('disabled',!valid);});
+			if(!valid){
+				this._statistics_profile_source=null; this._statistics_profile_page=0;
+				filters.forEach(function(key,index){$('#website_stats_profile_'+key).html('<option value="">'+defaults[index]+'</option>').val('');});
+				var message=!report ? '等待当前范围的请求分类报告，不代表零请求。' : !payload ? '当前报告未提供访客与设备组合数据；可查看下方已有分布。' : '访客与设备组合数据不可用（版本、格式或请求计数不一致）；不能据此推算设备数量。';
+				$('#website_stats_profile_status').text(message);
+				$('#website_stats_profile_table').html('<tr><td colspan="6">'+esc(message)+'</td></tr>');
+				$('#website_stats_profile_page_info').text('尚无可筛选的请求组合');
+				$('#website_stats_profile_prev').prop('disabled',true); $('#website_stats_profile_next').prop('disabled',true);
+				return;
+			}
+			var rows=payload.rows.map(function(row){
+				var code=row.country_code.toUpperCase(), known=/^[A-Z]{2}$/.test(code) && code!=='ZZ';
+				return {country:known ? code : 'unknown',country_name:known ? waf_dashboard.countryName(code,row.country_name) : '归属地未知',
+					device:row.device || 'Unknown',browser:row.browser || 'Unknown',os:row.os || 'Unknown',client_type:row.client_type,count:row.count};
+			});
+			function clientName(name){return /^unknown$/i.test(name) ? '未知' : name;}
+			if(this._statistics_profile_source!==payload){
+				this._statistics_profile_source=payload;
+				filters.forEach(function(key,index){
+					var select=$('#website_stats_profile_'+key), previous=String(select.val() || ''), seen=Object.create(null), options='<option value="">'+defaults[index]+'</option>';
+					rows.forEach(function(row){
+						var value=row[key]; if(seen[value]) return; seen[value]=true;
+						var label=key==='country' ? row.country_name : key==='device' ? _this.client_device_label(value) : clientName(value);
+						options+='<option value="'+esc(value)+'">'+esc(label)+'</option>';
+					});
+					select.html(options).val(seen[previous] ? previous : '');
+				});
+			}
+			var selected={}; filters.forEach(function(key){selected[key]=String($('#website_stats_profile_'+key).val() || '');});
+			var matched=rows.filter(function(row){return filters.every(function(key){return !selected[key] || row[key]===selected[key];});});
+			var requests=matched.reduce(function(sum,row){return sum+row.count;},0), pages=Math.max(1,Math.ceil(matched.length/50));
+			page=Math.max(0,Math.min(pages-1,page==null ? this._statistics_profile_page || 0 : page));
+			this._statistics_profile_page=page;
+			var kinds={browser:'浏览器',app:'应用',in_app:'应用内浏览器',api_tool:'已知 API 工具',crawler:'疑似爬虫',unknown:'未知',bot:'疑似机器人'};
+			var body=matched.slice(page*50,page*50+50).map(function(row){
+				var kind=Object.prototype.hasOwnProperty.call(kinds,row.client_type) ? row.client_type : 'unknown';
+				return '<tr><td>'+esc(row.country_name)+'</td><td>'+_this.client_device_label(row.device)+'</td><td>'+esc(clientName(row.browser))+'</td><td>'+esc(clientName(row.os))+'</td><td><span class="waf-client-badge" data-kind="'+kind+'">'+kinds[kind]+'</span></td><td>'+row.count+'</td></tr>';
+			}).join('');
+			$('#website_stats_profile_table').html(body || '<tr><td colspan="6">'+(rows.length ? '当前保留组合中无匹配请求，不代表完整日志中没有此类请求。' : payload.request_count ? '当前未保留可展示的请求组合，请核对未展示请求数。' : '当前报告暂无已处理请求，不代表站点没有访问。')+'</td></tr>');
+			$('#website_stats_profile_status').text('当前报告已处理 '+payload.request_count+' 次请求；组合已表示 '+payload.represented_requests+' 次；未展示 '+payload.omitted_requests+' 次。'+
+				(payload.partial || payload.omitted_requests>0 ? '部分组合或样本，非全量统计。' : '仅当前报告已处理范围，日志覆盖以上方说明为准。')+payload.notice);
+			$('#website_stats_profile_page_info').text('匹配 '+matched.length+' 组 / '+requests+' 次请求 · 第 '+(page+1)+' / '+pages+' 页 · 每页 50 组');
+			$('#website_stats_profile_prev').prop('disabled',page===0); $('#website_stats_profile_next').prop('disabled',page>=pages-1);
+		},
 		select_statistics_page:function(page){
 			if(['overview','sites','spiders','clients','access','errors','settings','geography'].indexOf(page) === -1) return;
 			if(this._statistics_page==='geography' && page!=='geography') this.stop_statistics_geography();
@@ -6822,6 +7131,7 @@
 			this.$root.find('.website_stats_panel[data-stats-panel="'+page+'"]').addClass('active');
 			if(page === 'overview' && this._statistics_report) this.render_statistics_trend(this._statistics_report.trend,this._statistics_report.window);
 			if(page === 'geography') this.render_statistics_geography();
+			if(page === 'clients') this.render_statistics_profiles();
 		},
 		stop_statistics_geography:function(){
 			this._statistics_geo_sequence=(this._statistics_geo_sequence || 0)+1;
@@ -7037,7 +7347,8 @@
 			this.statistics_table('settings',res.settings,['key','value']);
 			this.statistics_table('browser',res.browsers,['name','count']);
 			this.statistics_table('os',res.operating_systems,['name','count']);
-			this.statistics_table('device',res.devices,['name','count']);
+			this.statistics_table('device',Array.isArray(res.devices) ? res.devices.map(function(row){return {name:_this.client_device_label(row.name),count:row.count};}) : res.devices,['name','count']);
+			this.render_statistics_profiles();
 			['access','http_error','error'].forEach(function(kind){_this.render_statistics_samples(kind);});
 			this.render_statistics_geography();
 		},
@@ -7089,6 +7400,7 @@
 			var _this = this;
 			options = options || {};
 			if(!this.statistics_is_active()) return;
+			this.render_statistics_scope();
 			if(!options.poll) this.stop_statistics_polling();
 			this._statistics_timer = null;
 			if(!options.poll) this._statistics_started_at = Date.now();
@@ -7106,6 +7418,9 @@
 				this._statistics_has_summary = false;
 				this._statistics_checked_at = '';
 				this._statistics_report = null;
+				this._statistics_profile_source=null;
+				['country','device','browser'].forEach(function(key){$('#website_stats_profile_'+key).val('');});
+				this.render_statistics_profiles(0);
 				this._statistics_sample_pages = {};
 				this._statistics_geo_country='';
 				this._statistics_geo_failed=false;

@@ -6,7 +6,7 @@ const { harness, html } = require('./test_statistics_v011');
 
 test('console has grouped horizontal navigation and real keyboard buttons', () => {
   assert.match(html, /class="waf-section-tabs"/);
-  for (const section of ['overview', 'protection', 'access', 'observation', 'maintenance']) {
+  for (const section of ['overview', 'protection', 'events', 'statistics', 'maintenance']) {
     assert.match(html, new RegExp('<button[^>]*data-section="' + section + '"'));
   }
   assert.match(html, /<li[^>]*data-target="statistics"[^>]*>\s*<button/);
@@ -16,13 +16,13 @@ test('console has grouped horizontal navigation and real keyboard buttons', () =
 test('navigation synchronizes page, section and previous page without extra reads', () => {
   const h = harness();
   h.waf.refresh_data_total('statistics');
-  assert.equal(h.waf._section_last.observation, 'statistics');
-  assert.equal(h.$('.waf-section-tabs button[data-section="observation"]').attr('aria-pressed'), 'true');
-  assert.equal(h.$('.waf_left_menu li[data-section="observation"]').prop('hidden'), false);
+  assert.equal(h.waf._section_last.statistics, 'statistics');
+  assert.equal(h.$('.waf-section-tabs button[data-section="statistics"]').attr('aria-pressed'), 'true');
+  assert.equal(h.$('.waf_left_menu li[data-section="statistics"]').prop('hidden'), false);
   assert.equal(h.$('.waf_left_menu li[data-target="statistics"] button').attr('aria-current'), 'page');
   assert.equal(h.of('get_website_statistics_summary').length, 1);
   const before = h.requests.length;
-  assert.equal(h.waf.section_page('observation'), 'statistics');
+  assert.equal(h.waf.section_page('statistics'), 'statistics');
   assert.equal(h.waf.section_page('protection'), 'site');
   assert.equal(h.waf.section_page('untrusted'), null);
   assert.equal(h.requests.length, before);

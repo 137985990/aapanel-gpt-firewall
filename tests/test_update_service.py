@@ -163,7 +163,7 @@ class UpdateServiceTest(unittest.TestCase):
     def test_version_and_bridge_contract_includes_published_prereleases(self):
         result = self.service.check()
         self.assertTrue(result['status'], result)
-        self.assertEqual(updater.PLUGIN_VERSION, '0.1.11')
+        self.assertEqual(updater.PLUGIN_VERSION, '0.1.12')
         self.assertEqual(result['current_version'], '0.1')
         self.assertEqual(result['latest_version'], '0.1.1')
         self.assertEqual(result['tag'], 'v0.1.1')
@@ -206,6 +206,43 @@ class UpdateServiceTest(unittest.TestCase):
         result = self.service.check()
         self.assertEqual([r['version'] for r in result['releases']], ['0.1.10', '0.1.1', '0.1.0'])
         self.assertEqual(updater.parse_version('v0.1'), updater.parse_version('0.1.0'))
+
+    def test_failed_first_check_does_not_invent_a_latest_release(self):
+        with mock.patch.object(self.service, '_fetch', side_effect=OSError('offline')):
+            result = self.service.check()
+        self.assertFalse(result['status'])
+        self.assertFalse(result['available'])
+        self.assertEqual(result['current_version'], '0.1')
+        self.assertEqual(result['latest_version'], '')
+        self.assertIsNone(result['prerelease'])
+        self.assertFalse(result['stale'])
+
+    def test_local_check_error_does_not_invent_a_release_channel(self):
+        with mock.patch.object(self.service, '_lock', side_effect=OSError('unavailable')):
+            result = self.service.check()
+        self.assertFalse(result['status'])
+        self.assertEqual(result['latest_version'], '')
+        self.assertIsNone(result['prerelease'])
+
+    def test_successful_empty_release_list_has_no_latest_version_or_channel(self):
+        self.releases = []
+        result = self.service.check()
+        self.assertTrue(result['status'])
+        self.assertFalse(result['available'])
+        self.assertEqual(result['latest_version'], '')
+        self.assertIsNone(result['prerelease'])
+
+    def test_failed_refresh_keeps_prior_release_as_stale_and_not_installable(self):
+        previous = self.service.check()
+        self.now += 61
+        with mock.patch.object(self.service, '_fetch', side_effect=OSError('offline')):
+            result = self.service.check(force=True)
+        self.assertFalse(result['status'])
+        self.assertTrue(result['stale'])
+        self.assertFalse(result['available'])
+        self.assertEqual(result['latest_version'], previous['latest_version'])
+        self.assertIs(result['prerelease'], True)
+        self.assertEqual(result['checked_at'], previous['checked_at'])
 
     def test_cache_six_hours_and_forced_checks_rate_limited(self):
         self.assertTrue(self.service.check()['status'])
@@ -441,13 +478,28 @@ class UpdateServiceTest(unittest.TestCase):
         started = time.monotonic()
         try:
             with mock.patch.object(updater.urllib.request, 'build_opener', return_value=opener):
-                with self.assertRaises((TimeoutError, updater.UpdateError)):
+                with self.assertRaises(updater.UpdateError) as caught:
                     updater._transport(DOWNLOAD + ASSET, timeout=0.15, max_bytes=64)
+                self.assertEqual(caught.exception.code, 'timeout')
             elapsed = time.monotonic() - started
             self.assertLess(elapsed, 0.5, 'continuous bytes must not reset the total deadline')
         finally:
             stop.set()
             thread.join(2)
+
+    def test_socket_read_timeout_has_a_stable_error_on_older_python(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.geturl.return_value = DOWNLOAD + ASSET
+        response.headers = {'Content-Length': '32'}
+        response.read1.side_effect = socket.timeout('timed out')
+        opener = mock.Mock()
+        opener.open.return_value = response
+        with mock.patch.object(updater.urllib.request, 'build_opener', return_value=opener):
+            with self.assertRaises(updater.UpdateError) as caught:
+                updater._transport(DOWNLOAD + ASSET, timeout=1, max_bytes=64)
+        self.assertEqual(caught.exception.code, 'timeout')
+        response.__exit__.assert_called_once()
 
     def test_normal_chunked_github_response_is_supported(self):
         client, server = socket.socketpair()
