@@ -7,7 +7,7 @@ import re
 import zipfile
 
 
-VERSION = '0.1.12'
+VERSION = '0.1.13'
 PLUGIN_FILES = (
     'info.json', 'install.sh', 'free_waf_main.py', 'index.html',
     'init.lua', 'ban_store.py', 'report_store.py', 'website_statistics.py', 'update_service.py',
@@ -50,6 +50,8 @@ SOURCE_FILES = PLUGIN_FILES + (
     'tests/test_report_backend_regressions.py', 'tests/test_report_pagination_ui.js',
     'tests/test_backend_v012.py', 'tests/test_runtime_identity_v012.py',
     'tests/test_device_profiles_v012.py', 'tests/test_console_v012.js',
+    'tests/test_ban_management_backend.py', 'tests/test_ban_management_runtime.py',
+    'tests/test_ban_management_ui.js',
 )
 SECRET_PATTERNS = (
     r'(?m)^[ \t>]*-----BEGIN (?:OPENSSH |RSA |EC )?PRIVATE KEY-----',

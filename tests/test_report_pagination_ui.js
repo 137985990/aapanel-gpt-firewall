@@ -91,6 +91,7 @@ function harness() {
     open(view) {
       waf.refresh_data_total(view === 'search' ? 'ipstats' : 'history');
       if (view === 'search') waf.render_report_search();
+      else waf.render_blockade_records();
     },
   };
 }

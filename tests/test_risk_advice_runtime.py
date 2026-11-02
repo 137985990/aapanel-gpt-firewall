@@ -394,8 +394,8 @@ class _IsolatedManualBanNginx:
         except OSError:
             pass
         library = Path(self.binary).resolve().parents[1] / 'lib/lua'
-        lua_path = ('lua_package_path "' + str(library) + '/?.lua;;";\n') if library.is_dir() else ''
         managed = IntegrationRepairService.INCLUDE.decode().replace(
+            '/www/server/nginx/lib/lua/', library.as_posix() + '/').replace(
             '/www/server/free_waf/init.lua', str(self.root / 'init.lua')).replace(
             '/www/server/free_waf/waf.lua', str(self.root / 'access.lua')).replace(
             '/www/server/free_waf/.health-no-content', str(self.root / 'empty')).replace(
@@ -404,7 +404,7 @@ class _IsolatedManualBanNginx:
         extra = 'listen [::1]:' + str(self.port) + ';' if self.ipv6 else ''
         self.conf.write_text('pid ' + str(self.root / 'nginx.pid') + ';\nerror_log ' + str(self.root / 'error.log') + ' notice;\n'
             'worker_processes 2; events { worker_connections 32; } http {\n'
-            'keepalive_timeout 0; keepalive_requests 1;\n' + lua_path + managed +
+            'keepalive_timeout 0; keepalive_requests 1;\n' + managed +
             'server { listen 127.0.0.1:' + str(self.port) + '; ' + extra + ' server_name alias.example; access_log off;\n'
             'location / { root ' + str(self.static) + '; } }\n'
             'server { listen 127.0.0.1:' + str(self.port) + '; server_name other.example; access_log off;\n'

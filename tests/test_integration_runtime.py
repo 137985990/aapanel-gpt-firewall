@@ -14,6 +14,19 @@ from update_service import IntegrationRepairService, PLUGIN_VERSION
 
 @unittest.skipUnless(os.environ.get('GPT_FIREWALL_TEST_NGINX'), 'requires explicitly selected Lua-enabled Nginx')
 class RealIntegrationRuntimeTest(unittest.TestCase):
+    def test_isolated_dependency_probe_loads_real_modules_without_a_service_listener(self):
+        binary = Path(os.environ['GPT_FIREWALL_TEST_NGINX']).absolute()
+        with tempfile.TemporaryDirectory(prefix='gpt-firewall-dependency-') as temporary:
+            root = Path(temporary)
+            service = IntegrationRepairService(root / 'panel/plugin/free_waf',
+                read_configuration=lambda: '', directives=lambda body: [], test_mode=True)
+            service.binary = binary
+            service.server = binary.parents[2]
+            backup = root / 'backup'
+            backup.mkdir()
+            self.assertTrue(service._verify_dependencies(backup))
+            self.assertEqual(list(backup.iterdir()), [])
+
     def test_real_access_handler_answers_nonce_only_on_local_health_server(self):
         binary = os.environ['GPT_FIREWALL_TEST_NGINX']
         with tempfile.TemporaryDirectory(prefix='gpt-firewall-isolated-nginx-') as temporary:
@@ -50,15 +63,15 @@ class RealIntegrationRuntimeTest(unittest.TestCase):
                 port = selected.getsockname()[1]
             conf = root / 'nginx.conf'
             lua_library = Path(binary).resolve().parents[1] / 'lib/lua'
-            lua_path = ('lua_package_path "' + str(lua_library) + '/?.lua;;";\n') if lua_library.is_dir() else ''
             managed = IntegrationRepairService.INCLUDE.decode().replace(
+                '/www/server/nginx/lib/lua/', lua_library.as_posix() + '/').replace(
                 '/www/server/free_waf/init.lua', str(root / 'init.lua')).replace(
                 '/www/server/free_waf/waf.lua', str(root / 'access.lua')).replace(
                 '/www/server/free_waf/.health-no-content', str(root / 'empty')).replace(
                 '127.0.0.1:39091', '127.0.0.1:' + str(port))
             conf.write_text('pid ' + str(root / 'nginx.pid') + ';\nerror_log ' + str(root / 'error.log') + ' notice;\n'
                 'worker_processes 1; events { worker_connections 32; } http {\n'
-                'keepalive_timeout 0; keepalive_requests 1;\n' + lua_path + managed +
+                'keepalive_timeout 0; keepalive_requests 1;\n' + managed +
                 'server { listen 127.0.0.1:' + str(port) + '; server_name example.invalid; access_log off;\n'
                 'location / { root ' + str(static) + '; }\n'
                 'location = /fixture-post { content_by_lua_block { ngx.say("normal post completed") } } } }\n')
@@ -94,6 +107,17 @@ class RealIntegrationRuntimeTest(unittest.TestCase):
                 _, started = IntegrationRepairService._process_identity(process.pid, Path(binary), b'master process')
                 proof = IntegrationRepairService._probe_loop(Path(binary), str(process.pid) + ':' + started, port)
                 self.assertTrue(proof['execution_verified'])
+                service = IntegrationRepairService(root / 'panel/plugin/free_waf',
+                    read_configuration=lambda: conf.read_text(), directives=__import__('update_service').nginx_directives,
+                    test_mode=True)
+                service.binary, service.main = Path(binary), conf
+                master, previous = service._capture_workers()
+                self.assertEqual(master, str(process.pid) + ':' + started)
+                self.assertIn(proof['worker_pid'], previous)
+                subprocess.run(args + ['-s', 'reload'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                fresh = IntegrationRepairService._probe_loop(Path(binary), str(process.pid) + ':' + started,
+                                                             port, previous_workers=previous)
+                self.assertNotIn(fresh['worker_pid'], previous)
                 connection = http.client.HTTPConnection('127.0.0.1', port, timeout=1)
                 try:
                     connection.request('GET', '/fixture.txt', headers={'Host': 'example.invalid'})

@@ -123,13 +123,13 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         module = sys.modules.get(key)
         if (module is None or getattr(module, '__file__', None) != path
                 or getattr(module, '_source_signature', None) != signature
-                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.12'):
+                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.13'):
             spec = importlib.util.spec_from_file_location(key, path)
             module = importlib.util.module_from_spec(spec)
             # Read source explicitly: same-second upgrades must not reuse stale bytecode.
             source = spec.loader.get_source(key)
             exec(compile(source, path, 'exec', dont_inherit=True), module.__dict__)
-            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.12':
+            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.13':
                 raise ValueError('服务版本不匹配，请重新打开插件')
             module._source_signature = signature
             sys.modules[key] = module
@@ -1592,6 +1592,514 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                             verification_scope='unverified',
                             msg='解除保存结果待核验：操作可能已写入，但回读或收尾失败，未继续重载。请先读取本站人工封禁核对；后续重载可能加载已写入变更，不要直接重复提交。')
             return public.returnMsg(False, '未确认解除：请重新读取本站人工封禁记录后重试；其他封禁与累计次数未修改。')
+
+    def __ban_ip(self, value):
+        import ipaddress
+        if type(value) is not str or len(value) > 45 or '%' in value:
+            raise ValueError('invalid exact IP')
+        address = ipaddress.ip_address(value)
+        return str(getattr(address, 'ipv4_mapped', None) or address)
+
+    def __ban_digest(self, value):
+        import hashlib
+        return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
+
+    def __ban_read_json(self, name, maximum=2 * 1024 * 1024):
+        with self.__open_regular_file(self.__path + name) as stream:
+            raw = stream.read(maximum + 1)
+        if len(raw) > maximum:
+            raise ValueError('ban configuration exceeds read budget')
+        return self.__repeat_json(raw), raw
+
+    def __ban_configuration(self):
+        import hashlib
+        values = [self.__ban_read_json(name) for name in ('config.json', 'site.json', 'rule/ip_white.json')]
+        config, sites, whites = [value[0] for value in values]
+        if (type(config) is not dict or type(sites) is not dict or len(sites) > 5000
+                or any(type(site) is not dict for site in sites.values()) or type(whites) is not list):
+            raise ValueError('invalid ban configuration')
+        for site in sites:
+            self.__endpoint_site_name(site)
+        raw = b'\0'.join(value[1] for value in values)
+        return dict(config=config, sites=sites, whites=whites,
+                    white_intervals=self.__risk_white_intervals(whites),
+                    revision=hashlib.sha256(raw).hexdigest(), signature=hashlib.md5(raw).hexdigest())
+
+    def __ban_runtime_request(self, path, params=None):
+        """Fixed loopback listener, bounded complete HTTP read, no proxy or redirects."""
+        import http.client
+        import io
+        import socket
+        from urllib.parse import urlencode
+        if path not in ('/get_active_bans_runtime', '/remove_active_ban_runtime'):
+            raise ValueError('unknown ban runtime route')
+        target = path + ('?' + urlencode(params) if params is not None else '')
+        method = 'POST' if params is not None else 'GET'
+        request = ('{} {} HTTP/1.0\r\nHost: gpt-firewall-health.invalid\r\n'
+                   'Content-Length: 0\r\nConnection: close\r\n\r\n').format(method, target).encode('ascii')
+        limit, deadline = 4 * 1024 * 1024, time.monotonic() + 0.8
+        with socket.create_connection(('127.0.0.1', 39091), timeout=0.35) as connection:
+            connection.settimeout(0.35)
+            connection.sendall(request)
+            chunks, size = [], 0
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or size > limit:
+                    raise ValueError('runtime response budget exceeded')
+                connection.settimeout(min(remaining, 0.35))
+                chunk = connection.recv(min(65536, limit - size + 1))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+        wire = b''.join(chunks)
+        header = wire.find(b'\r\n\r\n')
+        if header < 0 or header > 16384 or size > limit or time.monotonic() >= deadline:
+            raise ValueError('invalid runtime response')
+
+        class BufferedResponse:
+            def makefile(self, *args):
+                return io.BytesIO(wire)
+
+        response = http.client.HTTPResponse(BufferedResponse())
+        response.begin()
+        value = self.__repeat_json(response.read(limit + 1))
+        if response.status != 200 or type(value) is not dict or value.get('status') is not True:
+            raise ValueError('runtime did not confirm operation')
+        return value
+
+    def __ban_runtime_snapshot(self):
+        result = self.__ban_runtime_request('/get_active_bans_runtime')
+        if (result.get('schema_version') != 1 or type(result.get('rows')) is not list
+                or len(result['rows']) > 16384 or type(result.get('coverage')) is not dict):
+            raise ValueError('invalid runtime ban snapshot')
+        return result
+
+    def __ban_disabled(self, configuration, site, source, ip):
+        if configuration is None:
+            return False
+        config, sites = configuration['config'], configuration['sites']
+        if config.get('open') is False:
+            return True
+        if site and sites.get(site, {}).get('open') is False:
+            return True
+        if site and source == 'repeat_bans' and site in sites:
+            policy = sites[site].get('repeat_ban_policy')
+            if type(policy) is not dict or policy.get('enabled') is not True:
+                return True
+        import ipaddress
+        from bisect import bisect_right
+        address = ipaddress.ip_address(ip)
+        intervals = configuration['white_intervals']
+        if address.version == 4 and intervals is not None:
+            starts, ends = intervals
+            index = bisect_right(starts, int(address)) - 1
+            if index >= 0 and int(address) <= ends[index]:
+                return True
+        return False
+
+    def __ban_collect(self):
+        now, rows, stored = int(time.time()), [], {}
+        coverage = dict(partial=False, unavailable_sources=[], range_entries=0,
+                        verification_scope='one_local_worker_snapshot')
+        configuration = None
+        try:
+            configuration = self.__ban_configuration()
+            if configuration['white_intervals'] is None:
+                coverage['unavailable_sources'].append('whitelist')
+        except Exception:
+            coverage['unavailable_sources'].append('configuration')
+        try:
+            runtime = self.__ban_runtime_snapshot()
+        except Exception:
+            runtime = None
+            coverage['unavailable_sources'].append('runtime')
+        verified = bool(configuration and configuration['white_intervals'] is not None
+                        and runtime and runtime.get('policy_signature') == configuration['signature'])
+        if runtime and not verified:
+            coverage['unavailable_sources'].append('runtime_configuration')
+        if runtime:
+            detail = runtime.get('coverage', {})
+            coverage['partial'] = detail.get('partial') is not False
+            coverage['runtime'] = detail
+        for source, reader, field in (
+                ('manual_site_bans', lambda: self.__risk_store().snapshot(), 'entries'),
+                ('repeat_bans', lambda: self.__repeat_ban_store().read_snapshot(), 'bans')):
+            try:
+                snapshot = reader()
+                for record in snapshot[field]:
+                    stored[(source, record['site'], self.__ban_ip(record['ip']))] = (
+                        record, snapshot['revision'])
+            except Exception:
+                coverage['unavailable_sources'].append(source)
+        try:
+            rules, raw = self.__ban_read_json('rule/ip_black.json')
+            if type(rules) is not list or len(rules) > 4096:
+                raise ValueError('invalid blacklist')
+            revision = self.__ban_digest(rules)
+            for rule in rules:
+                if type(rule) is not list or len(rule) not in (2, 3):
+                    raise ValueError('invalid blacklist rule')
+                for address in rule[:2]:
+                    if (type(address) is not list or len(address) != 4
+                            or any(type(n) is not int or not 0 <= n <= 255 for n in address)):
+                        raise ValueError('invalid blacklist address')
+                expires = rule[2] if len(rule) == 3 else None
+                if expires is not None and (type(expires) is not int or expires < 0):
+                    raise ValueError('invalid blacklist expiry')
+                if expires is not None and expires < now:
+                    continue
+                if rule[0] != rule[1]:
+                    coverage['range_entries'] += 1
+                    continue
+                ip = '.'.join(map(str, rule[0]))
+                stored[('ip_black', '', ip)] = (dict(ip=ip, site='', started_at=None,
+                    expires_at=expires, reason='ip_black'), revision)
+        except Exception:
+            coverage['unavailable_sources'].append('ip_black')
+
+        live, ephemeral = {}, []
+        if runtime:
+            for value in runtime.get('rows', []):
+                try:
+                    if type(value) is not dict:
+                        raise ValueError('invalid runtime record')
+                    source, site = value['source'], value['site']
+                    if source not in ('cc', 'legacy', 'registration_abuse', 'ip_black', 'manual_site_bans', 'repeat_bans'):
+                        raise ValueError('unknown runtime source')
+                    if site:
+                        self.__endpoint_site_name(site)
+                    elif type(site) is not str:
+                        raise ValueError('invalid runtime scope')
+                    value = dict(value, ip=self.__ban_ip(value['ip']))
+                    if value.get('enforcement') not in ('active', 'disabled', 'unknown'):
+                        raise ValueError('invalid enforcement state')
+                    identity = (source, site, value['ip'])
+                    if source in ('ip_black', 'manual_site_bans', 'repeat_bans'):
+                        live[identity] = value
+                        if identity not in stored:
+                            # Loaded-only records are visible but cannot remove unrelated disk state.
+                            value.update(removable=False, enforcement='unknown')
+                            ephemeral.append(value)
+                    else:
+                        ephemeral.append(value)
+                except Exception:
+                    coverage['unavailable_sources'].append('runtime_records')
+
+        def append(record, source, store_revision=None, runtime_row=None):
+            site, ip = record['site'], self.__ban_ip(record['ip'])
+            expires, started = record.get('expires_at'), record.get('started_at')
+            if expires is not None and (type(expires) is not int or expires < now
+                    or (source != 'ip_black' and expires == now)):
+                return
+            enforcement = 'unknown'
+            if runtime_row and verified:
+                same_record = runtime_row.get('expires_at') == expires
+                if source in ('manual_site_bans', 'repeat_bans'):
+                    same_record = same_record and runtime_row.get('store_revision') == store_revision
+                if same_record:
+                    enforcement = runtime_row['enforcement']
+            if self.__ban_disabled(configuration, site, source, ip):
+                enforcement = 'disabled'
+            if source == 'ip_black' and expires is None:
+                enforcement = 'disabled'
+            if started is not None and (type(started) is not int or started > now):
+                enforcement = 'disabled'
+            identity = [source, site, ip]
+            if source in ('cc', 'legacy', 'registration_abuse'):
+                identity.append(record.get('runtime_id'))
+            revision = self.__ban_digest([record, store_revision,
+                                        configuration['revision'] if configuration else None])
+            removable = source in ('ip_black', 'manual_site_bans') or bool(
+                runtime_row and runtime_row.get('removable') is True and verified)
+            if source in coverage['unavailable_sources']:
+                removable = False
+            row = dict(id=self.__ban_digest(identity), revision=revision, ip=ip, site=site,
+                scope='site' if site else 'global', source=source,
+                reason='manual' if source == 'manual_site_bans' else record.get('reason', source),
+                reason_text=self.__ban_reason('manual' if source == 'manual_site_bans' else record.get('reason', source)),
+                started_at=started, expires_at=expires,
+                remaining_seconds=max(0, expires-now) if expires is not None else None,
+                enforcement=enforcement, removable=removable,
+                verification_scope='one_local_worker_snapshot' if enforcement == 'active' else 'unverified')
+            row['_runtime'] = runtime_row
+            row['_store_revision'] = store_revision
+            rows.append(row)
+
+        for (source, site, ip), (record, revision) in stored.items():
+            append(record, source, revision, live.get((source, site, ip)))
+        for record in ephemeral:
+            append(record, record['source'], runtime_row=record)
+        coverage['unavailable_sources'] = sorted(set(coverage['unavailable_sources']))
+        coverage['partial'] = (coverage['partial'] or bool(coverage['unavailable_sources'])
+                               or any(row['enforcement'] == 'unknown' for row in rows))
+        coverage['notice'] = '仅核验本机一个执行端快照，不代表全部工作进程或业务请求已验收；IP 段规则另计，不纳入单 IP 数。'
+        return rows, coverage, configuration, now
+
+    def __ban_reason(self, reason):
+        return {'manual': '人工封禁', 'manual_temp': '人工临时封禁', 'ip_black': 'IP 黑名单',
+                'cc': 'CC 防护', 'legacy': '旧版临时封禁', 'registration_abuse': '注册滥用防护',
+                'registration_abuse_register': '注册请求滥用', 'registration_abuse_verify': '验证请求滥用',
+                'repeat_bans': '重复封禁升级', 'endpoint_limit': '端点限流',
+                '404_flood': '404 扫描防护', 'risk_advice': '本站人工封禁'}.get(reason, reason)
+
+    def __ban_filters(self, get, history=False):
+        ip = getattr(get, 'ip', None)
+        ip = self.__ban_ip(ip) if ip is not None and ip != '' else None
+        site = getattr(get, 'site', None)
+        if history:
+            if site is not None and (type(site) is not str or len(site) > 253
+                                     or any(ord(c) < 32 for c in site)):
+                raise ValueError('invalid history scope')
+        elif site is not None and site != '':
+            site = self.__endpoint_site_name(site)
+        if site == '' and not history:
+            site = None
+        return ip, site
+
+    def get_active_bans(self, get):
+        try:
+            page = self.__repeat_page(getattr(get, 'p', 1), 1000000)
+            limit = self.__repeat_page(getattr(get, 'limit', 20), 200)
+            state = getattr(get, 'state', 'all')
+            if state not in ('all', 'active', 'unknown', 'disabled'):
+                raise ValueError('invalid state filter')
+            ip, site = self.__ban_filters(get)
+            with self.__endpoint_transaction(create=False):
+                rows, coverage, configuration, now = self.__ban_collect()
+            rows = [row for row in rows if (ip is None or row['ip'] == ip) and (site is None or row['site'] == site)]
+            summary = dict(active_ips=len({row['ip'] for row in rows if row['enforcement'] == 'active'}),
+                           active_entries=sum(row['enforcement'] == 'active' for row in rows),
+                           inactive_entries=sum(row['enforcement'] == 'disabled' for row in rows),
+                           unknown_entries=sum(row['enforcement'] == 'unknown' for row in rows))
+            rows = [row for row in rows if state == 'all' or row['enforcement'] == state]
+            rows.sort(key=lambda row: (row['ip'], row['site'], row['source'], row['id']))
+            offset = (page-1)*limit
+            output = [{key: value for key, value in row.items() if not key.startswith('_')}
+                      for row in rows[offset:offset+limit]]
+            return dict(status=True, schema_version=1, rows=output, summary=summary, checked_at=now,
+                        coverage=coverage, total=len(rows), p=page, limit=limit,
+                        config_revision=configuration['revision'] if configuration else None)
+        except Exception:
+            return public.returnMsg(False, '封禁状态读取未完成；请检查筛选参数及配置，未修改任何封禁。')
+
+    def get_ban_history(self, get):
+        try:
+            page = self.__repeat_page(getattr(get, 'p', 1), 1000000)
+            limit = self.__repeat_page(getattr(get, 'limit', 20), 200)
+            days = self.__repeat_page(getattr(get, 'days', 7), 30)
+            view = getattr(get, 'view', 'grouped')
+            if view not in ('grouped', 'raw'):
+                raise ValueError('invalid history view')
+            ip, site = self.__ban_filters(get, history=True)
+            reason = getattr(get, 'reason', None)
+            if reason is not None and (type(reason) is not str or len(reason) > 128
+                                       or any(ord(c) < 32 for c in reason)):
+                raise ValueError('invalid reason filter')
+            now, groups, raw_rows = int(time.time()), {}, []
+            budget = self.__legacy_log_budget()
+            budget.update(invalid_lines=0, outside_window=0, requested_days=days,
+                          scope='bounded_drop_ip_log', range_entries=0)
+            path = self.__path + 'drop_ip.log'
+            try:
+                self.__no_link_path(self.__path)
+                os.lstat(path)
+                exists = True
+            except FileNotFoundError:
+                exists = False
+            if exists:
+                for offset, line in self.__bounded_log_rows(path, budget, opener=self.__open_regular_file):
+                    try:
+                        event = json.loads(line)
+                        if type(event) is not list or len(event) not in (5, 6):
+                            raise ValueError('invalid event')
+                        stamp, duration = event[0], event[4]
+                        if (type(stamp) is not int or type(duration) is not int
+                                or not 0 <= stamp <= 253402300799 or not 0 <= duration <= 315360000):
+                            raise ValueError('invalid timestamp or duration')
+                        address = self.__ban_ip(event[1])
+                        event_site = event[2]
+                        event_reason = event[5] if len(event) == 6 else 'legacy'
+                        if (type(event_site) is not str or len(event_site) > 253
+                                or type(event_reason) is not str or len(event_reason) > 128
+                                or any(ord(c) < 32 for c in event_site + event_reason)):
+                            raise ValueError('invalid event identity')
+                        if not now-days*86400 <= stamp <= now:
+                            budget['outside_window'] += 1
+                            continue
+                        if ((ip is not None and ip != address) or (site is not None and site != event_site)
+                                or (reason is not None and reason != event_reason)):
+                            continue
+                        identity = (address, event_site, event_reason)
+                        group_id = self.__ban_digest(identity)
+                        if view == 'raw':
+                            raw_rows.append(dict(ip=address, site=event_site, reason=event_reason,
+                                reason_text=self.__ban_reason(event_reason), count=1, first_time=stamp,
+                                last_time=stamp, started_at=stamp, duration=duration, durations=[duration],
+                                group_id=group_id, event_id=self.__ban_digest([offset, event])))
+                        else:
+                            row = groups.setdefault(identity, dict(ip=address, site=event_site,
+                                reason=event_reason, reason_text=self.__ban_reason(event_reason), count=0,
+                                first_time=stamp, last_time=stamp, duration=duration, durations=set(), group_id=group_id))
+                            row['count'] += 1
+                            row['first_time'] = min(row['first_time'], stamp)
+                            row['last_time'] = max(row['last_time'], stamp)
+                            row['duration'] = max(row['duration'], duration)
+                            row['durations'].add(duration)
+                    except (ValueError, TypeError, RecursionError, OverflowError):
+                        budget['invalid_lines'] += 1
+            rows = raw_rows if view == 'raw' else list(groups.values())
+            for row in rows:
+                row['durations'] = sorted(row['durations'])
+            rows.sort(key=lambda row: (-row['last_time'], row['group_id'], row.get('event_id', '')))
+            coverage = self.__legacy_log_coverage(budget)
+            coverage['partial'] = coverage['partial'] or bool(budget['invalid_lines'])
+            start = (page-1)*limit
+            return dict(status=True, schema_version=1, rows=rows[start:start+limit], coverage=coverage,
+                        total_exact=not coverage['partial'], total=len(rows), p=page, limit=limit,
+                        days=days, view=view, checked_at=now)
+        except Exception:
+            return public.returnMsg(False, '封禁历史读取未完成；请检查参数和日志，未修改原始记录。')
+
+    def __ban_write_failure(self, attempted=False):
+        return dict(status=False, saved=None if attempted else False, runtime_verified=False,
+                    save_uncertain=attempted, verification_scope='unverified',
+                    msg=('保存结果待核验，可能已部分处理；请刷新后检查，勿直接重复提交。' if attempted else
+                         '未执行：参数、快照版本或防护配置已变化，或存在白名单与安全冲突；请刷新后确认。'))
+
+    def __ban_wait_verification(self, check):
+        # A successful reload can return before new workers own the next connection.
+        deadline = time.monotonic() + 2.0
+        for attempt in range(24):
+            try:
+                if check():
+                    return True
+            except Exception:
+                pass
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.08, remaining))
+        return False
+
+    def add_quick_ban(self, get):
+        if not self.__update_request_is_post():
+            return self.__ban_write_failure()
+        attempted = False
+        try:
+            import types
+            import uuid
+            ip, scope = self.__ban_ip(getattr(get, 'ip', None)), getattr(get, 'scope', None)
+            duration = getattr(get, 'duration_seconds', None)
+            if scope not in ('site', 'global') or type(duration) is not str or not re.fullmatch(r'[1-9][0-9]{1,8}', duration):
+                raise ValueError('explicit scope and finite duration required')
+            seconds = int(duration)
+            if not 60 <= seconds <= 315360000 or (seconds == 315360000 and getattr(get, 'confirm_long', None) != '1'):
+                raise ValueError('invalid duration or missing long confirmation')
+            requested = getattr(get, 'config_revision', None)
+            if type(requested) is not str or not re.fullmatch(r'[0-9a-f]{64}', requested):
+                raise ValueError('preflight configuration revision required')
+            with self.__endpoint_transaction():
+                if os.path.lexists(self.__path + '.policy-recovery/pending.json'):
+                    raise ValueError('policy recovery pending')
+                configuration = self.__ban_configuration()
+                if requested != configuration['revision']:
+                    raise ValueError('stale configuration')
+                site = self.__endpoint_site_name(getattr(get, 'siteName', None)) if scope == 'site' else None
+                selected = [site] if site else list(configuration['sites'])
+                if not selected or (scope == 'global' and ':' in ip):
+                    raise ValueError('global exact blacklist supports IPv4 only')
+                for name in selected:
+                    context = self.__risk_context(types.SimpleNamespace(siteName=name))
+                    if self.__risk_holds(context, ip):
+                        raise ValueError('whitelist or disabled/ambiguous protection')
+                if self.__ban_configuration()['revision'] != configuration['revision']:
+                    raise ValueError('configuration conflict')
+                if scope == 'site':
+                    # Audit nonce identifies an explicit manual decision, not risk evidence.
+                    audit = self.__ban_digest(['manual', site, ip, seconds, uuid.uuid4().hex])
+                    attempted = True
+                    snapshot = self.__risk_store().add(site, ip, seconds, audit)
+                    result = self.__risk_publish_result(snapshot, context)
+                    self.__write_drop_ip_entry(ip, site=site, drop_time=seconds, reason='manual')
+                    return result
+                attempted = True
+                result = self.add_ip_black(types.SimpleNamespace(start_ip=ip, end_ip=ip, duration_seconds=duration))
+                rows, coverage, current, now = self.__ban_collect()
+                match = next((row for row in rows if row['source'] == 'ip_black' and row['ip'] == ip), None)
+                saved = bool(match and match['expires_at'] is not None and match['expires_at'] > now)
+                verified = bool(saved and result.get('status') is True and match['enforcement'] == 'active')
+                if saved and not verified and result.get('status') is True:
+                    def active_after_reload():
+                        current_rows, _, _, checked = self.__ban_collect()
+                        return any(row['source'] == 'ip_black' and row['ip'] == ip
+                                   and row['expires_at'] == match['expires_at']
+                                   and row['expires_at'] > checked and row['enforcement'] == 'active'
+                                   for row in current_rows)
+                    verified = self.__ban_wait_verification(active_after_reload)
+                return dict(status=verified, saved=saved, runtime_verified=verified,
+                    verification_scope='one_local_worker_snapshot' if verified else 'unverified',
+                    msg='全局封禁已保存并核验本机执行端。' if verified else '全局封禁结果待执行端核验，请刷新检查。')
+        except Exception:
+            return self.__ban_write_failure(attempted)
+
+    def remove_active_ban(self, get):
+        if not self.__update_request_is_post():
+            return self.__ban_write_failure()
+        attempted = False
+        try:
+            import types
+            identity, revision = getattr(get, 'id', None), getattr(get, 'revision', None)
+            if any(type(value) is not str or not re.fullmatch(r'[0-9a-f]{64}', value) for value in (identity, revision)):
+                raise ValueError('invalid row identity')
+            with self.__endpoint_transaction():
+                if os.path.lexists(self.__path + '.policy-recovery/pending.json'):
+                    raise ValueError('policy recovery pending')
+                rows, coverage, configuration, now = self.__ban_collect()
+                row = next((row for row in rows if row['id'] == identity and row['revision'] == revision), None)
+                if row is None or not row['removable']:
+                    raise ValueError('stale or unsupported row')
+                source = row['source']
+                if source == 'manual_site_bans':
+                    context = self.__risk_context(types.SimpleNamespace(siteName=row['site']))
+                    attempted = True
+                    snapshot = self.__risk_store().remove(row['site'], row['ip'], expected_revision=row['_store_revision'])
+                    return self.__risk_publish_result(snapshot, context)
+                if source == 'ip_black':
+                    store = self.__ban_store()
+                    with store._transaction():
+                        if self.__ban_digest(store.load_rules()) != row['_store_revision']:
+                            raise ValueError('blacklist changed')
+                        attempted = True
+                        if not store.remove_exact_ip(row['ip']):
+                            raise ValueError('blacklist record vanished')
+                    try:
+                        self.__checked_nginx_reload()
+                        def removed_after_reload():
+                            check, coverage, current, now = self.__ban_collect()
+                            proof = self.__ban_runtime_snapshot()
+                            return bool(current and proof.get('policy_signature') == current['signature']
+                                and proof.get('coverage', {}).get('sources', {}).get('ip_black') is True
+                                and not any(item.get('source') == source and self.__ban_ip(item.get('ip')) == row['ip']
+                                            for item in proof['rows'])
+                                and not any(item['source'] == source and item['ip'] == row['ip'] for item in check))
+                        verified = self.__ban_wait_verification(removed_after_reload)
+                    except Exception:
+                        verified = False
+                    return dict(status=verified, saved=True, runtime_verified=verified,
+                        verification_scope='one_local_worker_snapshot' if verified else 'unverified',
+                        msg='仅移除所选全局黑名单记录，其他来源未改变；执行端已核验。' if verified else '已保存移除，执行端未确认。')
+                runtime = row['_runtime']
+                attempted = True
+                result = self.__ban_runtime_request('/remove_active_ban_runtime',
+                    dict(id=runtime['runtime_id'], revision=runtime['runtime_revision']))
+                check, coverage, current, now = self.__ban_collect()
+                verified = result.get('status') is True and not any(item['id'] == identity for item in check) and 'runtime' not in coverage['unavailable_sources']
+                return dict(status=verified, saved=verified, runtime_verified=verified,
+                    verification_scope='one_local_worker_snapshot' if verified else 'unverified',
+                    msg='仅解除所选来源与作用域，其他封禁及累计事件保留。' if verified else '执行端解除未确认，请刷新检查。')
+        except Exception:
+            return self.__ban_write_failure(attempted)
 
     def __repeat_page(self, value, maximum):
         if type(value) is str and re.fullmatch(r'[1-9][0-9]{0,8}', value):

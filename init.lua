@@ -652,7 +652,7 @@ function repeat_ban_guard(check_only)
 	return false
 end
 
-function repeat_ban_clear(target_ips, site, reset_counts)
+function repeat_ban_clear(target_ips, site, reset_counts, expected_revision)
 	local normalized = {}
 	for value in pairs(target_ips) do local address=endpoint_normalize_ip(value); if address then normalized[address]=true end end
 	local enabled = false
@@ -674,6 +674,7 @@ function repeat_ban_clear(target_ips, site, reset_counts)
 	local ok,result = pcall(function()
 		local snapshot = repeat_ban_snapshot(true)
 		if not snapshot then return false end
+		if expected_revision and snapshot.revision ~= expected_revision then return false end
 		local bans,changed,now = {},false,ngx.time()
 		for _,row in ipairs(snapshot.bans) do
 			if normalized[row.ip] and (not site or row.site==site) then changed=true
@@ -2263,13 +2264,229 @@ function remove_permanent_ban_ip()
 	return result
 end
 
+function ban_management_registration_identity(key)
+	if type(key) ~= 'string' then return nil end
+	local length,rest=string.match(key,'^registration_guard:v2:ban:(%d+):(.*)$')
+	if length then
+		local size=tonumber(length)
+		if size < 1 or size > 253 or tostring(size) ~= length or string.sub(rest,size+1,size+1) ~= ':' then return nil end
+		local scope,address=string.sub(rest,1,size),string.sub(rest,size+2)
+		if not is_runtime_ban_ip(address) then return nil end
+		return scope,address
+	end
+	rest=string.match(key,'^registration_guard:ban:(.*)$')
+	if not rest then return nil end
+	local found_scope,found_ip,count=nil,nil,0
+	for scope in pairs(registration_guard_scopes()) do
+		local prefix=scope .. ':'
+		local address=string.sub(rest,#prefix+1)
+		if string.sub(rest,1,#prefix)==prefix and is_runtime_ban_ip(address) then
+			found_scope,found_ip,count=scope,address,count+1
+		end
+	end
+	if count==1 then return found_scope,found_ip end
+	return nil
+end
+
+function ban_management_enforcement(site, source, address, global_enabled)
+	if config.open ~= true then return config.open == false and 'disabled' or 'unknown' end
+	local current=site and site_config[site]
+	if site and (type(current) ~= 'table' or current.open ~= true) then
+		return type(current)=='table' and current.open==false and 'disabled' or 'unknown'
+	end
+	if not site then
+		if global_enabled==nil then
+			global_enabled=false
+			for _,value in pairs(site_config) do if type(value)=='table' and value.open==true then global_enabled=true; break end end
+		end
+		-- Unlisted vhosts use the global protection defaults in is_site_config().
+		if not global_enabled then return 'unknown' end
+	end
+	if source=='repeat_bans' and not repeat_ban_policy(site) then return 'disabled' end
+	if source=='registration_abuse' then
+		if type(current)~='table' then return 'unknown' end
+		if type(current.registration_guard)~='table' or current.registration_guard.open~=true then return 'disabled' end
+	end
+	-- Whitelists execute before every listed ban source.
+	if is_runtime_ban_ipv4(address) then
+		local numeric=0
+		for part in string.gmatch(address,'%d+') do numeric=numeric*256+tonumber(part) end
+		for _,rule in ipairs(ip_white_rules or {}) do
+			local first,last=0,0
+			if type(rule[1])~='table' or type(rule[2])~='table' or #rule[1]~=4 or #rule[2]~=4 then return 'unknown' end
+			for i=1,4 do first=first*256+rule[1][i]; last=last*256+rule[2][i] end
+			if first<=numeric and numeric<=last then return 'disabled' end
+		end
+	end
+	return 'active'
+end
+
+function get_active_bans_runtime()
+	local rows,now={},ngx.time()
+	local coverage={partial=false,range_entries=0,sources={cc=true,legacy=true,registration_abuse=true,ip_black=true,
+		manual_site_bans=manual_site_ban_state.valid==true,repeat_bans=repeat_ban_cache.snapshot~=nil}}
+	local global_enabled,registration_owners,retry_thresholds=false,{},{config.retry}
+	local site_count=0
+	for name,current in pairs(site_config) do
+		site_count=site_count+1
+		if site_count>5000 then coverage.partial=true; break end
+		if type(current)=='table' then
+			if current.open==true then
+				global_enabled=true
+				retry_thresholds[#retry_thresholds+1]=type(current.retry)=='number' and current.retry or config.retry
+			end
+			local guard=current.registration_guard
+			if type(guard)=='table' and trim_string(guard.scope)~='' then
+				local scope=trim_string(guard.scope)
+				local owner=registration_owners[scope] or {count=0}
+				owner.site,owner.count=name,owner.count+1
+				if type(guard.aliases)=='table' and next(guard.aliases) then owner.aliased=true end
+				registration_owners[scope]=owner
+			end
+		end
+	end
+	local function add(source,site,address,expires,started,record,key,value,shared,store_revision)
+		if #rows>=12288 then coverage.partial=true; return end
+		if expires and (expires<now or (source~='ip_black' and expires==now)) then return end
+		local state=ban_management_enforcement(site,source,address,global_enabled)
+		if started and started>now then state='disabled' end
+		if source=='legacy' then
+			local blocked,clear,invalid=0,0,false
+			for _,threshold in ipairs(retry_thresholds) do
+				if type(value)~='number' or type(threshold)~='number' then invalid=true
+				elseif value>threshold then blocked=blocked+1 else clear=clear+1 end
+			end
+			if state~='disabled' then
+				if invalid or (blocked>0 and clear>0) then state='unknown'
+				elseif blocked==0 then state='disabled' end
+			end
+		end
+		local identity=source .. '\0' .. (site or '') .. '\0' .. address .. '\0' .. (key or '')
+		local row={source=source,site=site or '',ip=address,scope=site and 'site' or 'global',
+			started_at=started,expires_at=expires,enforcement=state,reason=record and record.reason or source,
+			store_revision=store_revision,removable=shared~=nil or source=='repeat_bans'}
+		if source=='ip_black' and expires==nil then row.enforcement='disabled' end
+		row.runtime_id=ngx.md5(identity)
+		row.runtime_revision=ngx.md5(identity .. '\0' .. tostring(expires) .. '\0' .. tostring(value)
+			.. '\0' .. tostring(store_revision) .. '\0' .. tostring(manual_site_ban_state.policy_signature))
+		rows[#rows+1]=row
+		return row
+	end
+	local function shared_rows(shared,source)
+		-- get_keys(n) itself is bounded; a full result is conservatively partial.
+		local keys=shared:get_keys(4096)
+		if #keys>=4096 then coverage.partial=true end
+		for _,key in ipairs(keys) do
+			local value=shared:get(key)
+			if value then
+				local site,address,actual= nil,nil,source
+				local registration_scope
+				if source=='cc' then
+					site,address=cc_state_identity(key,'ban')
+					if not address and is_runtime_ban_ip(key) then address,actual=key,'legacy' end
+				else
+					registration_scope,address=ban_management_registration_identity(key)
+					if address then
+						local owner=registration_owners[registration_scope]
+						if owner and owner.count==1 and not owner.aliased then site=owner.site end
+					elseif string.match(key,'^registration_guard:.*ban:') or string.match(key,'^registration_guard:ban:') then coverage.partial=true end
+				end
+				if address then
+					local ok,ttl=pcall(function() return shared:ttl(key) end)
+					local expires=ok and type(ttl)=='number' and ttl>0 and math.floor((ngx.now and ngx.now() or now)+ttl+0.5) or nil
+					local row=add(actual,site,address,expires,nil,nil,key,value,shared)
+					if row and not expires then row.removable=false end
+					if row and actual=='registration_abuse' and not site then
+						row.enforcement='unknown'; row.removable=false; coverage.partial=true
+					end
+				end
+			end
+		end
+	end
+	shared_rows(ngx.shared.free_waf_drop_ip,'cc')
+	shared_rows(ngx.shared.free_waf,'registration_abuse')
+	for index,rule in ipairs(ip_black_rules) do
+		if index>4096 then coverage.partial=true; break end
+		if type(rule[1])=='table' and type(rule[2])=='table' then
+			local first,last=table.concat(rule[1],'.'),table.concat(rule[2],'.')
+			if first==last and is_runtime_ban_ipv4(first) then add('ip_black',nil,first,rule[3],nil)
+			elseif not rule[3] or rule[3]>=now then coverage.range_entries=coverage.range_entries+1 end
+		end
+	end
+	local manual=manual_site_ban_state
+	if manual.valid then
+		for _,record in ipairs(manual.snapshot.entries) do
+			add('manual_site_bans',record.site,record.ip,record.expires_at,record.started_at,record,nil,nil,nil,manual.snapshot.revision)
+		end
+	else coverage.partial=true end
+	-- Observe cached enforcement only: repeat_ban_snapshot/rows can initialize shared state.
+	local repeat_snapshot=repeat_ban_cache.snapshot
+	if repeat_snapshot then
+		for _,record in ipairs(repeat_snapshot.bans) do
+			add('repeat_bans',record.site,record.ip,record.expires_at,record.started_at,record,nil,nil,nil,repeat_snapshot.revision)
+		end
+	else coverage.partial=true end
+	return {status=true,schema_version=1,rows=rows,checked_at=now,
+		policy_signature=manual.policy_signature,coverage=coverage}
+end
+
+function remove_active_ban_runtime()
+	if ngx.req.get_method()~='POST' then return get_return_state(false,'POST required') end
+	local selected
+	for _,row in ipairs(get_active_bans_runtime().rows) do
+		if row.runtime_id==uri_request_args.id and row.runtime_revision==uri_request_args.revision then selected=row; break end
+	end
+	if not selected or not selected.removable then return get_return_state(false,'stale or unsupported record') end
+	if selected.source=='repeat_bans' then
+		local ok=repeat_ban_clear({[selected.ip]=true},selected.site,false,selected.store_revision)
+		return get_return_state(ok,'source-specific repeat ban removal; event counts retained')
+	end
+	local shared=selected.source=='registration_abuse' and ngx.shared.free_waf or ngx.shared.free_waf_drop_ip
+	for _,key in ipairs(shared:get_keys(4096)) do
+		local site,address,source=nil,nil,selected.source
+		if source=='cc' then site,address=cc_state_identity(key,'ban')
+		elseif source=='legacy' and is_runtime_ban_ip(key) then address=key
+		elseif source=='registration_abuse' then
+			local scope
+			scope,address=ban_management_registration_identity(key)
+			if address then
+				for name,current in pairs(site_config) do
+					if type(current.registration_guard)=='table' and trim_string(current.registration_guard.scope)==scope then site=name end
+				end
+			end
+		end
+		if address then
+			local identity=source .. '\0' .. (site or '') .. '\0' .. address .. '\0' .. key
+			if ngx.md5(identity)==selected.runtime_id then shared:delete(key); return get_return_state(true,'selected ban removed; counters unchanged') end
+		end
+	end
+	return get_return_state(false,'record expired or changed')
+end
+
+function ban_management_response()
+	local view=get_active_bans_runtime()
+	local rows=view.rows
+	view.rows=nil
+	local prefix=json.encode(view)
+	ngx.header.content_type='application/json;'
+	ngx.header['Cache-Control']='no-store'
+	ngx.status=200
+	ngx.say(string.sub(prefix,1,-2) .. ',"rows":' .. encode_json_array(rows) .. '}')
+	ngx.exit(200)
+end
+
 function min_route()
 	if ngx.var.remote_addr ~= '127.0.0.1' then return false end
+	if uri == '/get_active_bans_runtime' or uri == '/remove_active_ban_runtime' then
+		if ngx.var.server_name ~= 'gpt-firewall-health.invalid' then return false end
+		if uri == '/get_active_bans_runtime' then return ban_management_response() end
+		return return_message(200,remove_active_ban_runtime())
+	end
 	if uri == '/get_manual_site_bans' then return manual_site_ban_response() end
 	if ngx.var.server_name == 'gpt-firewall-health.invalid' then
 		local nonce = string.match(uri or '', '^/_gpt_firewall_health/([0-9a-f]+)$')
 		if nonce and #nonce == 32 then
-			return_message(200, {product='aapanel GPT Firewall', version='0.1.12',
+			return_message(200, {product='aapanel GPT Firewall', version='0.1.13',
 				nonce=nonce, worker_pid=ngx.worker.pid()})
 		else
 			ngx.exit(404)

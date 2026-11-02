@@ -29,6 +29,10 @@ class IntegrationRepairTest(unittest.TestCase):
         binary = self.server / 'nginx/sbin/nginx'
         binary.parent.mkdir(parents=True)
         binary.write_text('fixture only')
+        library = self.server / 'nginx/lib/lua/resty/core'
+        library.mkdir(parents=True)
+        (library.parent / 'core.lua').write_text('return {}')
+        (library / 'base.lua').write_text('return {}')
         (self.plugin / 'init.lua').write_text('function run_btwaf() end')
         (self.runtime / 'init.lua').write_bytes((self.plugin / 'init.lua').read_bytes())
         (self.runtime / 'waf.lua').write_text('run_btwaf()\n')
@@ -65,6 +69,9 @@ class IntegrationRepairTest(unittest.TestCase):
         self.service._command = lambda args, **kw: self.commands.append(args) or (0, '')
         self.service._probe = Mock(return_value={'execution_verified': True, 'worker_pid': 123})
         self.service._check_probe_port = Mock()
+        self.service._verify_dependencies = Mock(return_value=True)
+        self.service._master_identity = Mock(return_value='10:100')
+        self.service._capture_workers = Mock(return_value=('10:100', (100,)))
 
     def hashes(self):
         return {str(p.relative_to(self.runtime)): hashlib.sha256(p.read_bytes()).hexdigest()
@@ -304,6 +311,213 @@ class IntegrationRepairTest(unittest.TestCase):
     def test_health_listener_overrides_inherited_connection_closing_defaults(self):
         self.assertIn(b'keepalive_timeout 5s;', self.service.INCLUDE)
         self.assertIn(b'keepalive_requests 100;', self.service.INCLUDE)
+
+    def legacy_include(self):
+        original = self.service.LEGACY_INCLUDE
+        self.target.write_bytes(original)
+        self.service._configuration = lambda: self.body + '\n# configuration file ' + str(self.target) + ':\n' + self.target.read_text()
+        return original
+
+    def test_generated_include_owns_the_library_path_not_the_main_configuration(self):
+        self.assertIn(b'lua_package_path ', self.service.INCLUDE)
+        self.assertIn(b'/www/server/nginx/lib/lua/?.lua;', self.service.INCLUDE)
+        self.assertIn(b'/www/server/free_waf/?.lua;', self.service.INCLUDE)
+        self.assertNotIn(b'lua_package_path ', self.service.LEGACY_INCLUDE)
+
+    def test_legacy_dependency_preview_is_read_only_and_identifies_the_action(self):
+        original = self.legacy_include()
+        before = self.hashes()
+        plan = self.plan()
+        self.assertEqual(plan['repair_kind'], 'lua_path_missing')
+        self.assertEqual(plan['integration'], 'lua_path_missing')
+        self.assertEqual(self.target.read_bytes(), original)
+        self.assertEqual(self.hashes(), before)
+        self.assertFalse(self.service.store.exists())
+        self.service._verify_dependencies.assert_not_called()
+        self.service._capture_workers.assert_not_called()
+        self.assertEqual(self.commands, [])
+
+    def test_legacy_repair_backs_up_original_and_preserves_all_rules(self):
+        original = self.legacy_include()
+        before = self.hashes()
+        result = self.apply()
+        self.assertTrue(result['status'], result)
+        self.assertTrue(result['dependency_verified'])
+        self.assertEqual(self.target.read_bytes(), self.service.INCLUDE)
+        self.assertEqual(self.hashes(), before)
+        self.assertEqual(self.main.read_text(), self.body)
+        manifest = json.loads((Path(result['backup']) / 'manifest.json').read_text())
+        self.assertTrue(manifest['include_existed'])
+        entry = next(row for row in manifest['files'] if row['path'] == str(self.target))
+        self.assertEqual((Path(result['backup']) / entry['backup']).read_bytes(), original)
+        self.service._verify_dependencies.assert_called_once()
+        self.service._check_probe_port.assert_not_called()
+
+    def test_unknown_or_modified_managed_include_is_not_repaired(self):
+        original = self.legacy_include() + b'\n# administrator modification\n'
+        self.target.write_bytes(original)
+        result = self.service.preview()
+        self.assertFalse(result['status'])
+        self.assertEqual(result['diagnostic_code'], 'integration_exists')
+        self.assertEqual(self.target.read_bytes(), original)
+
+    def test_competing_lua_path_is_not_rewritten_or_duplicated(self):
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                if legacy:
+                    self.legacy_include()
+                self.body = 'http { lua_package_path "/custom/?.lua;;"; include /www/server/panel/vhost/nginx/*.conf; }'
+                self.main.write_text(self.body)
+                result = self.service.preview()
+                self.assertFalse(result['status'])
+                self.assertEqual(result['diagnostic_code'], 'lua_path_conflict')
+                self.assertEqual(self.main.read_text(), self.body)
+        self.assertEqual(self.commands, [])
+
+    def test_missing_dependency_stops_without_writes_or_download(self):
+        (self.server / 'nginx/lib/lua/resty/core.lua').unlink()
+        result = self.service.preview()
+        self.assertFalse(result['status'])
+        self.assertEqual(result['diagnostic_code'], 'lua_dependency_missing')
+        self.assertFalse(self.target.exists())
+        self.assertFalse(self.service.store.exists())
+        self.assertEqual(self.commands, [])
+
+    def test_dependency_changes_invalidate_preview_confirmation(self):
+        revision = self.plan()['revision']
+        (self.server / 'nginx/lib/lua/resty/core/base.lua').write_text('modified dependency')
+        result = self.apply(revision)
+        self.assertFalse(result['status'])
+        self.assertEqual(result['diagnostic_code'], 'revision_changed')
+        self.assertFalse(self.target.exists())
+        self.service._verify_dependencies.assert_not_called()
+
+    def test_failed_isolated_dependency_probe_never_replaces_the_original(self):
+        original = self.legacy_include()
+        self.service._verify_dependencies.side_effect = update_service.UpdateError('lua_dependency_failed', 'dependency unavailable')
+        result = self.apply()
+        self.assertFalse(result['status'])
+        self.assertEqual(result['diagnostic_code'], 'lua_dependency_failed')
+        self.assertEqual(self.target.read_bytes(), original)
+        self.assertEqual(self.commands, [])
+
+    def test_legacy_configuration_test_failure_restores_original_without_reload(self):
+        original = self.legacy_include()
+        self.service._command = lambda args, **kw: self.commands.append(args) or (1, '')
+        result = self.apply()
+        self.assertFalse(result['status'])
+        self.assertEqual(result['rollback'], 'restored')
+        self.assertEqual(self.target.read_bytes(), original)
+        self.assertEqual([cmd[1] for cmd in self.commands], ['-t'])
+
+    def test_legacy_health_failure_never_claims_broken_runtime_was_restored(self):
+        original = self.legacy_include()
+        self.service._probe.side_effect = update_service.UpdateError('health_probe_failed', 'not verified')
+        result = self.apply()
+        self.assertFalse(result['status'])
+        self.assertEqual(result['rollback'], 'recovery_required')
+        self.assertEqual(self.target.read_bytes(), original)
+        self.assertEqual([cmd[1] for cmd in self.commands], ['-t', '-s'])
+        self.assertFalse(self.service.preview()['status'])
+
+    def test_identical_legacy_replacement_invalidates_the_preview(self):
+        original = self.legacy_include()
+        revision = self.plan()['revision']
+        replacement = self.target.with_suffix('.replacement')
+        replacement.write_bytes(original)
+        os.replace(replacement, self.target)
+        result = self.apply(revision)
+        self.assertFalse(result['status'])
+        self.assertEqual(self.target.read_bytes(), original)
+        self.assertEqual(self.commands, [])
+
+    def test_edit_during_dependency_probe_is_preserved_without_reload(self):
+        self.legacy_include()
+        def dependency_probe(_backup):
+            self.target.write_bytes(b'concurrent administrator change')
+            return True
+        self.service._verify_dependencies.side_effect = dependency_probe
+        result = self.apply()
+        self.assertFalse(result['status'])
+        self.assertEqual(self.target.read_bytes(), b'concurrent administrator change')
+        self.assertEqual(self.commands, [])
+
+    def test_master_replacement_before_reload_is_rejected_without_a_signal(self):
+        original = self.legacy_include()
+        def workers():
+            self.service._master_identity.return_value = '20:200'
+            return '10:100', (100,)
+        self.service._capture_workers.side_effect = workers
+        result = self.apply()
+        self.assertFalse(result['status'])
+        self.assertEqual(self.target.read_bytes(), original)
+        self.assertEqual([cmd[1] for cmd in self.commands], ['-t'])
+        self.service._probe.assert_not_called()
+
+    def test_master_replacement_after_proof_cannot_be_reported_as_success(self):
+        original = self.legacy_include()
+        def probe():
+            self.service._master_identity.return_value = '20:200'
+            return {'execution_verified': True, 'worker_pid': 200}
+        self.service._probe.side_effect = probe
+        result = self.apply()
+        self.assertFalse(result['status'])
+        self.assertEqual(result['rollback'], 'recovery_required')
+        self.assertEqual(self.target.read_bytes(), original)
+        self.assertEqual([cmd[1] for cmd in self.commands], ['-t', '-s'])
+
+    def test_master_replacement_during_recovery_reload_requires_manual_recovery(self):
+        self.service._probe.side_effect = RuntimeError('not verified')
+        def command(args, **kwargs):
+            self.commands.append(args)
+            if len(self.commands) == 4:
+                self.service._master_identity.return_value = '20:200'
+            return 0, b''
+        self.service._command = command
+        result = self.apply()
+        self.assertFalse(result['status'])
+        self.assertEqual(result['rollback'], 'recovery_required')
+        self.assertEqual(json.loads(self.service.record.read_text())['state'], 'recovery_required')
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX permissions')
+    def test_legacy_permission_change_invalidates_preview(self):
+        original = self.legacy_include()
+        self.target.chmod(0o600)
+        revision = self.plan()['revision']
+        self.target.chmod(0o640)
+        result = self.apply(revision)
+        self.assertFalse(result['status'])
+        self.assertEqual(result['diagnostic_code'], 'revision_changed')
+        self.assertEqual(self.target.stat().st_mode & 0o7777, 0o640)
+        self.assertEqual(self.target.read_bytes(), original)
+        self.assertEqual(self.commands, [])
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX permissions')
+    def test_permission_edit_during_dependency_probe_is_not_overwritten(self):
+        original = self.legacy_include()
+        self.target.chmod(0o600)
+        def probe(_backup):
+            self.target.chmod(0o640)
+            return True
+        self.service._verify_dependencies.side_effect = probe
+        result = self.apply()
+        self.assertFalse(result['status'])
+        self.assertEqual(self.target.stat().st_mode & 0o7777, 0o640)
+        self.assertEqual(self.target.read_bytes(), original)
+        self.assertEqual(self.commands, [])
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX permissions')
+    def test_owned_permission_edit_is_preserved_instead_of_rolled_back(self):
+        self.legacy_include()
+        def probe():
+            self.target.chmod(0o640)
+            raise RuntimeError('not verified')
+        self.service._probe.side_effect = probe
+        result = self.apply()
+        self.assertFalse(result['status'])
+        self.assertEqual(result['rollback'], 'recovery_required')
+        self.assertEqual(self.target.stat().st_mode & 0o7777, 0o640)
+        self.assertEqual(self.target.read_bytes(), self.service.INCLUDE)
 
 
 if __name__ == '__main__':

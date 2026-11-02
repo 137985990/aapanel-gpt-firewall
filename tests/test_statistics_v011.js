@@ -85,11 +85,11 @@ function harness() {
     of(method) { return requests.filter(r => r.method === method); },
     stats() { return this.of('get_website_statistics_summary'); },
     navigate(page) { context.free_waf.refresh_data_total(page); },
-    fire(selector, event = 'click', attrs = {}) {
+    fire(selector, event = 'click', attrs = {}, details = {}) {
       Object.assign(node(selector).values, attrs);
       for (const b of [...bindings]) if (b.event.split('.')[0] === event &&
         (b.key === selector || b.delegated?.split(',').includes(selector))) {
-        b.callback.call(node(selector), { preventDefault() {}, stopPropagation() {} });
+        b.callback.call(node(selector), { preventDefault() {}, stopPropagation() {}, ...details });
       }
     },
     tick(ms) {

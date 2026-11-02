@@ -75,6 +75,132 @@ test('analysis displays actual partial coverage, evidence and local geography wi
   assert.equal(h.of('apply_risk_advice').length, 0);
 });
 
+for (const [kind, panelId, focusId] of [
+  ['evidence', '#risk-advice-evidence', '#risk-advice-evidence'],
+  ['custom', '#risk-advice-custom', '#risk-advice-custom-value'],
+]) test('opening ' + kind + ' shows a modal without scrolling the list', () => {
+  const h = loaded(report({items: Array.from({length: 10}, (_, i) => item({ip: '203.0.113.' + (i + 1)}))}));
+  const events = [], panel = h.$(panelId)[0];
+  h.$(focusId)[0].focus = options => {
+    assert.equal(panel.values.hidden, false, 'focus follows showing the panel');
+    assert.equal(options.preventScroll, true, 'opening must preserve list position');
+    events.push('focus');
+  };
+  panel.scrollIntoView = () => events.push('unexpected scroll');
+  action(h, kind);
+  assert.deepEqual(events, ['focus']);
+  assert.equal(h.$('#risk-advice-dialog').prop('hidden'), false);
+  assert.equal(h.$('#risk-advice-dialog').attr('aria-hidden'), 'false');
+  assert.equal(h.waf._risk_dialog.kind, kind);
+  assert.equal(h.confirms.length, 0, 'opening details is not a ban confirmation');
+  assert.equal(h.of('apply_risk_advice').length, 0);
+  if (kind === 'custom') {
+    h.fire('#risk-advice-custom-cancel');
+    assert.equal(panel.values.hidden, true);
+    assert.equal(h.waf._risk_custom_index, null);
+    assert.equal(h.waf._risk_dialog, null);
+  }
+});
+
+test('evidence detail is programmatically focusable and labelled', () => {
+  const tag = html.match(/<div\b[^>]*id="risk-advice-evidence"[^>]*>/)[0];
+  assert.match(tag, /tabindex="-1"/);
+  assert.match(tag, /role="region"/);
+  assert.match(tag, /aria-label="证据详情"/);
+  assert.ok(html.includes('role="dialog" aria-modal="true" aria-labelledby="risk-advice-dialog-title"'));
+});
+
+for (const kind of ['evidence', 'custom']) test('closing ' + kind + ' restores focus without scrolling or writing', () => {
+  const h = loaded(), origin = '.risk-advice-' + kind + '[data-index="0"]';
+  let focused = 0;
+  h.$(origin)[0].focus = options => { assert.equal(options.preventScroll, true); focused++; };
+  action(h, kind); h.fire('#risk-advice-dialog-close');
+  assert.equal(h.waf._risk_dialog, null);
+  assert.equal(h.$('#risk-advice-dialog').prop('hidden'), true);
+  assert.equal(h.$('#risk-advice-evidence').prop('hidden'), true);
+  assert.equal(h.$('#risk-advice-custom').prop('hidden'), true);
+  assert.equal(focused, 1);
+  assert.equal(h.of('apply_risk_advice').length, 0);
+});
+
+test('Escape closes the editor, clears its index and cannot submit an old custom action', () => {
+  const h = loaded(); action(h, 'custom');
+  h.fire('#risk-advice-dialog', 'keydown', {}, {key: 'Escape'});
+  assert.equal(h.waf._risk_dialog, null);
+  assert.equal(h.waf._risk_custom_index, null);
+  h.fire('#risk-advice-custom-confirm');
+  assert.equal(h.confirms.length, 0); assert.equal(h.of('apply_risk_advice').length, 0);
+});
+
+test('reopening a dialog resets only its inner scroll, not the underlying list', () => {
+  const h = loaded(), body = h.$('#risk-advice-dialog-body')[0];
+  body.scrollTop = 120; action(h, 'evidence');
+  assert.equal(body.scrollTop, 0);
+});
+
+test('the custom editor closes before confirmation while retaining the selected duration', () => {
+  const h = loaded(); action(h, 'custom'); h.$('#risk-advice-custom-value').val('2');
+  h.$('#risk-advice-custom-unit').val('3600'); h.fire('#risk-advice-custom-confirm');
+  assert.equal(h.waf._risk_dialog, null);
+  assert.equal(h.$('#risk-advice-dialog').prop('hidden'), true);
+  assert.match(h.confirms.at(-1).message, /2 小时/);
+  assert.equal(h.of('apply_risk_advice').length, 0);
+  confirm(h); assert.equal(h.of('apply_risk_advice')[0].options.data.duration, '7200');
+});
+
+test('invalid duration stays in the editor with an inline error', () => {
+  const h = loaded(); action(h, 'custom'); h.$('#risk-advice-custom-value').val('0');
+  h.fire('#risk-advice-custom-confirm');
+  assert.equal(h.waf._risk_dialog.kind, 'custom');
+  assert.match(h.$('#risk-advice-custom-error').text(), /有效整数/);
+  assert.equal(h.confirms.length, 0); assert.equal(h.of('apply_risk_advice').length, 0);
+});
+
+test('dialog height respects the visible parent when the panel iframe has a minimum height', () => {
+  const h = loaded(), w = h.context.window;
+  w.innerHeight = 450; w.parent = {innerHeight: 420};
+  w.frameElement = {getBoundingClientRect: () => ({top: 0})};
+  assert.equal(h.waf.risk_advice_dialog_height(), 420);
+  w.frameElement.getBoundingClientRect = () => ({top: 40});
+  assert.equal(h.waf.risk_advice_dialog_height(), 380);
+  w.frameElement.getBoundingClientRect = () => { throw new Error('unavailable parent'); };
+  assert.equal(h.waf.risk_advice_dialog_height(), 450);
+});
+
+test('parent-only resize updates an open dialog and its listener is cleaned up', () => {
+  const h = loaded(), listeners = new Set(), w = h.context.window;
+  w.parent = {
+    addEventListener(name, callback) { assert.equal(name, 'resize'); listeners.add(callback); },
+    removeEventListener(name, callback) { assert.equal(name, 'resize'); listeners.delete(callback); },
+  };
+  let measured = 0;
+  h.waf.risk_advice_dialog_height = () => { measured++; return 380; };
+  action(h, 'evidence'); assert.equal(listeners.size, 1);
+  const resize = [...listeners][0], before = measured;
+  resize(); assert.equal(measured, before + 1);
+  h.fire('#risk-advice-dialog-close'); assert.equal(listeners.size, 0);
+  resize(); assert.equal(measured, before + 1, 'a stale callback cannot affect a closed dialog');
+  action(h, 'custom'); assert.equal(listeners.size, 1);
+  select(h, other); assert.equal(listeners.size, 0);
+  action(h, 'evidence'); assert.equal(listeners.size, 0, 'missing current evidence cannot reopen');
+});
+
+for (const context of ['site', 'analyze', 'leave', 'close', 'reinit', 'reload']) {
+  test('an open dialog is discarded on ' + context + ' without allowing a stale submit', () => {
+    const h = loaded(); action(h, 'custom'); assert.ok(h.waf._risk_dialog);
+    if (context === 'site') select(h, other);
+    if (context === 'analyze') h.fire('#risk-advice-analyze');
+    if (context === 'leave') h.navigate('home');
+    if (context === 'close') h.close();
+    if (context === 'reinit') h.waf.init_risk_advice();
+    if (context === 'reload') h.reload();
+    assert.equal(h.waf._risk_dialog, null);
+    assert.equal(h.$('#risk-advice-dialog').prop('hidden'), true);
+    h.fire('#risk-advice-custom-confirm');
+    assert.equal(h.confirms.length, 0); assert.equal(h.of('apply_risk_advice').length, 0);
+  });
+}
+
 for (const extra of [{recommended_seconds: 0}, {actionable: false, hold_reasons: ['IP 白名单冲突']}]) {
   test('observe or held evidence never enables any ban shortcut: ' + JSON.stringify(extra), () => {
     const h = loaded(report({items: [item(extra)]}));

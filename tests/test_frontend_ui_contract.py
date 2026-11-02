@@ -929,7 +929,14 @@ class FrontendUiContractTest(unittest.TestCase):
         self.assertIn("escapeHTML", body)
         for selector in required_ids:
             with self.subTest(selector=selector):
-                self.assertIn("#" + selector, body)
+                if selector == "report_summary_bans":
+                    self.assertIn("render_current_ban_badge('report')", body)
+                    badge = self._object_function_body("render_current_ban_badge")
+                    self.assertIn("#" + selector, badge)
+                    self.assertIn("get_active_bans", badge)
+                    self.assertIn("summary.active_ips", badge)
+                else:
+                    self.assertIn("#" + selector, body)
         for field in [
             "item.rule_type",
             "item.site",
@@ -1072,6 +1079,11 @@ class FrontendUiContractTest(unittest.TestCase):
                 if selector == "overview_attack_map":
                     self.assertIn("render_dashboard_charts", body)
                     self.assertIn("#" + selector, self._object_function_body("render_dashboard_charts"))
+                elif selector == "overview_active_bans":
+                    self.assertIn("render_current_ban_badge('overview')", body)
+                    self.assertIn("#" + selector, self._object_function_body("render_current_ban_badge"))
+                elif selector == "overview_dashboard_shield":
+                    self.assertIn("#" + selector, self._object_function_body("render_runtime_status"))
                 else:
                     self.assertIn("#" + selector, body)
         for field in [
@@ -1079,10 +1091,13 @@ class FrontendUiContractTest(unittest.TestCase):
             "res.summary.protection_24h",
             "res.summary.cc_protection",
             "res.summary.protection_days",
-            "res.summary.active_bans",
         ]:
             with self.subTest(field=field):
                 self.assertIn(field, body)
+        self.assertNotIn("res.summary.active_bans", body)
+        badge = self._object_function_body("render_current_ban_badge")
+        self.assertIn("get_active_bans", badge)
+        self.assertIn("summary.active_ips", badge)
         for unsafe in ["add_ip_black", "add_permanent_ban", "clean_waf_drop_ip", "add_url_white"]:
             with self.subTest(unsafe=unsafe):
                 self.assertNotIn(unsafe, body)
