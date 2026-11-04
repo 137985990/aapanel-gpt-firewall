@@ -55,12 +55,83 @@ test('dashboard count uses unified current state and legacy responses cannot ove
   const h = harness();
   h.of('get_overview_report').at(-1).resolve({summary:{active_bans:99}});
   const req = h.of('get_active_bans').at(-1); assert.ok(req);
-  assert.equal(req.options.data.limit,1); req.resolve(current());
+  assert.equal(req.options.data.limit,10); req.resolve(current());
   assert.equal(h.$('#overview_active_bans').text(),'1');
   h.waf.render_overview_report(); h.of('get_overview_report').at(-1).resolve({summary:{active_bans:99}});
   h.of('get_active_bans').at(-1).reject();
   assert.equal(h.$('#overview_active_bans').text(),'--');
   assert.match(h.$('#overview_bans_status').text(),/未知/);
+});
+test('overview never treats legacy runtime-only flags as confirmed bans', () => {
+  const h = harness();
+  h.of('get_overview_report').at(-1).resolve({summary:{}, blocked_ips:[
+    {ip, active:true, count_24h:0, total_count:0, last_time:'', reason:'运行中'},
+  ]});
+  h.of('get_active_bans').at(-1).resolve(current({rows:[],total:0,
+    summary:{active_ips:0,active_entries:0,inactive_entries:0,unknown_entries:3},coverage:{partial:true}}));
+  assert.equal(h.$('#overview_active_bans').text(),'0');
+  assert.doesNotMatch(h.$('#overview_blocked_ip_table').html(), /封禁中|运行中/);
+  assert.match(h.$('#overview_bans_status').text(), /3.*未核验/);
+});
+test('overview rows and count share the verified response, keeping history explicitly historical', () => {
+  const h = harness();
+  h.of('get_overview_report').at(-1).resolve({summary:{},blocked_ips:[
+    {ip,active:true,total_count:3,count_24h:3,location:'示例地区',reason:'cc'},
+  ]});
+  h.of('get_active_bans').at(-1).resolve(current({rows:[],total:0,
+    summary:{active_ips:0,active_entries:0,inactive_entries:0,unknown_entries:0}}));
+  assert.match(h.$('#overview_blocked_ip_table').html(),/历史记录/);
+  assert.doesNotMatch(h.$('#overview_blocked_ip_table').html(),/封禁中|已过期/);
+  h.waf.render_overview_report();
+  h.of('get_overview_report').at(-1).resolve({summary:{},blocked_ips:[]});
+  h.of('get_active_bans').at(-1).resolve(current());
+  assert.match(h.$('#overview_blocked_ip_table').html(),/203\.0\.113\.40/);
+  assert.match(h.$('#overview_blocked_ip_table').html(),/封禁中/);
+  assert.equal(h.$('#overview_active_bans').text(),'1');
+});
+test('a failed or pending overview recheck clears old confirmed-state labels', () => {
+  const h = harness(); h.of('get_overview_report').at(-1).resolve({summary:{}});
+  h.of('get_active_bans').at(-1).resolve(current());
+  h.waf.render_current_ban_badge('overview');
+  assert.doesNotMatch(h.$('#overview_blocked_ip_table').html(),/封禁中/);
+  h.of('get_active_bans').at(-1).reject();
+  assert.doesNotMatch(h.$('#overview_blocked_ip_table').html(),/封禁中/);
+  assert.match(h.$('#overview_blocked_ip_table').html(),/未知/);
+});
+test('overview refresh invalidates the preceding pending enforcement snapshot immediately', () => {
+  const h = harness(); h.of('get_overview_report').at(-1).resolve({summary:{}});
+  const old = h.of('get_active_bans').at(-1);
+  h.waf.render_overview_report();
+  old.options.success(current());
+  assert.equal(h.$('#overview_active_bans').text(),'--');
+  assert.doesNotMatch(h.$('#overview_blocked_ip_table').html(),/封禁中/);
+});
+test('overview history stays explicitly historical during recheck and failure', () => {
+  const h = harness(); h.of('get_overview_report').at(-1).resolve({summary:{},blocked_ips:[{ip,total_count:3,reason:'cc'}]});
+  h.of('get_active_bans').at(-1).resolve(current({rows:[],summary:{active_ips:0,unknown_entries:0}}));
+  h.waf.render_current_ban_badge('overview');
+  assert.match(h.$('#overview_blocked_ip_table').html(),/历史记录/);
+  h.of('get_active_bans').at(-1).reject();
+  assert.match(h.$('#overview_blocked_ip_table').html(),/历史记录/);
+  assert.match(h.$('#overview_bans_status').text(),/未知/);
+});
+test('unverified count is an explicit filter shortcut and empty active view explains it', () => {
+  const h = open();
+  h.of('get_active_bans').at(-1).resolve(current({rows:[],total:0,
+    summary:{active_ips:0,active_entries:0,inactive_entries:0,unknown_entries:3},coverage:{partial:true}}));
+  assert.match(h.$('#ban-current-rows').html(),/3.*未核验/);
+  h.fire('.ban-state-filter','click',{'data-state':'unknown'});
+  assert.equal(h.$('#ban-current-state').val(),'unknown');
+  assert.equal(h.of('get_active_bans').at(-1).options.data.state,'unknown');
+});
+test('both optional sections have large native expandable headers and explicit open and close hints', () => {
+  for (const id of ['ban-advice-section','history-raw-audit']) {
+    const summary = html.match(new RegExp('<details[^>]+id="'+id+'"[^>]*>\\s*<summary[^>]*>([\\s\\S]*?)</summary>'))[1];
+    assert.match(summary,/ban-section-action/); assert.match(summary,/展开/); assert.match(summary,/收起/);
+  }
+  assert.match(html,/\.ban-section>summary\s*\{[^}]*min-height:64px/);
+  assert.match(html,/\.ban-section>summary:focus-visible/);
+  assert.match(html,/<label for="ban-current-state">显示状态<\/label>/);
 });
 test('report card preserves unknown coverage instead of counting disabled records as active', () => {
   const h = harness(); h.navigate('ipstats');
@@ -74,7 +145,7 @@ test('report card preserves unknown coverage instead of counting disabled record
 test('current enforcement precedes suggestions, history and legacy audit', () => {
   assert.ok(html.indexOf('id="ban-current-card"') < html.indexOf('id="risk-advice-card"'));
   assert.ok(html.indexOf('id="ban-current-card"') < html.indexOf('id="ban-history-card"'));
-  for (const label of ['正在封禁的 IP', '封禁条目', '状态未核验', '重复记录合并', '快捷封禁']) assert.ok(html.includes(label), label);
+  for (const label of ['已确认生效的 IP', '封禁条目', '状态未核验', '重复记录合并', '快捷封禁']) assert.ok(html.includes(label), label);
 });
 test('entering ban management reads current state but not raw logs or write APIs', () => {
   const h = open(); assert.equal(h.of('get_active_bans').length, 1);
@@ -94,11 +165,14 @@ test('unknown and disabled are not displayed as active and cannot be batch-unban
   assert.match(h.$('#ban-current-rows').html(), /状态未核验/); assert.match(h.$('#ban-current-rows').html(), /未执行/);
   assert.doesNotMatch(h.$('#ban-current-rows').html(), /ban-remove-entry/);
 });
-test('read failure preserves last list but invalidates counts and actions', () => {
+test('recheck and read failure preserve old row data but invalidate confirmed labels and actions', () => {
   const h = ready(), before = h.$('#ban-current-rows').html(); h.fire('#ban-current-refresh');
+  assert.match(before,/已确认生效/);
+  assert.doesNotMatch(h.$('#ban-current-rows').html(),/已确认生效|data-state="active"|ban-remove-entry/);
   h.of('get_active_bans').at(-1).reject();
   assert.match(h.$('#ban-current-status').text(), /读取失败.*旧快照/);
-  assert.equal(h.$('#ban-active-ips').text(), '--'); assert.equal(h.$('#ban-current-rows').html(), before);
+  assert.equal(h.$('#ban-active-ips').text(), '--'); assert.match(h.$('#ban-current-rows').html(), /203\.0\.113\.40/);
+  assert.match(h.$('#ban-current-rows').html(),/旧快照/);
   h.fire('.ban-remove-entry', 'click', {'data-index': '0'}); assert.equal(h.confirms.length, 0);
 });
 test('grouped history asks backend to aggregate before pagination and displays the count', () => {

@@ -368,12 +368,12 @@ class SecurityBoundaryTest(unittest.TestCase):
                 try:
                     module = self.backend._free_waf_main__local_service(name)
                 except ValueError as exc:
-                    self.fail('v0.1.13 service rejected: ' + str(exc))
-                self.assertEqual(module.PLUGIN_VERSION, '0.1.13')
+                    self.fail('v0.1.14 service rejected: ' + str(exc))
+                self.assertEqual(module.PLUGIN_VERSION, '0.1.14')
                 module.PLUGIN_VERSION = '0.1.2'
                 refreshed = self.backend._free_waf_main__local_service(name)
                 self.assertIsNot(module, refreshed)
-                self.assertEqual(refreshed.PLUGIN_VERSION, '0.1.13')
+                self.assertEqual(refreshed.PLUGIN_VERSION, '0.1.14')
 
 
 if __name__ == '__main__':

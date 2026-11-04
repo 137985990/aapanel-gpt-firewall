@@ -61,7 +61,7 @@ test('v0.1.12 keeps every page in the five approved groups', () => {
     assert.ok(h.$('#waf_scope_badge').text(), 'every page explains its scope');
   }
   assert.equal(h.requests.length, before);
-  assert.match(html, /data-version="0\.1\.13"/);
+  assert.match(html, /data-version="0\.1\.14"/);
 });
 
 test('repair guidance uses the current navigation labels and keeps manual confirmation', () => {

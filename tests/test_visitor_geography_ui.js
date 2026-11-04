@@ -444,7 +444,7 @@ test('blocked-IP table inserts escaped location immediately after IP with five-c
   assert.match(html, /\.waf-blocked-scroll \.waf_table\s*\{[^}]*min-width:560px/);
   const h = harness();
   const location = '"><img src=x onerror="x"> & 北京';
-  const result = { summary: {}, blocked_ips: [{ ip: '<ip>', location, active: true, reason: '<reason>' }, { ip: '2001:db8::1', active: false }] };
+  const result = { summary: {}, blocked_ips: [{ ip: '<ip>', location, active: true, total_count:1, reason: '<reason>' }, { ip: '2001:db8::1', active: false, total_count:1 }] };
   const original = JSON.stringify(result);
   h.of('get_overview_report')[0].resolve(result);
   const body = h.$('#overview_blocked_ip_table').html();
