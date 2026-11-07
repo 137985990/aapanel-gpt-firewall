@@ -95,7 +95,7 @@ class DeviceProfileTests(unittest.TestCase):
                 for row in report['client_profiles']['rows']}
 
     def test_runtime_version_is_012(self):
-        self.assertEqual(statistics.PLUGIN_VERSION, '0.1.14')
+        self.assertEqual(statistics.PLUGIN_VERSION, '0.1.15')
 
     def test_empty_schema_is_stable_and_does_not_change_legacy_lists(self):
         report = self.build()

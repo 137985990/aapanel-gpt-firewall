@@ -18,6 +18,184 @@ from update_service import IntegrationRepairService
 SOURCE = Path(__file__).resolve().parents[1] / 'init.lua'
 
 
+class SustainedScanLuaTest(unittest.TestCase):
+    def setUp(self):
+        try:
+            from lupa.luajit21 import LuaRuntime, lua_type
+        except ImportError:
+            self.skipTest('optional embedded LuaJIT unavailable')
+        self.lua = LuaRuntime(unpack_returned_tuples=True)
+
+        def encode(value):
+            def plain(v):
+                if lua_type(v) != 'table':
+                    return v
+                return {str(k): plain(item) for k, item in v.items()}
+            return json.dumps(plain(value))
+
+        def decode(value):
+            def table(v):
+                if isinstance(v, dict):
+                    return self.lua.table_from({k: table(item) for k, item in v.items()})
+                return v
+            return table(json.loads(value))
+
+        from urllib.parse import unquote
+        self.lua.globals().decode = decode
+        self.lua.globals().encode = encode
+        self.lua.globals().unescape = unquote
+        self.lua.execute('''
+            clock=1000; bans_written=0; escalations=0; fail_state=false; fail_ban=false
+            function store()
+                local values,expiry={},{}
+                return {
+                    get=function(self,k) if expiry[k] and expiry[k]<=clock then values[k]=nil end; return values[k] end,
+                    safe_add=function(self,k,v,ttl)
+                        if self:get(k) then return nil,'exists' end
+                        if fail_state and string.sub(k,1,11)=='scan-abuse:' then return nil,'no memory' end
+                        if fail_ban and string.sub(k,1,10)=='cc:v3:ban:' then return nil,'no memory' end
+                        values[k],expiry[k]=v,clock+ttl;return true
+                    end,
+                    safe_set=function(self,k,v,ttl)
+                        if fail_state then return nil,'no memory' end
+                        values[k],expiry[k]=v,clock+ttl;return true
+                    end,
+                    incr=function(self,k,n) local v=self:get(k); if v==nil then return nil end;values[k]=v+n;return values[k] end,
+                    delete=function(self,k) values[k]=nil;expiry[k]=nil end
+                }
+            end
+            json={encode=encode,decode=decode}
+            ngx={time=function() return clock end, unescape_uri=unescape,
+                 md5=function(s) return fixture_md5(s) end, var={uri='/',remote_addr='192.0.2.17',request_id=string.rep('a',32)},
+                 shared={free_waf=store(),free_waf_drop_ip=store()}}
+            config={open=true}; server_name='fixture.example'; ip='192.0.2.17'; retry=6
+            site_config={['fixture.example']={open=true,cc={open=false},scan_abuse_policy={
+                enabled=true,window_seconds=60,hit_threshold=30,distinct_targets=6,
+                min_families=2,ban_seconds=3600}}}
+            endpoint_normalize_ip=function(v) return v end
+            is_trusted_cdn_proxy=function() return proxy_trusted==true end
+            is_ip_in_range=function(v,range) return v=='192.0.2.200' end
+            write_drop_ip_entry=function(...) bans_written=bans_written+1 end
+            repeat_ban_event=function(...) escalations=escalations+1 end
+        ''')
+        self.lua.globals().fixture_md5 = lambda s: hashlib.md5(s.encode()).hexdigest()
+        source = SOURCE.read_text(encoding='utf-8')
+        for name in ('cc_state_key', 'scan_abuse_policy', 'scan_abuse_target', 'scan_abuse_event'):
+            found = re.search(r'(?m)^function ' + name + r'\(.*?\nend', source, re.S)
+            self.assertIsNotNone(found, 'missing ' + name)
+            self.lua.execute(found.group(0))
+        self.paths = ['/a/.env', '/b/.env', '/c/.env', '/a/.git/config', '/b/.git/config', '/c/.git/config']
+
+    def hits(self, paths=None, count=30, reason='user_agent'):
+        paths = self.paths if paths is None else paths
+        for i in range(count):
+            self.lua.globals().ngx.var.uri = paths[i % len(paths)]
+            self.lua.globals().scan_abuse_event(reason, 403)
+
+    def test_bans_multitarget_scan_with_cc_disabled_and_counts_once(self):
+        self.hits(count=29)
+        self.assertEqual(self.lua.globals().bans_written, 0)
+        self.hits(count=1, paths=[self.paths[-1]])
+        self.assertEqual(self.lua.globals().bans_written, 1)
+        self.hits(count=100)
+        self.assertEqual(self.lua.globals().bans_written, 1)
+        self.assertEqual(self.lua.globals().escalations, 1)
+
+    def test_ua_api_same_target_and_single_family_are_insufficient(self):
+        for paths in (['/v1/chat/completions'], ['/'], ['/.env'], ['/a/.env', '/b/.env', '/c/.env', '/d/.env', '/e/.env', '/f/.env']):
+            self.hits(paths, 100)
+        self.assertEqual(self.lua.globals().bans_written, 0)
+
+    def test_missing_disabled_malformed_policy_never_activates(self):
+        for expression in ('nil', '{enabled=false}', '{enabled=true}',
+                           '{enabled=true,window_seconds=60,hit_threshold=30,distinct_targets=6,min_families=2,ban_seconds=3600,extra=1}'):
+            self.lua.execute("site_config['fixture.example'].scan_abuse_policy=" + expression)
+            self.hits(count=100)
+        self.assertEqual(self.lua.globals().bans_written, 0)
+
+    def test_sites_and_windows_do_not_merge(self):
+        self.hits(count=20)
+        self.lua.execute("site_config['other.example']=site_config['fixture.example'];server_name='other.example'")
+        self.hits(count=20)
+        self.lua.execute("server_name='fixture.example';clock=1060")
+        self.hits(count=20)
+        self.assertEqual(self.lua.globals().bans_written, 0)
+
+    def test_normalizes_encoded_targets_without_counting_variants(self):
+        target = self.lua.globals().scan_abuse_target
+        self.assertEqual(target('/a/%252eenv?token=not-evidence'), ('/a/.env', 'env'))
+        self.assertIsNone(target('/v1/chat/completions?file=/.env'))
+        for path in ('/.env.example', '/.env.sample', '/.env.template', '/.env.dist', '/.env.default', '/.env%ZZ', '/a/../.env', '/.git/config/extra', '/a\\.env'):
+            self.assertIsNone(target(path), path)
+        self.hits(['/.env', '/%2eenv', '/%252eenv'], 100)
+        self.assertEqual(self.lua.globals().bans_written, 0)
+
+    def test_storage_failure_does_not_claim_or_count_a_ban(self):
+        self.lua.execute('fail_state=true')
+        self.hits(count=100)
+        self.assertEqual(self.lua.globals().bans_written, 0)
+        self.lua.execute('fail_state=false;fail_ban=true')
+        self.hits(count=100)
+        self.assertEqual(self.lua.globals().escalations, 0)
+
+    def test_only_rejected_rule_families_count(self):
+        for reason in ('cc', 'head', 'empty_ua', 'allowed', 'registration_abuse'):
+            self.hits(count=100, reason=reason)
+        self.assertEqual(self.lua.globals().bans_written, 0)
+
+    def test_observation_or_redirect_status_is_not_a_rejected_attack(self):
+        for code in (None, 200, 302, '403'):
+            for n in range(60):
+                self.lua.globals().ngx.var.uri = self.paths[n % 6]
+                self.lua.globals().scan_abuse_event('user_agent', code)
+        self.assertEqual(self.lua.globals().bans_written, 0)
+
+    def test_untrusted_or_unresolved_cdn_identity_never_bans(self):
+        self.lua.execute("site_config['fixture.example'].cdn=true")
+        self.hits(count=100)
+        self.lua.execute("site_config['fixture.example'].cdn_trusted_proxy={{}};proxy_trusted=false")
+        self.hits(count=100)
+        self.lua.execute('proxy_trusted=true')  # Trusted peer, but missing forwarded client.
+        self.hits(count=100)
+        self.lua.execute("ip='192.0.2.200'")  # Forwarded value is another proxy address.
+        self.hits(count=100)
+        self.assertEqual(self.lua.globals().bans_written, 0)
+        self.lua.execute("ip='192.0.2.18'")
+        self.hits(count=30)
+        self.assertEqual(self.lua.globals().bans_written, 1)
+
+    def test_target_accounting_is_atomic_and_bounded_not_expiring_lock_json(self):
+        source = SOURCE.read_text(encoding='utf-8')
+        body = re.search(r'(?m)^function scan_abuse_event\(.*?\nend', source, re.S).group()
+        self.assertNotIn(':lock', body)
+        self.assertNotIn('json.decode', body)
+        self.assertIn(':incr(', body)
+        self.assertIn('%64', body)
+
+    def test_evicted_target_markers_cannot_inflate_distinct_evidence(self):
+        self.hits(['/.env', '/.git/config'], 29)
+        self.lua.execute('''
+            local shared=ngx.shared.free_waf; local old_add=shared.safe_add
+            shared.safe_add=function(self,k,v,ttl)
+                if string.find(k,':target:',1,true) or string.find(k,':family:',1,true) then self:delete(k) end
+                return old_add(self,k,v,ttl)
+            end
+        ''')
+        self.hits(['/.env', '/.git/config'], 100)
+        self.assertEqual(self.lua.globals().bans_written, 0)
+
+    def test_evidence_cannot_be_reused_after_short_ban_expiry_or_manual_unban(self):
+        self.lua.execute("site_config['fixture.example'].scan_abuse_policy.window_seconds=3600;site_config['fixture.example'].scan_abuse_policy.ban_seconds=60")
+        self.hits()
+        self.lua.execute('clock=1061')
+        self.hits(count=1)
+        self.assertEqual(self.lua.globals().bans_written, 1)
+        self.assertEqual(self.lua.globals().escalations, 1)
+        self.lua.execute("ngx.shared.free_waf_drop_ip:delete(cc_state_key('ban',server_name,ip))")
+        self.hits(count=1)
+        self.assertEqual(self.lua.globals().escalations, 1)
+
+
 def entry(site='fixture.example', ip='127.0.0.1', seconds=86400, now=None):
     now = int(time.time()) if now is None else now
     return dict(site=site, ip=ip, started_at=now, expires_at=now + seconds,

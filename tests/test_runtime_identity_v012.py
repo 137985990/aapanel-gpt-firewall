@@ -266,7 +266,7 @@ class RuntimeIdentitySourceTest(unittest.TestCase):
 
     def test_health_reports_v012_runtime(self):
         body = function_body(self.source, 'min_route')
-        self.assertIn("version='0.1.14'", body)
+        self.assertIn("version='0.1.15'", body)
         self.assertNotIn("version='0.1.11'", body)
 
     def test_every_yielding_body_read_uses_the_request_context_guard(self):

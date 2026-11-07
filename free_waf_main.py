@@ -123,13 +123,13 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         module = sys.modules.get(key)
         if (module is None or getattr(module, '__file__', None) != path
                 or getattr(module, '_source_signature', None) != signature
-                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.14'):
+                or getattr(module, 'PLUGIN_VERSION', '') != '0.1.15'):
             spec = importlib.util.spec_from_file_location(key, path)
             module = importlib.util.module_from_spec(spec)
             # Read source explicitly: same-second upgrades must not reuse stale bytecode.
             source = spec.loader.get_source(key)
             exec(compile(source, path, 'exec', dont_inherit=True), module.__dict__)
-            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.14':
+            if getattr(module, 'PLUGIN_VERSION', '') != '0.1.15':
                 raise ValueError('服务版本不匹配，请重新打开插件')
             module._source_signature = signature
             sys.modules[key] = module
@@ -915,6 +915,40 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         except Exception:
             return public.returnMsg(False, '无法读取累计封禁策略，请检查站点名称和策略格式；未修改配置。')
 
+    def __scan_abuse_defaults(self):
+        return dict(enabled=False, window_seconds=60, hit_threshold=30,
+                    distinct_targets=6, min_families=2, ban_seconds=3600)
+
+    def __scan_abuse_policy(self, value):
+        defaults = self.__scan_abuse_defaults()
+        if type(value) is not dict or set(value) != set(defaults) or type(value['enabled']) is not bool:
+            raise ValueError('扫描防护策略字段不正确')
+        limits = dict(window_seconds=(10, 3600), hit_threshold=(10, 10000),
+                      distinct_targets=(3, 64), min_families=(2, 3), ban_seconds=(60, 28800))
+        for key, (low, high) in limits.items():
+            if type(value[key]) is not int or not low <= value[key] <= high:
+                raise ValueError('扫描防护参数超出范围')
+        if value['distinct_targets'] > value['hit_threshold']:
+            raise ValueError('不同目标数不能超过命中次数')
+        return dict(value)
+
+    def get_scan_abuse_policy(self, get):
+        try:
+            site, config, raw = self.__repeat_site(get)
+            policy = self.__scan_abuse_policy(config[site].get('scan_abuse_policy', self.__scan_abuse_defaults()))
+            return self.__repeat_result(site, policy, raw)
+        except Exception:
+            return public.returnMsg(False, '无法读取持续扫描防护；请检查站点及策略格式，未修改配置。')
+
+    def save_scan_abuse_policy(self, get):
+        if not self.__update_request_is_post():
+            return public.returnMsg(False, '扫描防护保存仅接受面板 POST 请求。')
+        try:
+            with self.__endpoint_transaction():
+                return self.__save_repeat_policy_locked(get, 'scan_abuse_policy')
+        except Exception:
+            return public.returnMsg(False, '配置正在修改或锁不可用，未保存扫描防护。')
+
     def __repeat_bulk_sites(self, get):
         text = getattr(get, 'siteNames', None)
         if type(text) is not str or len(text.encode('utf-8')) > 128 * 1024:
@@ -1147,7 +1181,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                 elif os.path.lexists(staged):
                     os.unlink(staged)
 
-    def __restore_repeat_policy(self, site, policy, original, candidate):
+    def __restore_repeat_policy(self, site, policy, original, candidate, policy_key='repeat_ban_policy'):
         current_raw = self.__repeat_config_bytes()
         previous = self.__repeat_json(original.decode('utf-8'))
         old_site = previous[site]
@@ -1156,16 +1190,16 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             if type(current) is not dict or type(current.get(site)) is not dict:
                 raise ValueError('站点已被其他操作修改')
             current_site = current[site]
-            already_restored = (('repeat_ban_policy' in current_site) == ('repeat_ban_policy' in old_site)
-                                and current_site.get('repeat_ban_policy') == old_site.get('repeat_ban_policy'))
+            already_restored = ((policy_key in current_site) == (policy_key in old_site)
+                                and current_site.get(policy_key) == old_site.get(policy_key))
             restore = original if current_raw == candidate else None
             if restore is None and not already_restored:
-                if current_site.get('repeat_ban_policy') != policy:
+                if current_site.get(policy_key) != policy:
                     raise ValueError('累计封禁策略已被其他操作修改')
-                if 'repeat_ban_policy' in old_site:
-                    current_site['repeat_ban_policy'] = old_site['repeat_ban_policy']
+                if policy_key in old_site:
+                    current_site[policy_key] = old_site[policy_key]
                 else:
-                    current_site.pop('repeat_ban_policy', None)
+                    current_site.pop(policy_key, None)
                 restore = json.dumps(current).encode('utf-8')
             if restore is not None:
                 if self.__write_repeat_site_config(restore, expected=current_raw) is False or self.__repeat_config_bytes() != restore:
@@ -1174,8 +1208,8 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             raise RuntimeError('恢复生效未核实')
         restored = self.__repeat_json(self.__repeat_config_bytes().decode('utf-8'))
         if (type(restored) is not dict or type(restored.get(site)) is not dict
-                or ('repeat_ban_policy' in restored[site]) != ('repeat_ban_policy' in old_site)
-                or restored[site].get('repeat_ban_policy') != old_site.get('repeat_ban_policy')):
+                or (policy_key in restored[site]) != (policy_key in old_site)
+                or restored[site].get(policy_key) != old_site.get(policy_key)):
             raise RuntimeError('恢复后配置已变更')
 
     def save_repeat_ban_policy(self, get):
@@ -1187,15 +1221,17 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
         except Exception:
             return public.returnMsg(False, '配置正在修改或配置锁不可用，未保存；请稍后重试。')
 
-    def __save_repeat_policy_locked(self, get):
+    def __save_repeat_policy_locked(self, get, policy_key='repeat_ban_policy'):
         import hashlib
+        validate = self.__scan_abuse_policy if policy_key == 'scan_abuse_policy' else self.__repeat_policy
+        defaults = self.__scan_abuse_defaults() if policy_key == 'scan_abuse_policy' else self.__repeat_defaults()
         try:
             text = getattr(get, 'policy', None)
             if type(text) is not str or len(text.encode('utf-8')) > 16384:
                 raise ValueError('策略须为 JSON 对象字符串')
-            policy = self.__repeat_policy(self.__repeat_json(text))
+            policy = validate(self.__repeat_json(text))
             site, config, original = self.__repeat_site(get)
-            self.__repeat_policy(config[site].get('repeat_ban_policy', self.__repeat_defaults()))
+            validate(config[site].get(policy_key, defaults))
             revision = getattr(get, 'revision', None)
             if (type(revision) is not str or not re.fullmatch(r'[0-9a-f]{64}', revision)
                     or revision != hashlib.sha256(original).hexdigest()):
@@ -1207,7 +1243,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
             # External editors may ignore the panel lock; recheck before editing.
             if self.__repeat_config_bytes() != original:
                 return public.returnMsg(False, '站点配置已变更，请刷新后重试；未保存，独立备份已保留。')
-            config[site]['repeat_ban_policy'] = policy
+            config[site][policy_key] = policy
             candidate = json.dumps(config).encode('utf-8')
         except Exception:
             return public.returnMsg(False, '策略校验或独立备份失败，未修改配置；请检查站点、档位、字段和存储权限。')
@@ -1218,12 +1254,15 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                 raise RuntimeError('配置生效未核实')
             actual = self.__repeat_config_bytes()
             current = self.__repeat_json(actual.decode('utf-8'))
-            if type(current) is not dict or type(current.get(site)) is not dict or current[site].get('repeat_ban_policy') != policy:
+            if type(current) is not dict or type(current.get(site)) is not dict or current[site].get(policy_key) != policy:
                 raise RuntimeError('重载后策略已变更')
             return self.__repeat_result(site, policy, actual)
         except Exception:
             try:
-                self.__restore_repeat_policy(site, policy, original, candidate)
+                if policy_key == 'repeat_ban_policy':
+                    self.__restore_repeat_policy(site, policy, original, candidate)
+                else:
+                    self.__restore_repeat_policy(site, policy, original, candidate, policy_key)
             except Exception:
                 return public.returnMsg(False, '累计封禁策略保存或生效失败，自动恢复未确认，可能已部分处理；独立备份已保留，请检查配置和 Nginx 状态。')
             return public.returnMsg(False, '累计封禁策略保存或生效失败，已恢复原策略并核实重载；独立备份已保留。')
@@ -1841,7 +1880,7 @@ sys.stdout.write(json.dumps(dict(matches=matches, partial=partial, limited=limit
                 'cc': 'CC 防护', 'legacy': '旧版临时封禁', 'registration_abuse': '注册滥用防护',
                 'registration_abuse_register': '注册请求滥用', 'registration_abuse_verify': '验证请求滥用',
                 'repeat_bans': '重复封禁升级', 'endpoint_limit': '端点限流',
-                '404_flood': '404 扫描防护', 'risk_advice': '本站人工封禁'}.get(reason, reason)
+                '404_flood': '404 扫描防护', 'scan_abuse': '持续恶意扫描', 'risk_advice': '本站人工封禁'}.get(reason, reason)
 
     def __ban_filters(self, get, history=False):
         ip = getattr(get, 'ip', None)

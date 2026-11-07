@@ -456,7 +456,7 @@
 	.website_profile_table td{overflow-wrap:anywhere}
 	@media (max-width:720px){.website_profile_controls label{flex:1 1 140px}.website_profile_controls select{width:100%;min-width:0}.waf-dashboard-head{flex-wrap:wrap;gap:10px}.waf-dashboard-head>div{max-width:100%}}
 </style>
-<div class="waf_conter" data-version="0.1.14">
+<div class="waf_conter" data-version="0.1.15">
 	<header class="waf-shell-header">
 		<div class="waf-brand"><div class="waf-brand-mark" aria-hidden="true"><svg viewBox="0 0 32 36" fill="none"><path d="M16 2 29 7v10c0 8-6 13-13 17C9 30 3 25 3 17V7L16 2Z" stroke="currentColor" stroke-width="2"/><path d="m10 17 4 4 8-9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div><strong>aapanel GPT Firewall</strong><small>网站安全控制台 · 社区维护版</small></div></div>
 		<div class="waf-shell-state"><span id="waf_config_status">读取配置中</span><span class="waf-runtime-pill" id="waf_shell_status" data-state="unverified" role="status">接入待核验</span><button type="button" class="btn btn-default btn-sm" id="runtime_status_refresh">核验接入</button></div>
@@ -702,7 +702,7 @@
 			<div class="waf-notice-safe">仅统计同一站点、同一 IP 的独立且成功的自动封禁；已封禁期间的重复请求不计数，也不会触发升级或延长封禁。手动封禁、普通规则命中，以及仅观察或仅拒绝的请求均不计数。默认滚动 24 小时：达到 5 次对应 7 天，达到 10 次对应 30 天。</div>
 			<div class="waf-card">
 				<div class="waf-toolbar"><button type="button" class="btn btn-success btn-sm" id="repeat_ban_mode_single" aria-pressed="true">单站点配置与记录</button><button type="button" class="btn btn-default btn-sm" id="repeat_ban_mode_bulk" aria-pressed="false">批量配置站点</button><button type="button" class="btn btn-default btn-sm" id="repeat_ban_sites_refresh">重新读取站点</button></div>
-				<div class="waf-toolbar" id="repeat_ban_single_scope"><label for="repeat_ban_site">管理站点</label><select id="repeat_ban_site" disabled><option value="">请先加载并选择站点</option></select><button type="button" class="btn btn-default btn-sm" id="repeat_ban_policy_refresh" disabled>重读策略</button></div>
+				<div class="waf-toolbar" id="repeat_ban_single_scope"><label for="repeat_ban_site">管理站点</label><select id="repeat_ban_site" disabled><option value="">请先加载并选择站点</option></select><button type="button" class="btn btn-default btn-sm" id="repeat_ban_policy_refresh" disabled>重读策略</button><button type="button" class="btn btn-success btn-sm" id="scan_abuse_open" disabled>持续扫描防护</button></div>
 				<div id="repeat_ban_bulk_scope" style="display:none">
 					<div class="waf-toolbar"><label for="repeat_ban_bulk_filter">筛选站点</label><input id="repeat_ban_bulk_filter" type="search" placeholder="输入站点名称，不改变已选站点" /><button type="button" class="btn btn-default btn-sm" id="repeat_ban_bulk_all">全选筛选结果</button><button type="button" class="btn btn-default btn-sm" id="repeat_ban_bulk_clear">取消筛选结果</button><span id="repeat_ban_bulk_count" role="status" aria-live="polite">已选 0 个站点</span></div>
 					<div id="repeat_ban_bulk_sites" class="repeat-ban-site-grid"></div>
@@ -3729,7 +3729,7 @@
 		ban_current_rows:function(rows,verified){
 			var _this = this, esc = this.endpoint_text;
 			return rows.map(function(row,index){
-				var source = _this.ban_source_label(row.source), scope = row.scope === 'global' ? '全部站点（全局）' : '仅本站：'+row.site;
+				var source = row.reason === 'scan_abuse' ? '持续扫描自动封禁' : _this.ban_source_label(row.source), scope = row.scope === 'global' ? '全部站点（全局）' : '仅本站：'+row.site;
 				var status = !verified ? '旧快照 · 未核验' : row.enforcement === 'active' ? '已确认生效' : row.enforcement === 'disabled' ? '未执行（配置停用）' : '状态未核验';
 				var duration = Number.isFinite(row.remaining_seconds) ? _this.risk_advice_duration(Math.max(0,row.remaining_seconds)) : '剩余时间未知';
 				return '<tr><td><strong>'+esc(row.ip)+'</strong></td><td>'+esc(scope)+'</td><td>'+esc(source)+'<br>'+esc(row.reason_text || '')+'</td><td>'+(verified ? '' : '旧快照：')+esc(duration)+'<br>'+esc(row.expires_at ? _this.risk_advice_time(row.expires_at) : '到期时间未返回')+'</td><td><span class="ban-state" data-state="'+(verified ? row.enforcement : 'unknown')+'">'+status+'</span></td><td>'+(verified && row.removable && row.enforcement === 'active' ? '<button type="button" class="btn btn-default btn-xs ban-remove-entry" data-index="'+index+'">解除此项</button>' : '—')+'</td></tr>';
@@ -8634,6 +8634,7 @@
 			this.bind_panel_event('change','#repeat_ban_site',function(){_this.select_repeat_ban_site($(this).val());});
 			this.bind_panel_event('click','#repeat_ban_sites_refresh',function(){_this.load_repeat_ban_sites();});
 			this.bind_panel_event('click','#repeat_ban_policy_refresh',function(){_this.load_repeat_ban_policy();});
+			this.bind_panel_event('click','#scan_abuse_open',function(){_this.open_scan_abuse_policy();});
 			this.bind_panel_event('click','#repeat_ban_refresh',function(){_this.load_repeat_bans(_this._repeat_page);});
 			this.bind_panel_event('click','#repeat_ban_prev',function(){_this.repeat_ban_page(-1);});
 			this.bind_panel_event('click','#repeat_ban_next',function(){_this.repeat_ban_page(1);});
@@ -8827,6 +8828,7 @@
 			$('.repeat-ban-remove').prop('disabled',locked || !this._repeat_rows_ready || this._repeat_rows_loading);
 			$('.repeat-ban-reset').prop('disabled',locked || !this._repeat_rows_ready || this._repeat_rows_loading);
 			$('#repeat_ban_policy_refresh').prop('disabled',locked);
+			$('#scan_abuse_open').prop('disabled',locked);
 			$('#repeat_ban_refresh').prop('disabled',locked);
 			$('#repeat_ban_sites_refresh').prop('disabled',!!this._repeat_busy || !!this._repeat_confirmation);
 			$('#repeat_ban_prev').prop('disabled',locked || !this._repeat_rows_ready || this._repeat_rows_loading || this._repeat_page <= 1);
@@ -8839,6 +8841,66 @@
 			$('#repeat_ban_bulk_read').prop('disabled',batchLocked || !this._repeat_selected.length);
 			$('#repeat_ban_mode_single').prop('disabled',!!this._repeat_busy || !!this._repeat_confirmation || !this._repeat_sites.length);
 			$('#repeat_ban_mode_bulk').prop('disabled',!!this._repeat_busy || !!this._repeat_confirmation || !this._repeat_sites.length);
+		},
+		scan_abuse_policy_valid:function(policy){
+			if(!policy || typeof policy.enabled !== 'boolean' || Object.keys(policy).length !== 6) return false;
+			var limits = {window_seconds:[10,3600],hit_threshold:[10,10000],distinct_targets:[3,64],min_families:[2,3],ban_seconds:[60,28800]};
+			for(var key in limits) if(!Number.isInteger(policy[key]) || policy[key] < limits[key][0] || policy[key] > limits[key][1]) return false;
+			return policy.distinct_targets <= policy.hit_threshold;
+		},
+		open_scan_abuse_policy:function(){
+			if(!this.repeat_ban_alive() || !this._repeat_site || this._repeat_busy || this._repeat_confirmation) return;
+			var _this = this, site = this._repeat_site, token = {}, revision = null, busy = false;
+			this._repeat_confirmation = token; this.repeat_ban_controls();
+			var fields = [['window_seconds','统计窗口（秒）',10,3600],['hit_threshold','已拒绝敏感探测次数',10,10000],['distinct_targets','不同敏感目标数',3,64],['min_families','探测类型数',2,3],['ban_seconds','本站封禁时长（秒）',60,28800]];
+			var content = '<div style="padding:18px;max-height:70vh;overflow:auto"><p>本站：<strong>'+this.endpoint_text(site)+'</strong></p><p>独立于 CC。仅累计已被规则拒绝的环境配置、Git 和凭据文件探测；次数、不同目标数和类型数须同时达标。普通 UA、空 UA、API 请求或单纯 403 不作为依据。</p><p>采用从首次有效命中开始的固定窗口，过期重计；默认关闭。IP、UA 与 URL 白名单按现有规则优先。封禁仅针对本站，成功建立后可参与本站重复封禁升级，不因封禁期间重试续期。共享出口仍可能误封，请核对后启用。</p><fieldset id="scan_abuse_fields" disabled><label><input type="checkbox" id="scan_abuse_enabled" />启用本站持续扫描防护</label><div class="waf-policy-form">';
+			fields.forEach(function(f){content+='<label for="scan_abuse_'+f[0]+'">'+f[1]+'<input id="scan_abuse_'+f[0]+'" type="number" min="'+f[2]+'" max="'+f[3]+'" step="1" /></label>';});
+			content+='</div></fieldset><p>每个固定窗口最多触发一次扫描封禁；触发后消费本轮证据，提前解封不会使用旧计数再次封禁。窗口结束后才重新累计。不同目标采用保守估计，标记丢失或哈希碰撞只会少计。</p><p id="scan_abuse_status" role="status">正在读取，启用状态未知。</p><button type="button" class="btn btn-default" id="scan_abuse_reload">重新读取</button> <button type="button" class="btn btn-success" id="scan_abuse_save" disabled>确认本站范围并保存</button></div>';
+			function alive(){return _this.repeat_ban_alive() && _this._repeat_confirmation === token && _this._repeat_site === site;}
+			function failed(message){
+				if(!alive()) return;
+				busy=false; _this._repeat_busy=false; revision=null;
+				$('#scan_abuse_fields').prop('disabled',true); $('#scan_abuse_save').prop('disabled',true);
+				$('#scan_abuse_status').text('状态未确认：'+message+'。如已提交，服务器可能已处理；请重新读取核对，不要重复保存。');
+			}
+			function accept(res){
+				if(!alive()) return;
+				if(!res || res.status !== true || res.siteName !== site || !/^[a-f0-9]{64}$/.test(res.revision || '') || !_this.scan_abuse_policy_valid(res.policy)){failed((res && res.msg) || '返回格式不正确');return;}
+				busy=false; _this._repeat_busy=false; revision=res.revision;
+				$('#scan_abuse_enabled').prop('checked',res.policy.enabled);
+				fields.forEach(function(f){$('#scan_abuse_'+f[0]).val(res.policy[f[0]]);});
+				$('#scan_abuse_fields').prop('disabled',false); $('#scan_abuse_save').prop('disabled',false);
+				$('#scan_abuse_status').text('已读取本站策略：'+(res.policy.enabled ? '已启用' : '已停用')+'；编辑后须确认保存。新建封禁到期前继续生效，停用策略不自动解封。');
+			}
+			function read(){
+				if(!alive() || busy) return;
+				revision=null; $('#scan_abuse_fields').prop('disabled',true); $('#scan_abuse_save').prop('disabled',true);
+				$('#scan_abuse_status').text('正在读取，启用状态未知。');
+				_this.repeat_ban_request('scan_read','get_scan_abuse_policy',{siteName:site},accept,failed);
+			}
+			token.layer=layer.open({type:1,title:'持续恶意扫描防护',area:[Math.min(660,window.innerWidth-32)+'px','auto'],content:content,
+				success:function(){
+					$('#scan_abuse_reload').on('click',read);
+					$('#scan_abuse_save').on('click',function(){
+						if(!alive() || busy || !revision) return;
+						var policy={enabled:$('#scan_abuse_enabled').prop('checked') === true};
+						fields.forEach(function(f){var value=String($('#scan_abuse_'+f[0]).val());policy[f[0]]=/^\d+$/.test(value) ? Number(value) : NaN;});
+						if(!_this.scan_abuse_policy_valid(policy)){$('#scan_abuse_status').text('参数不正确，请按字段范围填写整数，不同目标数不能超过命中次数。');return;}
+						busy=true; _this._repeat_busy=true;
+						$('#scan_abuse_fields').prop('disabled',true); $('#scan_abuse_save').prop('disabled',true);
+						$('#scan_abuse_status').text('正在备份、保存并核验重载，请勿重复提交。');
+						_this.repeat_ban_request('scan_write','save_scan_abuse_policy',{siteName:site,revision:revision,policy:JSON.stringify(policy)},function(res){
+							if(res && res.policy && JSON.stringify(fields.map(function(f){return res.policy[f[0]];})) !== JSON.stringify(fields.map(function(f){return policy[f[0]];})) || res && res.policy && res.policy.enabled !== policy.enabled){failed('保存返回与提交策略不一致');return;}
+							accept(res);
+						},failed);
+					});
+					read();
+				},cancel:function(){if(busy) return false;},end:function(){
+					if(_this._repeat_confirmation !== token) return;
+					_this._repeat_confirmation=null; _this.cancel_repeat_ban_request('scan_read'); _this.cancel_repeat_ban_request('scan_write');
+					_this._repeat_ready=false; _this.repeat_ban_controls();
+					if(_this.repeat_ban_alive()) _this.load_repeat_ban_policy();
+				}});
 		},
 		repeat_ban_policy_valid:function(policy){
 			if(!policy || typeof policy.enabled !== 'boolean' || !Number.isInteger(policy.window_seconds) || policy.window_seconds < 60 || policy.window_seconds > 604800 || !Array.isArray(policy.tiers) || policy.tiers.length < 1 || policy.tiers.length > 8) return false;
@@ -9034,7 +9096,7 @@
 			return true;
 		},
 		repeat_ban_reason:function(reason){
-			var labels = {cc:'CC 防护',registration_abuse_verify:'注册验证码滥用',registration_abuse_register:'异常注册',endpoint_limit:'历史接口限流','404_flood':'扫描式 404 请求'};
+			var labels = {cc:'CC 防护',registration_abuse_verify:'注册验证码滥用',registration_abuse_register:'异常注册',endpoint_limit:'历史接口限流','404_flood':'扫描式 404 请求',scan_abuse:'持续恶意扫描'};
 			return Object.prototype.hasOwnProperty.call(labels,reason) ? labels[reason] : reason;
 		},
 		load_repeat_bans:function(page){

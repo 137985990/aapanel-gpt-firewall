@@ -352,7 +352,7 @@ test('README explains the current managed Lua-path repair without promising gene
   assert.doesNotMatch(readme, /不支持覆盖已有入口/);
   assert.doesNotMatch(readme, /不覆盖已有入口；/);
   const security = fs.readFileSync(path.join(__dirname, '..', 'SECURITY.md'), 'utf8');
-  assert.match(security, /当前项目版本为 v0\.1\.14/);
+  assert.match(security, /当前项目版本为 v0\.1\.15/);
   assert.match(security, /## v0\.1\.13 接入修复边界/);
   assert.match(security, /主进程.*权限.*所有者/);
 });

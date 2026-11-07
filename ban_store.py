@@ -209,7 +209,7 @@ class BanEscalationStore:
     FIELDS = {'site', 'ip', 'started_at', 'expires_at', 'duration', 'trigger_count',
               'window_seconds', 'threshold', 'reason', 'path'}
     REASONS = {'cc', 'registration_abuse_verify', 'registration_abuse_register',
-               'endpoint_limit', '404_flood'}
+               'endpoint_limit', '404_flood', 'scan_abuse'}
 
     def __init__(self, snapshot_path='/www/server/free_waf/repeat_bans.json', now_fn=None):
         self.snapshot_path = Path(os.path.abspath(snapshot_path))

@@ -6,6 +6,27 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { harness, html } = require('./test_statistics_v011');
 const plain = value => JSON.parse(JSON.stringify(value));
+
+test('sustained scan policy is a lazy Chinese modal with independent validated bounds', () => {
+  const h = harness();
+  assert.equal(h.of('get_scan_abuse_policy').length, 0);
+  assert.match(html, /id="scan_abuse_open"[^>]*disabled>持续扫描防护/);
+  assert.equal(typeof h.waf.scan_abuse_policy_valid, 'function');
+  const value = {enabled:false,window_seconds:60,hit_threshold:30,distinct_targets:6,min_families:2,ban_seconds:3600};
+  assert.equal(h.waf.scan_abuse_policy_valid(value), true);
+  for (const extra of [{min_families:1},{distinct_targets:65},{hit_threshold:10,distinct_targets:11},{ban_seconds:31536000},{window_seconds:true}]) {
+    assert.equal(h.waf.scan_abuse_policy_valid({...value,...extra}), false);
+  }
+});
+
+test('current scan bans never appear mislabeled as CC when CC is disabled', () => {
+  const h = harness();
+  const row = h.waf.ban_current_rows([{ip:'192.0.2.17',site:'a.example',scope:'site',
+    source:'cc',reason:'scan_abuse',reason_text:'持续恶意扫描',enforcement:'active',
+    remaining_seconds:3600,expires_at:1794000000,removable:true}], true);
+  assert.ok(row.includes('持续扫描自动封禁'));
+  assert.ok(!row.includes('CC 自动封禁'));
+});
 const defaults = () => ({ enabled: false, window_seconds: 86400,
   tiers: [{ threshold: 5, ban_seconds: 604800 }, { threshold: 10, ban_seconds: 2592000 }] });
 const policy = (extra = {}, siteName = 'a.example', revision = 'revision-1') =>
@@ -28,6 +49,69 @@ function loaded(h, settings = {}, listing = {}) {
   h.of('get_repeat_ban_policy').at(-1).resolve(policy(settings));
   h.of('get_repeat_bans').at(-1).resolve(bans(listing));
 }
+
+function scanDialog(h) {
+  loaded(h);
+  const dialogs = [];
+  h.context.layer.open = options => { dialogs.push(options); options.success(); return 321; };
+  h.fire('#scan_abuse_open');
+  return dialogs[0];
+}
+function scanResponse(extra = {}) {
+  return {status:true,siteName:'a.example',revision:'a'.repeat(64),policy:{
+    enabled:false,window_seconds:60,hit_threshold:30,distinct_targets:6,min_families:2,ban_seconds:3600,...extra}};
+}
+
+test('scan modal waits for a valid site snapshot and only explicit save enables it', () => {
+  const h = harness(), dialog = scanDialog(h);
+  assert.ok(dialog.content.includes('独立于 CC'));
+  assert.equal(h.of('get_scan_abuse_policy').length, 1);
+  assert.equal(h.of('save_scan_abuse_policy').length, 0);
+  h.fire('#scan_abuse_save');
+  assert.equal(h.of('save_scan_abuse_policy').length, 0);
+  h.of('get_scan_abuse_policy').at(-1).resolve(scanResponse());
+  assert.equal(h.$('#scan_abuse_enabled').prop('checked'), false);
+  h.$('#scan_abuse_enabled').prop('checked', true);
+  h.fire('#scan_abuse_save');
+  const write = h.of('save_scan_abuse_policy').at(-1);
+  assert.equal(write.options.data.siteName, 'a.example');
+  assert.equal(write.options.data.revision, 'a'.repeat(64));
+  assert.equal(JSON.parse(write.options.data.policy).enabled, true);
+  assert.equal(dialog.cancel(), false, 'do not dismiss an in-flight write as cancelled');
+  write.resolve(scanResponse({enabled:true}));
+  assert.ok(h.$('#scan_abuse_status').text().includes('已启用'));
+  dialog.end();
+  assert.equal(h.of('get_repeat_ban_policy').length, 2, 'refresh the shared site revision after closing');
+});
+
+test('scan save failure disables writes until re-read and navigation aborts old owners', () => {
+  const h = harness(); scanDialog(h);
+  h.of('get_scan_abuse_policy').at(-1).resolve(scanResponse());
+  h.fire('#scan_abuse_save');
+  h.of('save_scan_abuse_policy').at(-1).reject('timeout');
+  assert.equal(h.$('#scan_abuse_save').prop('disabled'), true);
+  assert.ok(h.$('#scan_abuse_status').text().includes('服务器可能已处理'));
+  h.fire('#scan_abuse_save');
+  assert.equal(h.of('save_scan_abuse_policy').length, 1);
+  h.fire('#scan_abuse_reload');
+  const read = h.of('get_scan_abuse_policy').at(-1);
+  h.navigate('home');
+  assert.equal(read.aborted, true);
+  read.resolve(scanResponse({enabled:true}));
+  assert.equal(h.$('#scan_abuse_save').prop('disabled'), true);
+});
+
+test('scan modal rejects wrong scope and mismatched save results instead of claiming success', () => {
+  const h = harness(); scanDialog(h);
+  h.of('get_scan_abuse_policy').at(-1).resolve({...scanResponse(),siteName:'other.example'});
+  assert.equal(h.$('#scan_abuse_save').prop('disabled'), true);
+  h.fire('#scan_abuse_reload');
+  h.of('get_scan_abuse_policy').at(-1).resolve(scanResponse());
+  h.fire('#scan_abuse_save');
+  h.of('save_scan_abuse_policy').at(-1).resolve(scanResponse({enabled:true}));
+  assert.equal(h.$('#scan_abuse_save').prop('disabled'), true);
+  assert.ok(h.$('#scan_abuse_status').text().includes('不一致'));
+});
 function fill(h, settings = defaults()) {
   h.$('#repeat_ban_window_seconds').val(String(settings.window_seconds));
   h.$('#repeat_ban_enabled').prop('checked', settings.enabled);

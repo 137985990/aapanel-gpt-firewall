@@ -23,6 +23,58 @@ DEFAULTS = dict(enabled=False, window_seconds=86400,
                        dict(threshold=10, ban_seconds=2592000)])
 
 
+class ScanAbusePolicyTest(unittest.TestCase):
+    def setUp(self):
+        self.fixture = RepeatBanPolicyTest()
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.defaults = dict(enabled=False, window_seconds=60, hit_threshold=30,
+                             distinct_targets=6, min_families=2, ban_seconds=3600)
+
+    def save(self, policy=None, **changes):
+        params = dict(siteName='fixture.example', revision=self.fixture.revision(),
+                      policy=json.dumps(self.defaults if policy is None else policy))
+        params.update(changes)
+        return self.fixture.call('save_scan_abuse_policy', **params)
+
+    def test_read_defaults_is_side_effect_free(self):
+        result = self.fixture.call('get_scan_abuse_policy', siteName='fixture.example')
+        self.assertTrue(result['status'])
+        self.assertEqual(result['policy'], self.defaults)
+        self.assertEqual(self.fixture.site_path.read_bytes(), self.fixture.original)
+        self.fixture.backend._free_waf_main__checked_nginx_reload.assert_not_called()
+
+    def test_save_preserves_cc_and_other_site_and_repeat_policy(self):
+        policy = dict(self.defaults, enabled=True)
+        result = self.save(policy)
+        self.assertTrue(result['status'], result)
+        current = self.fixture.config_read()
+        self.assertEqual(current['fixture.example']['scan_abuse_policy'], policy)
+        self.assertEqual(current['fixture.example']['cc'], {'limit': 10})
+        self.assertEqual(current['other.example'], self.fixture.config['other.example'])
+        self.assertNotIn('repeat_ban_policy', current['fixture.example'])
+
+    def test_rejects_unsafe_ranges_unknown_fields_and_stale_revision(self):
+        for change in (dict(ban_seconds=31536000), dict(window_seconds=True),
+                       dict(min_families=1), dict(distinct_targets=65), dict(extra=True),
+                       dict(hit_threshold=10, distinct_targets=11)):
+            result = self.save(dict(self.defaults, **change))
+            self.assertFalse(result['status'], change)
+            self.assertEqual(self.fixture.site_path.read_bytes(), self.fixture.original)
+        self.assertFalse(self.save(revision='a' * 64)['status'])
+
+    def test_failed_reload_restores_only_scan_policy(self):
+        self.fixture.backend._free_waf_main__checked_nginx_reload.side_effect = [False, True]
+        result = self.save(dict(self.defaults, enabled=True))
+        self.assertFalse(result['status'])
+        self.assertEqual(self.fixture.site_path.read_bytes(), self.fixture.original)
+
+    def test_requires_post(self):
+        self.fixture.backend._free_waf_main__update_request_is_post.return_value = False
+        self.assertFalse(self.save()['status'])
+        self.assertEqual(self.fixture.site_path.read_bytes(), self.fixture.original)
+
+
 def record(**changes):
     row = dict(site='fixture.example', ip='192.0.2.1', started_at=1000,
                expires_at=605800, duration=604800, trigger_count=5,

@@ -340,7 +340,7 @@ function repeat_ban_valid_record(row)
 	end
 	if row.duration < 60 or row.duration > 31536000 or row.expires_at-row.started_at ~= row.duration then return false end
 	if row.window_seconds < 60 or row.window_seconds > 604800 or row.threshold < 2 or row.threshold > 1000 or row.trigger_count < row.threshold or row.trigger_count > 1000 then return false end
-	local reasons = {cc=true,registration_abuse_verify=true,registration_abuse_register=true,endpoint_limit=true,['404_flood']=true}
+	local reasons = {cc=true,registration_abuse_verify=true,registration_abuse_register=true,endpoint_limit=true,['404_flood']=true,scan_abuse=true}
 	if not reasons[row.reason] then return false end
 	if type(row.path) ~= 'string' or #row.path < 1 or #row.path > 512 or string.sub(row.path,1,1) ~= '/' or string.find(row.path,'[%c?#\\]') or string.find(row.path,'\194[\128-\159]') then return false end
 	return true
@@ -567,7 +567,7 @@ end
 
 function repeat_ban_event(site, client_ip, seconds, reason, path)
 	local policy = repeat_ban_policy(site)
-	local reasons = {cc=true,registration_abuse_verify=true,registration_abuse_register=true,['404_flood']=true}
+	local reasons = {cc=true,registration_abuse_verify=true,registration_abuse_register=true,['404_flood']=true,scan_abuse=true}
 	if not policy or not reasons[reason] then return false end
 	client_ip = endpoint_normalize_ip(client_ip)
 	if not client_ip or type(site) ~= 'string' or #site > 253 or type(seconds) ~= 'number' or seconds < 1 or seconds > 28800 then return false end
@@ -1016,7 +1016,8 @@ function compare_ip(ips)
 	return true
 end
 
-function write_log(name,rule)
+function write_log(name,rule,blocked_status)
+	scan_abuse_event(name,blocked_status)
 	local retry_key = 'retry_' .. ip
 	local count,_ = ngx.shared.free_waf:get(retry_key)
 	if count then
@@ -1376,6 +1377,106 @@ function cc_counter_key()
 	return ngx.md5('cc:v2:' .. #site .. ':' .. site .. ':' .. tostring(endpoint_normalize_ip(ip) or ip) .. ':' .. path)
 end
 
+function scan_abuse_policy(site)
+	local current=site_config[site]
+	local policy=type(current)=='table' and current.scan_abuse_policy
+	if config.open~=true or type(current)~='table' or current.open~=true or type(policy)~='table' or policy.enabled~=true then return nil end
+	local limits={window_seconds={10,3600},hit_threshold={10,10000},distinct_targets={3,64},min_families={2,3},ban_seconds={60,28800}}
+	for key,value in pairs(policy) do if key~='enabled' and not limits[key] then return nil end end
+	for key,bounds in pairs(limits) do
+		local value=policy[key]
+		if type(value)~='number' or value~=math.floor(value) or value<bounds[1] or value>bounds[2] then return nil end
+	end
+	if policy.distinct_targets>policy.hit_threshold then return nil end
+	return policy
+end
+
+function scan_abuse_target(path)
+	if type(path)~='string' or #path>1024 or string.sub(path,1,1)~='/' then return nil end
+	path=string.match(path,'^[^?#]*')
+	for _=1,2 do
+		if string.find(string.gsub(path,'%%[%da-fA-F][%da-fA-F]',''),'%%') then return nil end
+		path=ngx.unescape_uri(path)
+	end
+	if string.find(path,'[%%%c\\?#]') or string.find(path,'/%.%./') or string.sub(path,-3)=='/..' then return nil end
+	path=string.lower(string.gsub(path,'/+','/'))
+	local leaf=string.match(path,'([^/]+)$') or ''
+	if leaf=='.env' or string.match(leaf,'^%.env%.[%w_.-]+$') then
+		for token in string.gmatch(string.sub(leaf,6),'[^.]+') do
+			if token=='example' or token=='sample' or token=='template' or token=='dist' or token=='default' then return nil end
+		end
+		return path,'env'
+	end
+	if string.match(path,'/%.git/config$') or string.match(path,'/%.git/HEAD$') or string.match(path,'/%.git/head$') then return path,'repository' end
+	if string.match(path,'/%.aws/credentials$') or string.match(path,'/%.ssh/id_rsa$') or path=='/etc/shadow' or path=='/proc/self/environ' then return path,'credentials' end
+	return nil
+end
+
+function scan_abuse_event(reason,blocked_status)
+	if type(blocked_status)~='number' or blocked_status<400 or blocked_status>599 or blocked_status~=math.floor(blocked_status) then return false end
+	local allowed={user_agent=true,url=true,args=true,post=true,header=true,cookie=true,scan=true}
+	if not allowed[reason] then return false end
+	local policy=scan_abuse_policy(server_name)
+	if not policy then return false end
+	local path,family=scan_abuse_target(ngx.var.uri)
+	local address=endpoint_normalize_ip(ip)
+	if not path or not address then return false end
+	local site=site_config[server_name]
+	if site.cdn then
+		local proxies=site.cdn_trusted_proxy
+		if type(proxies)~='table' or #proxies==0 or not is_trusted_cdn_proxy(site) then return false end
+		if address==endpoint_normalize_ip(ngx.var.remote_addr) then return false end
+		for _,range in ipairs(proxies) do if is_ip_in_range(address,range) then return false end end
+	end
+	local ban_key=cc_state_key('ban',server_name,address)
+	local bans,shared=ngx.shared.free_waf_drop_ip,ngx.shared.free_waf
+	if not ban_key or bans:get(ban_key) then return false end
+	local signature=table.concat({policy.window_seconds,policy.hit_threshold,policy.distinct_targets,policy.min_families,policy.ban_seconds},':')
+	local key='scan-abuse:v2:'..ngx.md5(ban_key..':'..signature)
+	local ok,result=pcall(function()
+		local now=ngx.time()
+		local nonce=ngx.var.request_id
+		if type(nonce)~='string' or #nonce~=32 or not string.match(nonce,'^[0-9a-f]+$') then return false end
+		shared:safe_add(key,tostring(now)..':'..nonce,policy.window_seconds)
+		local marker=shared:get(key)
+		if type(marker)~='string' then return false end
+		local stamp=string.match(marker,'^(%d+):[0-9a-f]+$')
+		local started=tonumber(stamp)
+		if not started or started>now or now-started>=policy.window_seconds then return false end
+		local ttl=policy.window_seconds-(now-started)
+		local prefix=key..':'..marker
+		local function increment(suffix)
+			local counter=prefix..suffix
+			local added,err=shared:safe_add(counter,0,ttl)
+			if not added and err~='exists' then return nil end
+			return shared:incr(counter,1)
+		end
+		local hits=increment(':hits')
+		if not hits then return false end
+		-- Atomic 64-slot sketch: collisions only undercount distinct paths, never inflate.
+		local slot=tonumber(string.sub(ngx.md5(path),1,8),16)%64
+		local fresh,err=shared:safe_add(prefix..':target:'..slot,true,ttl)
+		if not fresh and err~='exists' then return false end
+		fresh,err=shared:safe_add(prefix..':family:'..family,true,ttl)
+		if not fresh and err~='exists' then return false end
+		if hits<policy.hit_threshold then return false end
+		-- Read live markers, not cumulative additions: unrelated legacy set() may evict keys.
+		local targets,families=0,0
+		for index=0,63 do if shared:get(prefix..':target:'..index) then targets=targets+1 end end
+		for _,kind in ipairs({'env','repository','credentials'}) do if shared:get(prefix..':family:'..kind) then families=families+1 end end
+		if hits<policy.hit_threshold or targets<policy.distinct_targets or families<policy.min_families then return false end
+		if shared:get(key)~=marker or ngx.time()-started>=policy.window_seconds then return false end
+		if not shared:safe_add(prefix..':claimed',true,ttl) then return false end
+		-- Consume the entire window; early unban cannot reuse its old evidence.
+		if not shared:safe_set(key,'consumed',ttl) then return false end
+		if not bans:safe_add(ban_key,'scan_abuse',policy.ban_seconds) then return false end
+		write_drop_ip_entry(address,server_name,path,policy.ban_seconds,'scan_abuse')
+		repeat_ban_event(server_name,address,policy.ban_seconds,'scan_abuse',path)
+		return true
+	end)
+	return ok and result or false
+end
+
 function cc_state_key(kind, site, client_ip)
 	client_ip=endpoint_normalize_ip(client_ip)
 	if (kind ~= 'ban' and kind ~= 'history' and kind ~= 'scan404') or type(site) ~= 'string' or #site < 1 or #site > 253 or string.find(site,'%c') or not client_ip then return nil end
@@ -1491,19 +1592,19 @@ end
 function scan_black()
 	if not config['scan']['open'] or not is_site_config('scan') then return false end
 	if is_ngx_match(scan_black_rules['cookie'],request_header['cookie'],false) then
-		write_log('scan','regular')
+		write_log('scan','regular',config['scan']['status'])
 		ngx.exit(config['scan']['status'])
 		return true
 	end
 	if is_ngx_match(scan_black_rules['args'],request_uri,false) then
-		write_log('scan','regular')
+		write_log('scan','regular',config['scan']['status'])
 		ngx.exit(config['scan']['status'])
 		return true
 	end
 	for key,value in pairs(request_header)
 	do
 		if is_ngx_match(scan_black_rules['header'],key,false) then
-			write_log('scan','regular')
+			write_log('scan','regular',config['scan']['status'])
 			ngx.exit(config['scan']['status'])
 			return true
 		end
@@ -1654,7 +1755,7 @@ end
 function user_agent()
 	if not config['user-agent']['open'] or not is_site_config('user-agent') then return false end	
 	if is_ngx_match(user_agent_rules,request_header['user-agent'],'user_agent') then
-		write_log('user_agent','regular')
+		write_log('user_agent','regular',config['user-agent']['status'])
 		return_html(config['user-agent']['status'],user_agent_html)
 		return true
 	end
@@ -1663,7 +1764,7 @@ end
 
 function header_rule()
 	if is_ngx_match(header_rules,request_header,'header') then
-		write_log('header','regular')
+		write_log('header','regular',config['get']['status'])
 		return_html(config['get']['status'],get_html)
 		return true
 	end
@@ -1707,7 +1808,7 @@ function post()
 	end
 	
 	if is_ngx_match(post_rules,request_args,'post') then
-		write_log('post','regular')
+		write_log('post','regular',config['post']['status'])
 		return_html(config['post']['status'],post_html)
 		return true
 	end
@@ -1749,7 +1850,7 @@ function cookie()
 	if type(request_header['cookie']) == "table" then return false end
 	request_cookie = string.lower(request_header['cookie'])
 	if is_ngx_match(cookie_rules,request_cookie,'cookie') then
-		write_log('cookie','regular')
+		write_log('cookie','regular',config['cookie']['status'])
 		return_html(config['cookie']['status'],cookie_html)
 		return true
 	end
@@ -1759,7 +1860,7 @@ end
 function args()
 	if not config['get']['open'] or not is_site_config('get') then return false end	
 	if is_ngx_match(args_rules,uri_request_args,'args') then
-		write_log('args','regular')
+		write_log('args','regular',config['get']['status'])
 		return_html(config['get']['status'],get_html)
 		return true
 	end
@@ -1771,7 +1872,7 @@ function url()
 
 	--正则--
 	if is_ngx_match(url_rules,uri,'url') then
-		write_log('url','regular')
+		write_log('url','regular',config['get']['status'])
 		return_html(config['get']['status'],get_html)
 		return true
 	end
@@ -1857,7 +1958,7 @@ function url_rule_ex()
 
 			if method == "POST" and request_args ~= nil then 
 				if is_ngx_match(rule[2],request_args,'post') then
-					write_log('post','regular')
+					write_log('post','regular',config['other']['status'])
 					return_html(config['other']['status'],other_html)
 					return true
 				end
@@ -2394,7 +2495,8 @@ function get_active_bans_runtime()
 				if address then
 					local ok,ttl=pcall(function() return shared:ttl(key) end)
 					local expires=ok and type(ttl)=='number' and ttl>0 and math.floor((ngx.now and ngx.now() or now)+ttl+0.5) or nil
-					local row=add(actual,site,address,expires,nil,nil,key,value,shared)
+					local evidence=actual=='cc' and value=='scan_abuse' and {reason='scan_abuse'} or nil
+					local row=add(actual,site,address,expires,nil,evidence,key,value,shared)
 					if row and not expires then row.removable=false end
 					if row and actual=='registration_abuse' and not site then
 						row.enforcement='unknown'; row.removable=false; coverage.partial=true
@@ -2486,7 +2588,7 @@ function min_route()
 	if ngx.var.server_name == 'gpt-firewall-health.invalid' then
 		local nonce = string.match(uri or '', '^/_gpt_firewall_health/([0-9a-f]+)$')
 		if nonce and #nonce == 32 then
-			return_message(200, {product='aapanel GPT Firewall', version='0.1.14',
+			return_message(200, {product='aapanel GPT Firewall', version='0.1.15',
 				nonce=nonce, worker_pid=ngx.worker.pid()})
 		else
 			ngx.exit(404)
